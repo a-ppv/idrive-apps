@@ -430,7 +430,9 @@ async function main() {
         await until('logs socket open', () => lserver._clients.size === 1);
         await sleep(900);
         assert.strictEqual(inactiveReports, inactiveBefore, 'moving to the Logs page keeps the app shown');
-        assert.strictEqual(patch._clients.size, 1, 'and its sockets open');
+        /* the page's patch connection and the HUD build's profile sync (its own patchd connection,
+         * src/profile_sync.js): both stay open */
+        assert.strictEqual(patch._clients.size, 2, 'and its sockets open');
         await until('logs state shown', () => byName.wocLogsStatus.text === 'Saved logs: None' &&
             byName.wocLogsUrl.text === `Address: ${lserver.url}` && byName.wocLogsSave.enabled === true);
         const qr1 = byName.wocLogsQr.text;
