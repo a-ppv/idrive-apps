@@ -492,9 +492,9 @@ async function main() {
         OnlineApp.instance.emit('entryPointExecute', APP_JSON.application.entryPoints[0].uuid);
         await sleep(400);
         assert.strictEqual(lserver._clients.size, 0, 'a tile launch opens no logs socket');
-        assert.strictEqual(patch._clients.size, 1, 'the main page\'s sockets are open');
+        assert.strictEqual(patch._clients.size, 2, 'the main page\'s sockets are open');   /* + the HUD build's profile sync */
         console.log('ok   launched from the tile after leaving on the Logs page: the main page, no logs socket');
-        assert.strictEqual(patch._clients.size, 1, 'the main page keeps its sockets');
+        assert.strictEqual(patch._clients.size, 2, 'the main page keeps its sockets');   /* + the HUD build's profile sync */
         console.log('ok   leaving the Logs page closes the logs socket');
 
         /* the display language: every row in its words, English for a word it lacks */
