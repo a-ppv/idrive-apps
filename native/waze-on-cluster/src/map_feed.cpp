@@ -134,19 +134,46 @@ void MapFeed::make_layer()
 
 /* Where the map goes on a target of tw x th: the kit's fitted rect, or on
  * the HUD with a size set, that width (the picture's shape kept, at most the
- * HUD's height), centred. */
+ * HUD's height), centred; on the HUD then moved by the offset, held inside
+ * the scene. */
 crk::QuadRect MapFeed::quad(uint32_t tw, uint32_t th) const
 {
-    const unsigned pct = cfg_.hud_width_pct;
-    if (cfg_.target != "hud" || !pct || !cfg_.video.w || !cfg_.video.h)
+    if (cfg_.target != "hud" || !cfg_.video.w || !cfg_.video.h)
         return crk::map_quad(tw, th, cfg_.video.w, cfg_.video.h);
-    uint64_t w = (uint64_t)tw * (pct > kHudMaxPct ? kHudMaxPct : pct) / 100;
-    uint64_t h = (w * cfg_.video.h + cfg_.video.w / 2) / cfg_.video.w;
-    if (h > th) {
-        h = th;
-        w = (h * cfg_.video.w + cfg_.video.h / 2) / cfg_.video.h;
+    crk::QuadRect q;
+    const unsigned pct = cfg_.hud_width_pct;
+    if (!pct) {
+        q = crk::map_quad(tw, th, cfg_.video.w, cfg_.video.h);
+    } else {
+        uint64_t w = (uint64_t)tw * (pct > kHudMaxPct ? kHudMaxPct : pct) / 100;
+        uint64_t h = (w * cfg_.video.h + cfg_.video.w / 2) / cfg_.video.w;
+        if (h > th) {
+            h = th;
+            w = (h * cfg_.video.w + cfg_.video.h / 2) / cfg_.video.h;
+        }
+        q = crk::QuadRect{(uint32_t)((tw - w) / 2), (uint32_t)((th - h) / 2), (uint32_t)w, (uint32_t)h};
     }
-    return crk::QuadRect{(uint32_t)((tw - w) / 2), (uint32_t)((th - h) / 2), (uint32_t)w, (uint32_t)h};
+    const long x = (long)q.x + cfg_.hud_offset_x, y = (long)q.y + cfg_.hud_offset_y;
+    const long xmax = (long)tw - (long)q.w, ymax = (long)th - (long)q.h;
+    q.x = (uint32_t)(x < 0 ? 0 : x > xmax ? xmax : x);
+    q.y = (uint32_t)(y < 0 ? 0 : y > ymax ? ymax : y);
+    return q;
+}
+
+void MapFeed::set_hud_offset(int dx, int dy)
+{
+    if (dx == cfg_.hud_offset_x && dy == cfg_.hud_offset_y)
+        return;
+    cfg_.hud_offset_x = dx;
+    cfg_.hud_offset_y = dy;
+    uint32_t tw, th;
+    if (cfg_.target != "hud" || !layer_ || !target_size(client_.targets, "hud", &tw, &th))
+        return;
+    const crk::QuadRect q = quad(tw, th);
+    lo_.x = (int)q.x;
+    lo_.y = (int)q.y;
+    client_.set(layer_, lo_);
+    log_info("render: HUD map moved to %u,%u (offset %+d,%+d)", q.x, q.y, dx, dy);
 }
 
 void MapFeed::set_hud_width(unsigned pct)
@@ -310,6 +337,8 @@ FeedStatus MapFeed::status(const std::string &decode, const std::string &stream)
     FeedStatus s;
     s.target = cfg_.target;
     s.hud_width_pct = cfg_.hud_width_pct;
+    s.hud_offset_x = cfg_.hud_offset_x;
+    s.hud_offset_y = cfg_.hud_offset_y;
     s.upload_cap_kb = cap_kb_;
     s.upload_reason = budget_reason_;
     s.guide_hold = cfg_.guide_hold;

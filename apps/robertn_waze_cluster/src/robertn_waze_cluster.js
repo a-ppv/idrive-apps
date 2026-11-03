@@ -75,7 +75,11 @@ const AA_CARD_NAME = 'wocAaCard';
 const GUIDE_NAME = 'wocGuide';
 const HEAD_GENERAL_NAME = 'wocHeadGeneral';
 const DISPLAY_NAME = 'wocDisplay';
-const HUD_SIZE_NAME = 'wocHudSize';
+const HUD_SIZE_NAME = 'wocHudSize';         /* HUD map larger */
+const HUD_SMALLER_NAME = 'wocHudSmaller';
+/* Move HUD map left / right / up / down, and Centre HUD map */
+const HUD_MOVE_NAMES = { left: 'wocHudLeft', right: 'wocHudRight', up: 'wocHudUp', down: 'wocHudDown' };
+const HUD_CENTRE_NAME = 'wocHudCentre';
 const CAPTURE_NAME = 'wocCapture';
 const CAPTURE_STATUS = 'wocCaptureStatus';
 const LOGS_NAME = 'wocLogs';
@@ -187,8 +191,9 @@ class WazeClusterApp extends OnlineApp {
             return Promise.reject(new Error(`uiDescription has no ${STATE_NAME} or ${LOGS_STATE}`));
         }
         const names = [STATUS_NAME, MAP_NAME, RESTART_STATUS_NAME, ENABLE_NAME, DISABLE_NAME, AA_STATUS_NAME, AA_ENABLE_NAME, AA_DISABLE_NAME, AA_ZOOM_NAME,
-            AA_ZOOM_OUT_NAME, AA_ZOOM_IN_NAME, AA_CARD_NAME, RESTART_NAME, GUIDE_NAME, HEAD_GENERAL_NAME, DISPLAY_NAME, HUD_SIZE_NAME, CAPTURE_NAME, CAPTURE_STATUS,
-            LOGS_NAME, LOGS_SAVE, LOGS_STATUS, LOGS_QR, LOGS_URL].concat(LOGS_ROW_NAMES);
+            AA_ZOOM_OUT_NAME, AA_ZOOM_IN_NAME, AA_CARD_NAME, RESTART_NAME, GUIDE_NAME, HEAD_GENERAL_NAME, DISPLAY_NAME, HUD_SIZE_NAME, HUD_SMALLER_NAME]
+            .concat(Object.values(HUD_MOVE_NAMES), [HUD_CENTRE_NAME, CAPTURE_NAME, CAPTURE_STATUS,
+                LOGS_NAME, LOGS_SAVE, LOGS_STATUS, LOGS_QR, LOGS_URL], LOGS_ROW_NAMES);
         names.forEach((name) => { this._components[name] = rhmi.getByName(name); });
         const missing = names.filter((name) => !this._components[name]);
         if (missing.length) {
@@ -213,7 +218,10 @@ class WazeClusterApp extends OnlineApp {
             this._control.toggleGuidance();
         });
         this._bind(DISPLAY_NAME, () => this._control.cycleDisplay());
-        this._bind(HUD_SIZE_NAME, () => this._control.cycleHudSize());
+        this._bind(HUD_SIZE_NAME, () => this._control.stepHudSize(1));
+        this._bind(HUD_SMALLER_NAME, () => this._control.stepHudSize(-1));
+        Object.keys(HUD_MOVE_NAMES).forEach((dir) => this._bind(HUD_MOVE_NAMES[dir], () => this._control.moveHud(dir)));
+        this._bind(HUD_CENTRE_NAME, () => this._control.centreHud());
         this._bind(CAPTURE_NAME, () => this._control.capture());
         this._bind(LOGS_NAME, () => Promise.resolve(rhmi.openState(LOGS_STATE))
             .catch((err) => logger.warn(`openState ${LOGS_STATE} failed: ${err && err.message}`)));
@@ -487,8 +495,13 @@ class WazeClusterApp extends OnlineApp {
         this._write(DISPLAY_NAME, c.displayText());
         this._setEnabled(DISPLAY_NAME, c.canChangeDisplay());
         /* the HUD map's size: enabled while the map goes to the HUD */
-        this._write(HUD_SIZE_NAME, c.hudSizeText());
-        this._setEnabled(HUD_SIZE_NAME, c.canChangeHudSize());
+        this._write(HUD_SIZE_NAME, c.hudLargerText());
+        this._setEnabled(HUD_SIZE_NAME, c.canHudLarger());
+        this._setEnabled(HUD_SMALLER_NAME, c.canHudSmaller());
+        /* where it is: enabled while the map goes to the HUD */
+        Object.values(HUD_MOVE_NAMES).forEach((n) => this._setEnabled(n, c.canChangeHudSize()));
+        this._write(HUD_CENTRE_NAME, c.centreHudText());
+        this._setEnabled(HUD_CENTRE_NAME, c.canChangeHudSize());
     }
 
     _renderLogs() {

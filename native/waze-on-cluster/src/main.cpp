@@ -83,7 +83,8 @@ std::string status_line(const FeedStatus &s)
            ",\"upload_reason\":" + json_escape(s.upload_reason) +
            ",\"hide_bmw_guidance\":" + (s.guide_hold ? "1" : "0") +
            ",\"guide_disabled\":" + (s.guide_disabled ? "1" : "0") +
-           ",\"hud_width_pct\":" + std::to_string(s.hud_width_pct) + "}";
+           ",\"hud_width_pct\":" + std::to_string(s.hud_width_pct) +
+           ",\"hud_x\":" + std::to_string(s.hud_offset_x) + ",\"hud_y\":" + std::to_string(s.hud_offset_y) + "}";
 }
 
 class Server : public Control::Handler {
@@ -101,20 +102,34 @@ public:
         auto it = msg.find("target");
         auto hide = msg.find("hide");
         auto pct = msg.find("hud_width_pct");
+        auto hx = msg.find("hud_x"), hy = msg.find("hud_y");
         if (cmd == "start" && it != msg.end()) {
             log_info("start %s", it->second.c_str());
             feeds_->set_targets(it->second);
         } else if (cmd == "guide" && hide != msg.end() && guide_->set(hide->second)) {
             log_info("guide: BMW's turn box %s while the map shows", guide_->hide() ? "hidden" : "shown");
             feeds_->set_guide_hold(guide_->hide());
-        } else if (cmd == "hud" && pct != msg.end()) {
+        } else if (cmd == "hud" && (pct != msg.end() || hx != msg.end() || hy != msg.end())) {
             /* the HUD map's size: 0 (the default box) or 20-100 % of its width */
-            const long v = std::strtol(pct->second.c_str(), nullptr, 10);
-            if (v == 0 || (v >= 20 && v <= 100)) {
-                log_info("hud: map %ld%% wide", v);
-                feeds_->set_hud_width((unsigned)v);
-            } else {
-                log_warn("hud: width %s out of range (0, or 20-100)", pct->second.c_str());
+            if (pct != msg.end()) {
+                const long v = std::strtol(pct->second.c_str(), nullptr, 10);
+                if (v == 0 || (v >= 20 && v <= 100)) {
+                    log_info("hud: map %ld%% wide", v);
+                    feeds_->set_hud_width((unsigned)v);
+                } else {
+                    log_warn("hud: width %s out of range (0, or 20-100)", pct->second.c_str());
+                }
+            }
+            /* and where it is: moved from the centre, in HUD pixels (-800..800 each; held inside the HUD) */
+            if (hx != msg.end() || hy != msg.end()) {
+                const long x = hx != msg.end() ? std::strtol(hx->second.c_str(), nullptr, 10) : feeds_->hud_offset_x();
+                const long y = hy != msg.end() ? std::strtol(hy->second.c_str(), nullptr, 10) : feeds_->hud_offset_y();
+                if (x >= -800 && x <= 800 && y >= -800 && y <= 800) {
+                    log_info("hud: map moved %+ld,%+ld from the centre", x, y);
+                    feeds_->set_hud_offset((int)x, (int)y);
+                } else {
+                    log_warn("hud: offset %ld,%ld out of range (-800..800)", x, y);
+                }
             }
         } else {
             log_warn("control: unknown or malformed command %s", cmd.c_str());
@@ -177,7 +192,7 @@ int serve(const Config &cfg)
                      "(upload_kb_per_s in /var/opt/cluster-render/cluster-render.local.conf)", key, cfg.str(key).c_str());
     struct Range { const char *key; long lo, hi; } ranges[] = {
         {"dirty_threshold", 0, 64}, {"dirty_settle_ms", 0, 3600000}, {"tex_level_bits", 0, 3},
-        {"target_fps", 0, 60},      {"hud_width_pct", 0, 100},      {"hud_scale_down", 0, 1},      {"hud_round_corners", 0, 1},      {"hud_black_background", 0, 1},      {"pan_blocks", 0, 1},            {"stall_ms", 1000, 600000},
+        {"target_fps", 0, 60},      {"hud_width_pct", 0, 100},      {"hud_offset_x", -800, 800},      {"hud_offset_y", -800, 800},      {"hud_scale_down", 0, 1},      {"hud_round_corners", 0, 1},      {"hud_black_background", 0, 1},      {"pan_blocks", 0, 1},            {"stall_ms", 1000, 600000},
         {"freeze_ms", 0, 600000},   {"freeze_min_fps", 1, 60},       {"alt_screen_port", 0, 65535},
         {"idle_ms", 1000, 600000},  {"blank_ms", 1000, 600000},
         {"alt_screen_uid", 0, 4294967294L}};
@@ -198,6 +213,8 @@ int serve(const Config &cfg)
     if (const char *why = parse_map_rect(cfg.str("map_rect"), &fc.rect))
         log_warn("map_rect = %s is ignored: %s; the map area instead", cfg.str("map_rect").c_str(), why);
     fc.hud_width_pct = (unsigned)cfg.num("hud_width_pct");
+    fc.hud_offset_x = (int)cfg.num("hud_offset_x");
+    fc.hud_offset_y = (int)cfg.num("hud_offset_y");
     fc.scale_down = cfg.num("hud_scale_down") != 0;
     fc.hud_round_corners = cfg.num("hud_round_corners") != 0;
     fc.hud_black_background = cfg.num("hud_black_background") != 0;
@@ -448,6 +465,8 @@ void define_keys(Config *cfg)
     cfg->define("hide_bmw_guidance", "1");
     cfg->define("state_file", "/var/opt/waze-on-cluster/state/waze-on-cluster.state.conf");
     cfg->define("hud_width_pct", "0");
+    cfg->define("hud_offset_x", "0");
+    cfg->define("hud_offset_y", "0");
     cfg->define("hud_scale_down", "1");
     cfg->define("hud_round_corners", "1");
     cfg->define("hud_black_background", "1");

@@ -639,6 +639,39 @@ int main()
     bpump(300, &f2);
     ok("0: back to the default box", layer_on(2) && layer_on(2)->params.rect.w == default_w);
 
+    /* ---- where the HUD map is ---- */
+    feeds.set_hud_width(40);
+    bpump(300, &f2);
+    const crs::Layer *at40 = layer_on(2);
+    const uint32_t ref40 = at40 ? at40->id() : 0;
+    feeds.set_hud_offset(100, -50);
+    bpump(300, &f2);
+    hl = layer_on(2);
+    ok("moved: 100 right, 50 up from the centre (240,169 -> 340,119)", hl && hl->params.rect.x == 340 && hl->params.rect.y == 119 &&
+                                                                          hl->params.rect.w == 320 && hl->params.rect.h == 140);
+    ok("moved: the same layer, only its place changed (no new texture)", hl && hl->id() == ref40);
+    ok("moved: the status carries the offset", feeds.status("decode").hud_offset_x == 100 && feeds.status("decode").hud_offset_y == -50);
+    feeds.set_hud_offset(800, 800);
+    bpump(300, &f2);
+    hl = layer_on(2);
+    ok("moved too far: held inside the HUD (its bottom right corner)",
+       hl && hl->params.rect.x + hl->params.rect.w == 800 && hl->params.rect.y + hl->params.rect.h >= 479 && hl->params.rect.y + hl->params.rect.h <= 480);
+    feeds.set_hud_offset(-800, -800);
+    bpump(300, &f2);
+    hl = layer_on(2);
+    ok("moved too far the other way: the top left corner", hl && hl->params.rect.x == 0 && hl->params.rect.y == 0);
+    feeds.set_hud_offset(-30, 20);
+    feeds.set_hud_width(60);
+    bpump(300, &f2);
+    hl = layer_on(2);
+    ok("resized while moved: the new size, still moved (60 %: 480x211 centred at 160,134, so 130,154)",
+       hl && hl->params.rect.w == 480 && hl->params.rect.x == 130 && hl->params.rect.y == 154);
+    feeds.set_targets("map");
+    bpump(2500, &f2);
+    ok("the offset leaves the cluster's map alone", layer_on(0) && layer_on(0)->params.rect.x == 0 && layer_on(0)->params.rect.y == 0);
+    feeds.set_hud_offset(0, 0);
+    feeds.set_hud_width(0);
+
     feeds.set_stream(false, false, Picture::None);
     bpump(200, &f2);
     ok("the stream not live reaches every feed: idle", feeds.status("decode").state == "idle");

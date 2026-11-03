@@ -52,6 +52,10 @@ public:
     void set_hud_width(unsigned pct);
     /* The map layer's guide_hold, kept for a feed made later. */
     void set_guide_hold(bool hold);
+    /* The HUD map moved from its centred place (the HUD feed moves at once). */
+    void set_hud_offset(int dx, int dy);
+    int hud_offset_x() const { return base_.hud_offset_x; }
+    int hud_offset_y() const { return base_.hud_offset_y; }
 
     /* For poll(): one entry per feed, appended; after_poll takes the same
      * vector and where they start. */

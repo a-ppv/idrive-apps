@@ -102,6 +102,13 @@ const DISPLAYS = [['map', 'Cluster'], ['hud', 'HUD']];
  * width in percent of the HUD's (0: the standard fitted box, about 57 %). */
 /* 85 % is the widest the HUD shows whole (the render holds a larger saved size to it). */
 const HUD_SIZES = [[0, 'Standard'], [70, '70 %'], [85, '85 %'], [40, '40 %']];
+/* The HUD map size scaler: larger / smaller in HUD_STEP_PCT steps from HUD_MIN_PCT to HUD_MAX_PCT (85 %, the
+ * widest the HUD shows whole). Standard (0) counts as HUD_STANDARD_PCT, about what the fitted box is. */
+const HUD_MIN_PCT = 30, HUD_MAX_PCT = 85, HUD_STEP_PCT = 5, HUD_STANDARD_PCT = 57;
+/* The HUD map moved from its centre, HUD_MOVE_PX a press, within +-HUD_MOVE_MAX (the render holds it inside the
+ * HUD as well). */
+const HUD_MOVE_PX = 10, HUD_MOVE_MAX = 400;
+const MOVES = { left: [-1, 0], right: [1, 0], up: [0, -1], down: [0, 1] };
 
 /* One newline-delimited-JSON stream socket, reconnecting while open.
  * link: 'down' | 'up' | 'absent' (ENOENT) | 'refused' (ECONNREFUSED) | 'failed'.
@@ -372,6 +379,70 @@ class WazeClusterControl extends EventEmitter {
     /* Only while the map goes to the HUD. */
     canChangeHudSize() {
         return this.render.connected() && /hud/.test(this.displayTarget() || '');
+    }
+
+    /* The HUD map larger (dir +1) or smaller (-1) by a step: from Standard, the step next to its ~57 %. */
+    stepHudSize(dir) {
+        if (!this.canChangeHudSize()) {
+            return;
+        }
+        const cur = this.hudWidth() || HUD_STANDARD_PCT;
+        let next = dir > 0 ? Math.floor(cur / HUD_STEP_PCT) * HUD_STEP_PCT + HUD_STEP_PCT : Math.ceil(cur / HUD_STEP_PCT) * HUD_STEP_PCT - HUD_STEP_PCT;
+        next = Math.max(HUD_MIN_PCT, Math.min(HUD_MAX_PCT, next));
+        if (next === this.hudWidth()) {
+            return;
+        }
+        this._setHudSize(next);
+    }
+    canHudLarger() { return this.canChangeHudSize() && (this.hudWidth() || HUD_STANDARD_PCT) < HUD_MAX_PCT; }
+    canHudSmaller() { return this.canChangeHudSize() && (this.hudWidth() || HUD_STANDARD_PCT) > HUD_MIN_PCT; }
+    hudLargerText() {
+        const w = this.hudWidth();
+        return `HUD map larger (now ${w == null ? '…' : w === 0 ? 'Standard' : `${w} %`})`;
+    }
+    _setHudSize(pct) {
+        this._askedHud = pct;
+        this.render.send({ cmd: 'hud', hud_width_pct: String(pct) });
+        this.patch.send({ cmd: 'hud-size', hud_width_pct: pct });
+        this.emit('change');
+    }
+
+    /* ---- where the HUD map is: moved from its centre, in HUD pixels ---- */
+    hudOffset() {
+        if (this._askedPos) {
+            return this._askedPos;
+        }
+        const s = this.renderStatus;
+        return s && typeof s.hud_x === 'number' ? [s.hud_x, s.hud_y] : [0, 0];
+    }
+    /* Moves it a step (left / right / up / down): the render moves it at once, patchd saves it. */
+    moveHud(dir) {
+        const d = MOVES[dir];
+        if (!d || !this.canChangeHudSize()) {
+            return;
+        }
+        const [x, y] = this.hudOffset();
+        const clamp = (v) => Math.max(-HUD_MOVE_MAX, Math.min(HUD_MOVE_MAX, v));
+        this._setHudPos(clamp(x + d[0] * HUD_MOVE_PX), clamp(y + d[1] * HUD_MOVE_PX));
+    }
+    centreHud() {
+        if (this.canChangeHudSize()) {
+            this._setHudPos(0, 0);
+        }
+    }
+    _setHudPos(x, y) {
+        this._askedPos = [x, y];
+        this.render.send({ cmd: 'hud', hud_x: String(x), hud_y: String(y) });
+        this.patch.send({ cmd: 'hud-pos', hud_x: x, hud_y: y });
+        this.emit('change');
+    }
+    centreHudText() {
+        const [x, y] = this.hudOffset();
+        if (!x && !y) {
+            return 'Centre HUD map (centred now)';
+        }
+        const h = x ? `${Math.abs(x)} px ${x > 0 ? 'right' : 'left'}` : '', v = y ? `${Math.abs(y)} px ${y > 0 ? 'down' : 'up'}` : '';
+        return `Centre HUD map (now ${[h, v].filter(Boolean).join(', ')})`;
     }
 
     /* The next size: the render resizes the HUD map at once, patchd saves it. */
@@ -831,6 +902,9 @@ class WazeClusterControl extends EventEmitter {
             if (this._askedHud != null && msg.hud_width_pct === this._askedHud) {
                 this._askedHud = null;
             }
+            if (this._askedPos && msg.hud_x === this._askedPos[0] && msg.hud_y === this._askedPos[1]) {
+                this._askedPos = null;
+            }
             this.emit('change');
         }
     }
@@ -851,6 +925,11 @@ class WazeClusterControl extends EventEmitter {
         } else if (msg.ev === 'hud-size-reply') {
             if (!msg.ok) {
                 this._addLine('patch', `HUD size not saved: ${msg.reason || 'refused'}`);
+                this.emit('log');
+            }
+        } else if (msg.ev === 'hud-pos-reply') {
+            if (!msg.ok) {
+                this._addLine('patch', `HUD position not saved: ${msg.reason || 'refused'}`);
                 this.emit('log');
             }
         } else if (msg.ev === 'target-reply') {
@@ -879,5 +958,5 @@ class WazeClusterControl extends EventEmitter {
 module.exports = {
     WazeClusterControl, LineSocket,
     RENDER_PATH, PATCH_PATH, PENDING_PATH, AA_PENDING_PATH, BOOT_ID_PATH,
-    SIZE, SAFE, ZOOM_STEP, RESTART_FAILED, DISPLAYS, HUD_SIZES
+    SIZE, SAFE, ZOOM_STEP, RESTART_FAILED, DISPLAYS, HUD_SIZES, HUD_MIN_PCT, HUD_MAX_PCT, HUD_STEP_PCT, HUD_MOVE_PX
 };

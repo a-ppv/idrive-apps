@@ -169,7 +169,7 @@ class ProfileSync extends EventEmitter {
         /* the profile's choice, now; a first-seen profile's is what is set */
         if (!msg.known) return;
         const cmds = [{ cmd: 'start', target: msg.target },
-            { cmd: 'hud', hud_width_pct: String(msg.hud_width_pct || 0) }];
+            { cmd: 'hud', hud_width_pct: String(msg.hud_width_pct || 0), hud_x: String(msg.hud_x || 0), hud_y: String(msg.hud_y || 0) }];
         const c = this._control;
         if (c && c.render && c.render.connected()) {
             cmds.forEach((m) => c.render.send(m));

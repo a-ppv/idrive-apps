@@ -5,6 +5,7 @@
  *
  *   owner -> tool  {"cmd":"start","target":"sail"|"map"|"panel"|"hud"|"map+hud"}
  *                  {"cmd":"hud","hud_width_pct":"0"|"20".."100"}  the HUD map's size
+ *                  {"cmd":"hud","hud_x":"-800".."800","hud_y":...}  where it is, from the centre
  *                  {"cmd":"guide","hide":0|1}  BMW's turn box hidden or not (guide_setting.h)
  *   tool -> owner  {"ev":"status",...,"hide_bmw_guidance":0|1,"guide_disabled":0|1}
  *                  {"ev":"log","line":...}

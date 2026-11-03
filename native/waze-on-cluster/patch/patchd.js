@@ -51,6 +51,10 @@
  *                                   start's too) or, first seen, the current one;
  *                                   target and hud-size are kept per profile
  *                  {"cmd":"hud-size","hud_width_pct":0|20..85}
+ *                  {"cmd":"hud-pos","hud_x":-800..800,"hud_y":-800..800}
+ *                                   the HUD map moved from its centre (HUD pixels): saved as
+ *                                   "hud_offset_x / hud_offset_y = ..."; kept per profile too;
+ *                                   hud-pos-reply carries ok/hud_x/hud_y/reason
  *                                   the HUD map's size, saved the same way as
  *                                   "hud_width_pct = ..." (0: the default box);
  *                                   hud-size-reply carries ok/hud_width_pct/reason
@@ -244,10 +248,16 @@ function writeProfiles(p) {
     var tmp = PROFILES_FILE + '.tmp';
     try { fs.writeFileSync(tmp, JSON.stringify(p) + '\n', { mode: 420 }); fs.renameSync(tmp, PROFILES_FILE); } catch (e) { log('saving the profiles failed: ' + e.message); }
 }
+/* An offset setting as a whole number in -800..800 (0 when unset or out of range). */
+function offset(v) {
+    var n = Number(v);
+    return isFinite(n) && n === Math.floor(n) && n >= -800 && n <= 800 ? n : 0;
+}
 /* The current settings, as the render starts with them. */
 function currentSettings() {
     var t = readSetting('target'), pct = Number(readSetting('hud_width_pct'));
-    return { target: DISPLAY_TARGETS.indexOf(t) >= 0 ? t : 'map', hud_width_pct: isFinite(pct) ? Math.min(pct, HUD_MAX_PCT) : 0 };
+    return { target: DISPLAY_TARGETS.indexOf(t) >= 0 ? t : 'map', hud_width_pct: isFinite(pct) ? Math.min(pct, HUD_MAX_PCT) : 0,
+        hud_x: offset(readSetting('hud_offset_x')), hud_y: offset(readSetting('hud_offset_y')) };
 }
 /* A change of key kept for the current profile too. */
 function rememberForProfile(key, value) {
@@ -1339,15 +1349,18 @@ function handle(line, sock) {
         currentProfile = id;
         var want = cur;
         if (saved && DISPLAY_TARGETS.indexOf(saved.target) >= 0) {
-            want = { target: saved.target, hud_width_pct: Math.min(Number(saved.hud_width_pct) || 0, HUD_MAX_PCT) };
+            want = { target: saved.target, hud_width_pct: Math.min(Number(saved.hud_width_pct) || 0, HUD_MAX_PCT),
+                hud_x: offset(saved.hud_x), hud_y: offset(saved.hud_y) };
             if (want.target !== cur.target) saveSetting('target', want.target, function () {});
             if (want.hud_width_pct !== cur.hud_width_pct) saveSetting('hud_width_pct', String(want.hud_width_pct), function () {});
+            if (want.hud_x !== cur.hud_x) saveSetting('hud_offset_x', String(want.hud_x), function () {});
+            if (want.hud_y !== cur.hud_y) saveSetting('hud_offset_y', String(want.hud_y), function () {});
         } else {
             profiles[id] = cur;
             writeProfiles(profiles);
         }
         if (changed) log('driver profile ' + id + ': ' + want.target + (want.target === 'hud' ? ', HUD map ' + (want.hud_width_pct || 'standard') + (want.hud_width_pct ? ' %' : '') : '') + (saved ? '' : ' (first seen: the current settings kept for it)'));
-        try { sock.write(JSON.stringify({ ev: 'profile-reply', ok: true, id: id, known: !!saved, target: want.target, hud_width_pct: want.hud_width_pct }) + '\n'); } catch (e) {}
+        try { sock.write(JSON.stringify({ ev: 'profile-reply', ok: true, id: id, known: !!saved, target: want.target, hud_width_pct: want.hud_width_pct, hud_x: want.hud_x, hud_y: want.hud_y }) + '\n'); } catch (e) {}
         return;
     }
     if (msg.cmd === 'hud-size') {
@@ -1362,6 +1375,23 @@ function handle(line, sock) {
             if (err) log('saving the HUD map size failed: ' + err.message);
             else log('HUD map size: ' + (pct ? pct + ' %' : 'default') + ' (saved for the next start)');
             try { sock.write(JSON.stringify({ ev: 'hud-size-reply', ok: !err, hud_width_pct: pct, reason: err ? err.message : undefined }) + '\n'); } catch (e) {}
+        });
+        return;
+    }
+    if (msg.cmd === 'hud-pos') {
+        var hx = Number(msg.hud_x), hy = Number(msg.hud_y);
+        if (offset(hx) !== hx || offset(hy) !== hy) {
+            try { sock.write(JSON.stringify({ ev: 'hud-pos-reply', ok: false, reason: 'HUD offsets must be whole numbers from -800 to 800' }) + '\n'); } catch (e) {}
+            return;
+        }
+        saveSetting('hud_offset_x', String(hx), function (err) {
+            if (err) { log('saving the HUD map position failed: ' + err.message); try { sock.write(JSON.stringify({ ev: 'hud-pos-reply', ok: false, reason: err.message }) + '\n'); } catch (e) {} return; }
+            saveSetting('hud_offset_y', String(hy), function (err2) {
+                if (!err2) { rememberForProfile('hud_x', hx); rememberForProfile('hud_y', hy); }
+                if (err2) log('saving the HUD map position failed: ' + err2.message);
+                else log('HUD map position: ' + (hx || hy ? (hx >= 0 ? '+' : '') + hx + ', ' + (hy >= 0 ? '+' : '') + hy + ' px from the centre' : 'centred') + ' (saved for the next start)');
+                try { sock.write(JSON.stringify({ ev: 'hud-pos-reply', ok: !err2, hud_x: hx, hud_y: hy, reason: err2 ? err2.message : undefined }) + '\n'); } catch (e) {}
+            });
         });
         return;
     }

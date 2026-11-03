@@ -304,8 +304,14 @@ its own layer and slot on the renderer (`src/map_feeds.*`), the HUD's map
 fitted into its 800x480 scene, within the one shared upload budget. The HUD map's size (`hud_width_pct`): Standard (0, the fitted box,
 about 57 % of the HUD's width, 453x200), 70 %, 85 % (680x300, the widest:
 wider is cut off at the HUD's edges, and a larger saved size is held to it)
-or 40 %, the picture's shape kept and centred; the app's **HUD map size**
-button resizes it at once and `patchd` saves it. The HUD's frame is scaled
+or anything from 30 % up, the picture's shape kept; the app's **HUD map
+larger / smaller** buttons step it by 5 % at once and `patchd` saves it.
+Where it sits (`hud_offset_x`, `hud_offset_y`): pixels of the HUD's scene
+moved from the centre (+x right, +y down), held so the map stays whole inside
+the HUD; the app's **Move HUD map** buttons move it 10 px a press and **Centre
+HUD map** puts it back. A move only changes the layer's place (no new texture),
+so it shows at once. Control: `{"cmd":"hud","hud_width_pct":"70"}`,
+`{"cmd":"hud","hud_x":"40","hud_y":"-20"}` (strings; an axis left out stays). The HUD's frame is scaled
 on the head unit to the size it is shown at (`src/atlas_scale.*`, area
 averaging, `hud_scale_down`), at most `target_fps` frames a second: 135,600 B
 a frame at the standard size instead of 783,360, so the frames go exact
@@ -324,7 +330,7 @@ doesn't count towards the background, so a park filling the frame can't become i
 **Per driver profile.** The app reads the head unit's current user account
 every 5 s (SOME/IP `SessionManager.currentUserAccountReference`) and tells
 `patchd` (`{"cmd":"profile","id"}`); `patchd` keeps the display choice and
-HUD size per profile in `profiles.json` next to the local conf, records each
+HUD size and position per profile in `profiles.json` next to the local conf, records each
 change for the profile current then, and gives a profile seen again its own
 back (saved for the next start, and applied to the running render by the
 app). A profile seen for the first time keeps what is set.

@@ -57,6 +57,9 @@ struct FeedConfig {
      * the picture's shape, at most the HUD's), centred. 0: the kit's fitted
      * box (about 57 %). */
     unsigned hud_width_pct = 0;
+    /* On the HUD: the map moved from its centred place, in the HUD scene's
+     * pixels (+x right, +y down), held inside the HUD's scene. */
+    int hud_offset_x = 0, hud_offset_y = 0;
     /* A target shown smaller than the decoded frame (the HUD) gets the frame
      * scaled on the head unit to the size it is shown at (atlas_scale.h),
      * at most video.fps a second, rounded to these level bits. */
@@ -81,6 +84,7 @@ struct FeedStatus {
     bool guide_hold = true;
     bool guide_disabled = false;   /* cluster-render's guard keeps the turn box's hold off */
     unsigned hud_width_pct = 0;   /* the HUD map's size setting (0: the default) */
+    int hud_offset_x = 0, hud_offset_y = 0;   /* and where it is moved to from the centre */
 };
 
 /* Whether a status is worth a log line: its state, reason or target differs
@@ -118,6 +122,9 @@ public:
     /* The HUD map's size (FeedConfig::hud_width_pct), applied at once to a
      * map on the HUD. */
     void set_hud_width(unsigned pct);
+    /* The HUD map moved (FeedConfig::hud_offset_x/y), at once: the layer
+     * only changes place, no new texture. */
+    void set_hud_offset(int dx, int dy);
     /* Whether the renderer has target `name` (true until connected). */
     bool knows(const std::string &name) const;
 

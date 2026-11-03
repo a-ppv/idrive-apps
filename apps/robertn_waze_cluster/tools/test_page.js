@@ -219,7 +219,9 @@ async function main() {
         'wocHeadAa Android Auto', 'wocAaStatus Status: Connecting…', 'wocAaEnable Patch', 'wocAaDisable Remove patch',
         'wocAaZoom Zoom: —', 'wocAaZoomOut Zoom out', 'wocAaZoomIn Zoom in', "wocAaCard Hide phone's turn card",
         'wocHeadGeneral General', 'wocMap Cluster map: Off', "wocGuide Hide BMW's turn box",
-        'wocDisplay Show map on: \u2026', 'wocHudSize HUD map size: \u2026', 'wocLogs Logs', 'wocRestart Restart head unit',
+        'wocDisplay Show map on: \u2026', 'wocHudSize HUD map larger (now \u2026)', 'wocHudSmaller HUD map smaller',
+        'wocHudLeft Move HUD map left', 'wocHudRight Move HUD map right', 'wocHudUp Move HUD map up', 'wocHudDown Move HUD map down',
+        'wocHudCentre Centre HUD map', 'wocLogs Logs', 'wocRestart Restart head unit',
         'wocRestartStatus '],
         'the main page: three sections, in order');
     assert.deepStrictEqual(xmlIds('1').map(([id, type]) => `${id} ${type}`).sort(),
@@ -269,7 +271,8 @@ async function main() {
         assert(!logs.some((l) => /^error/.test(l)), logs.filter((l) => /^error/.test(l)).join('\n'));
         const bound = logs.filter((l) => l.startsWith('info: BIND OK: ')).map((l) => l.split(' ')[3]).sort();
         assert.deepStrictEqual(bound, ['wocAaCard', 'wocAaDisable', 'wocAaEnable', 'wocAaZoomIn', 'wocAaZoomOut', 'wocCapture', 'wocDisable', 'wocDisplay', 'wocEnable',
-            'wocGuide', 'wocHudSize', 'wocLogs', 'wocLogsSave', 'wocRestart'], 'bound buttons and checkbox');
+            'wocGuide', 'wocHudCentre', 'wocHudDown', 'wocHudLeft', 'wocHudRight', 'wocHudSize', 'wocHudSmaller', 'wocHudUp', 'wocLogs', 'wocLogsSave', 'wocRestart'],
+            'bound buttons and checkbox');
         assert.strictEqual(byName.wocRestart.visible, false, 'restart button hidden while the map shows');
         console.log('ok   a page opened while the map is up shows it');
 

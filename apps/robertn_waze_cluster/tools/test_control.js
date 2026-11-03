@@ -353,6 +353,56 @@ test('HUD map size steps Standard, 70, 85, 40 only while the map is on the HUD',
     c.close();
 });
 
+test('HUD map larger / smaller in 5 % steps from 30 to 85 %, from Standard the steps next to its ~57 %', async (render, patch) => {
+    const c = control();
+    c.open();
+    await until('connected', () => c.connectedRender() && c.connectedPatch());
+    render.stream(true);
+    await until('showing', () => c.renderStatus && c.renderStatus.state === 'showing');
+    c.stepHudSize(1);
+    assert(!render.received.some((m) => m.cmd === 'hud'), 'nothing sent while not on the HUD');
+    c.cycleDisplay();
+    await until('on the HUD', () => render.target === 'hud' && c.canChangeHudSize());
+    assert.strictEqual(c.hudLargerText(), 'HUD map larger (now Standard)');
+    c.stepHudSize(1);
+    await until('60 %', () => render.hudWidth === 60 && c.renderStatus.hud_width_pct === 60);
+    assert.strictEqual(c.hudLargerText(), 'HUD map larger (now 60 %)');
+    for (let i = 0; i < 6; i++) { c.stepHudSize(1); await until('step', () => c.renderStatus.hud_width_pct === Math.min(85, 65 + i * 5)); }
+    assert(c.renderStatus.hud_width_pct === 85 && !c.canHudLarger() && c.canHudSmaller(), 'held at 85 %');
+    const sent = render.received.filter((m) => m.cmd === 'hud').length;
+    c.stepHudSize(1);
+    assert.strictEqual(render.received.filter((m) => m.cmd === 'hud').length, sent, 'no request past the widest');
+    for (let i = 0; i < 12; i++) { c.stepHudSize(-1); await until('step down', () => c.renderStatus.hud_width_pct === Math.max(30, 80 - i * 5)); }
+    assert(c.renderStatus.hud_width_pct === 30 && !c.canHudSmaller(), 'held at 30 %');
+    await until('each one saved', () => patch.received.filter((m) => m.cmd === 'hud-size').slice(-1)[0].hud_width_pct === 30);
+    c.close();
+});
+
+test('Move HUD map: 10 px a press each way, Centre back; the render moves it and patchd saves it', async (render, patch) => {
+    const c = control();
+    c.open();
+    await until('connected', () => c.connectedRender() && c.connectedPatch());
+    render.stream(true);
+    await until('showing', () => c.renderStatus && c.renderStatus.state === 'showing');
+    c.moveHud('left');
+    assert(!render.received.some((m) => m.cmd === 'hud'), 'nothing while not on the HUD');
+    c.cycleDisplay();
+    await until('on the HUD', () => render.target === 'hud' && c.canChangeHudSize());
+    assert.strictEqual(c.centreHudText(), 'Centre HUD map (centred now)');
+    c.moveHud('right'); c.moveHud('right'); c.moveHud('up');
+    await until('moved', () => c.renderStatus.hud_x === 20 && c.renderStatus.hud_y === -10);
+    assert.strictEqual(c.centreHudText(), 'Centre HUD map (now 20 px right, 10 px up)');
+    c.moveHud('down'); c.moveHud('down'); c.moveHud('left');
+    await until('moved back past the centre', () => c.renderStatus.hud_x === 10 && c.renderStatus.hud_y === 10);
+    await until('saved', () => { const p = patch.received.filter((m) => m.cmd === 'hud-pos').slice(-1)[0]; return p && p.hud_x === 10 && p.hud_y === 10; });
+    c.centreHud();
+    await until('centred', () => c.renderStatus.hud_x === 0 && c.renderStatus.hud_y === 0);
+    assert.strictEqual(c.centreHudText(), 'Centre HUD map (centred now)');
+    for (let i = 0; i < 50; i++) c.moveHud('left');
+    await until('held at the limit', () => c.renderStatus.hud_x === -400);
+    c.close();
+});
+
 test('a page opened while the map is up reads it, again after closing', async (render, patch) => {
     patch.res = SIZE;
     patch.safe = SAFE;

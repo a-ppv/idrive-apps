@@ -140,7 +140,7 @@ class FakeRender extends LineServer {
 
     _status() {
         const s = { ev: 'status', state: this.state, target: this.target, page: this.page, reason: this.reason,
-            hud_width_pct: this.hudWidth || 0 };
+            hud_width_pct: this.hudWidth || 0, hud_x: this.hudX || 0, hud_y: this.hudY || 0 };
         if (this.hide !== null) {
             s.hide_bmw_guidance = this.hide;
             s.guide_disabled = this.guideDisabled;
@@ -178,7 +178,9 @@ class FakeRender extends LineServer {
             this._set(this.state, msg.target, this.page, this.reason);
         }
         if (msg.cmd === 'hud') {
-            this.hudWidth = Number(msg.hud_width_pct);
+            if (msg.hud_width_pct !== undefined) this.hudWidth = Number(msg.hud_width_pct);
+            if (msg.hud_x !== undefined) this.hudX = Number(msg.hud_x);
+            if (msg.hud_y !== undefined) this.hudY = Number(msg.hud_y);
             this._broadcast(this._status());
         }
     }
