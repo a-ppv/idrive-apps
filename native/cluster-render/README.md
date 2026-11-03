@@ -115,6 +115,13 @@ cluster is offered, and what differs is in "iDrive 8".
   timeout, and is `parked` (behind the holder the table names) until the
   KOMBI shows it. A parked target stages and flushes nothing. Nobody
   wanting it, it is released at once, with no linger.
+- **Giving way** (contributed by [eroobeeroo](https://github.com/eroobeeroo)).
+  A target with `<target>_yield_slots` (the HUD: `0x322`, where its media
+  and list pop-ups show, VERIFIED on a G05) gives way while the stock HMI
+  shows content there: asking for the target again while a pop-up showed
+  pushed the pop-up from the HUD to the cluster. It is asked for again
+  `<target>_yield_ms` (1500) after the pop-up goes, and an overlay-only
+  target gives way to stock content parked behind it the same way.
 - **Take-over.** A target with `<target>_take_over_stock` (the map's
   default) takes the slot from the stock HMI, as long as a wanting layer
   has `contend`, such as the Waze map:

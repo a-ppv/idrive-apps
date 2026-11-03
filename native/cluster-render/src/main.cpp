@@ -64,6 +64,13 @@ void define_keys(cld::Config *cfg)
     cfg->define("panel_take_over_stock", "0");
     cfg->define("hud_linger_ms", "3000");
     cfg->define("hud_take_over_stock", "0");
+    /* the stock pop-up slots each target gives way to, and how long after */
+    cfg->define("map_yield_slots", "");
+    cfg->define("panel_yield_slots", "");
+    cfg->define("hud_yield_slots", "0x322");
+    cfg->define("map_yield_ms", "1500");
+    cfg->define("panel_yield_ms", "1500");
+    cfg->define("hud_yield_ms", "1500");
     cfg->define("dcsm_hmi_client_handle", "1");
     cfg->define("guide_hold", "1");
     cfg->define("guide_slots", "auto");
@@ -148,6 +155,19 @@ bool load_targets(const cld::Config &cfg, int generation, std::vector<TargetSpec
         } else {
             t.content_class = (uint32_t)cfg.num((p + "content_class").c_str());
             t.take_over_stock = cfg.num((p + "take_over_stock").c_str()) != 0;
+            if (cfg.has((p + "yield_slots").c_str())) {
+                std::stringstream ys(cfg.str((p + "yield_slots").c_str()));
+                std::string ysl;
+                while (std::getline(ys, ysl, ','))
+                    if (!ysl.empty())
+                        t.yield_slots.push_back(std::strtoull(ysl.c_str(), nullptr, 0));
+            }
+            if (cfg.has((p + "yield_ms").c_str()))
+                t.yield_ms = (int)cfg.num((p + "yield_ms").c_str());
+            if (t.yield_ms < 0 || t.yield_ms > 60000) {
+                *err = "target " + name + ": " + p + "yield_ms must be from 0 to 60000";
+                return false;
+            }
         }
         if (!cfg.size((p + "size").c_str(), &t.width, &t.height) || t.width < 16 || t.height < 16 ||
             t.width > 4096 || t.height > 4096) {

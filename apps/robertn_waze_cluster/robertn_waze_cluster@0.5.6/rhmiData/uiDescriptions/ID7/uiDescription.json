@@ -67,6 +67,50 @@
             }
           ]
         },
+        "30": {
+          "type": "button",
+          "name": "wocDisplay",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "Show map on: \u2026",
+                "type": "Text"
+              }
+            }
+          ]
+        },
+        "31": {
+          "type": "button",
+          "name": "wocHudSize",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "HUD map size: \u2026",
+                "type": "Text"
+              }
+            }
+          ]
+        },
         "32": {
           "type": "button",
           "name": "wocEnable",

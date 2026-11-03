@@ -16,7 +16,10 @@
  * runs any operation every operation is. The restart's two rows, the last
  * ones, are the only rows shown and hidden, so no other row moves: the
  * button while a written change waits for the next head-unit start, its row
- * while it has something to say. Once patched, the render puts the map on
+ * while it has something to say. General also has Show map on (Cluster or
+ * HUD; each press switches, saved for the next start) and HUD map size
+ * (Standard, 70 %, 85 %, 40 %; enabled while the map goes to the HUD).
+ * Once patched, the render puts the map on
  * the cluster whenever the phone streams it, with no button.
  *
  * The Logs page (logs_control.js): Start capture and the Capture row, Save
@@ -51,6 +54,7 @@ const i18n = require('./i18n.js');
 const { WazeClusterControl, ZOOM_STEP } = require('./waze_cluster_control.js');
 const { LogsControl, ROWS: LOGS_ROWS } = require('./logs_control.js');
 const { qrPng } = require('./qr.js');
+const { ProfileSync } = require('./profile_sync.js');
 
 const logger = logging.getSDKLogger();
 
@@ -70,6 +74,8 @@ const AA_ZOOM_IN_NAME = 'wocAaZoomIn';
 const AA_CARD_NAME = 'wocAaCard';
 const GUIDE_NAME = 'wocGuide';
 const HEAD_GENERAL_NAME = 'wocHeadGeneral';
+const DISPLAY_NAME = 'wocDisplay';
+const HUD_SIZE_NAME = 'wocHudSize';
 const CAPTURE_NAME = 'wocCapture';
 const CAPTURE_STATUS = 'wocCaptureStatus';
 const LOGS_NAME = 'wocLogs';
@@ -117,6 +123,9 @@ class WazeClusterApp extends OnlineApp {
         this._control.on('change', () => this._render());
         this._logs = new LogsControl({ log: logger });
         this._logs.on('change', () => this._renderLogs());
+        /* the display choice per driver profile, page shown or not */
+        this._profiles = new ProfileSync({ control: this._control, log: logger });
+        this._profiles.start();
 
         this.on('initialized', () => {
             this._appInitialized()
@@ -178,7 +187,7 @@ class WazeClusterApp extends OnlineApp {
             return Promise.reject(new Error(`uiDescription has no ${STATE_NAME} or ${LOGS_STATE}`));
         }
         const names = [STATUS_NAME, MAP_NAME, RESTART_STATUS_NAME, ENABLE_NAME, DISABLE_NAME, AA_STATUS_NAME, AA_ENABLE_NAME, AA_DISABLE_NAME, AA_ZOOM_NAME,
-            AA_ZOOM_OUT_NAME, AA_ZOOM_IN_NAME, AA_CARD_NAME, RESTART_NAME, GUIDE_NAME, HEAD_GENERAL_NAME, CAPTURE_NAME, CAPTURE_STATUS,
+            AA_ZOOM_OUT_NAME, AA_ZOOM_IN_NAME, AA_CARD_NAME, RESTART_NAME, GUIDE_NAME, HEAD_GENERAL_NAME, DISPLAY_NAME, HUD_SIZE_NAME, CAPTURE_NAME, CAPTURE_STATUS,
             LOGS_NAME, LOGS_SAVE, LOGS_STATUS, LOGS_QR, LOGS_URL].concat(LOGS_ROW_NAMES);
         names.forEach((name) => { this._components[name] = rhmi.getByName(name); });
         const missing = names.filter((name) => !this._components[name]);
@@ -203,6 +212,8 @@ class WazeClusterApp extends OnlineApp {
             delete this._written[`selected:${GUIDE_NAME}`];
             this._control.toggleGuidance();
         });
+        this._bind(DISPLAY_NAME, () => this._control.cycleDisplay());
+        this._bind(HUD_SIZE_NAME, () => this._control.cycleHudSize());
         this._bind(CAPTURE_NAME, () => this._control.capture());
         this._bind(LOGS_NAME, () => Promise.resolve(rhmi.openState(LOGS_STATE))
             .catch((err) => logger.warn(`openState ${LOGS_STATE} failed: ${err && err.message}`)));
@@ -472,6 +483,12 @@ class WazeClusterApp extends OnlineApp {
         this._setEnabled(GUIDE_NAME, hide !== null && !unavailable);
         this._write(GUIDE_NAME, t("Hide BMW's turn box"));
         this._setSelected(GUIDE_NAME, !!hide && !unavailable);
+        /* Cluster or HUD: each press moves the map to the other one */
+        this._write(DISPLAY_NAME, c.displayText());
+        this._setEnabled(DISPLAY_NAME, c.canChangeDisplay());
+        /* the HUD map's size: enabled while the map goes to the HUD */
+        this._write(HUD_SIZE_NAME, c.hudSizeText());
+        this._setEnabled(HUD_SIZE_NAME, c.canChangeHudSize());
     }
 
     _renderLogs() {
@@ -562,6 +579,7 @@ class WazeClusterApp extends OnlineApp {
                 /* gone already */
             }
         }
+        this._profiles.stop();
         this._shutdownPromise = Promise.resolve()
             .then(() => this.destroyBundles().catch((err) =>
                 logger.info(`destroyBundles: ${err && err.message}`)))

@@ -35,11 +35,17 @@
 #include <string>
 #include <vector>
 
+#include "atlas_scale.h"
 #include "cluster_render/client.h"
 #include "freeze_watch.h"
 #include "map_rect.h"
+#include "map_geometry.h"
 
 namespace woc {
+
+/* The HUD map's widest size, % of the HUD's width: wider is cut off at its
+ * edges. A larger hud_width_pct is held to it. */
+const unsigned kHudMaxPct = 85;
 
 struct FeedConfig {
     std::string socket = "/dev/shm/cluster-render/render.sock";
@@ -47,6 +53,19 @@ struct FeedConfig {
     cr::VideoOptions video;   /* w and h are the decoded frame's */
     MapRect rect;             /* where in the target; unset: the map area */
     bool guide_hold = true;   /* the layer's guide_hold: BMW's turn box hidden while the map shows */
+    /* On the HUD: the map's width in percent of the HUD's (its height follows
+     * the picture's shape, at most the HUD's), centred. 0: the kit's fitted
+     * box (about 57 %). */
+    unsigned hud_width_pct = 0;
+    /* A target shown smaller than the decoded frame (the HUD) gets the frame
+     * scaled on the head unit to the size it is shown at (atlas_scale.h),
+     * at most video.fps a second, rounded to these level bits. */
+    bool scale_down = true;
+    unsigned scaled_level_bits = 2;
+    /* the HUD map's corners rounded (a twelfth of its height, at least 6 px) */
+    bool hud_round_corners = true;
+    /* the HUD map's dark background made black (see-through on a HUD) */
+    bool hud_black_background = true;
 };
 
 /* The status the Waze app shows (its render socket's "status" event), with
@@ -61,6 +80,7 @@ struct FeedStatus {
     std::string upload_reason;
     bool guide_hold = true;
     bool guide_disabled = false;   /* cluster-render's guard keeps the turn box's hold off */
+    unsigned hud_width_pct = 0;   /* the HUD map's size setting (0: the default) */
 };
 
 /* Whether a status is worth a log line: its state, reason or target differs
@@ -94,6 +114,12 @@ public:
     bool set_target(const std::string &name);
     /* The layer's guide_hold from now on. */
     void set_guide_hold(bool hold);
+    const std::string &target() const { return cfg_.target; }
+    /* The HUD map's size (FeedConfig::hud_width_pct), applied at once to a
+     * map on the HUD. */
+    void set_hud_width(unsigned pct);
+    /* Whether the renderer has target `name` (true until connected). */
+    bool knows(const std::string &name) const;
 
     int fd() const { return client_.fd(); }
     bool wants_write() const { return client_.wants_write(); }
@@ -120,6 +146,10 @@ public:
 
 private:
     void make_layer();
+    /* The newest frame waiting to be scaled, scaled and handed over once
+     * the frame rate allows (offer and poll). */
+    void send_pending(int64_t now_ms);
+    crk::QuadRect quad(uint32_t tw, uint32_t th) const;
     void count_second(int64_t now_ms);
 
     FeedConfig cfg_;
@@ -130,7 +160,7 @@ private:
     Picture picture_ = Picture::None;
     const char *stream_line_ = nullptr;   /* the stream's state as last logged */
     std::string layer_state_ = "stalled", layer_reason_;
-    std::string target_state_, holder_;
+    std::string target_state_, holder_, target_reason_;
     unsigned cap_kb_ = 0, max_kb_ = 0;
     std::string budget_reason_, refused_, report_;
     bool connected_ = false, status_asked_ = false;
@@ -140,6 +170,11 @@ private:
     bool down_long_ = false;
     int64_t second_ms_ = 0;
     int frames_ = 0, rate_ = 0;
+    AtlasScaler scaler_;
+    bool scaling_ = false, pending_ready_ = false;
+    std::vector<uint8_t> pending_, scaled_;
+    uint64_t pending_id_ = 0;
+    int64_t next_send_ms_ = 0;
 };
 
 }  // namespace woc

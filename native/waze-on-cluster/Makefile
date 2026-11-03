@@ -46,7 +46,7 @@ VERSION := $(shell sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' component.json)
 
 # The capture, decode and map feed (own files), the kit's atlas, packing and
 # geometry, and the shared renderer's client.
-WOC_SRC = src/main.cpp src/refused.cpp src/video_producer.cpp src/freeze_watch.cpp src/alt_screen.cpp src/map_feed.cpp src/control.cpp src/h264_source.cpp \
+WOC_SRC = src/main.cpp src/refused.cpp src/video_producer.cpp src/freeze_watch.cpp src/alt_screen.cpp src/map_feed.cpp src/map_feeds.cpp src/atlas_scale.cpp src/control.cpp src/h264_source.cpp \
           src/guide_setting.cpp \
           src/udp_source.cpp src/avb_source.cpp src/framing_probe.cpp src/rtp_h264.cpp \
           src/decoder_msdk.cpp src/nal_reader.cpp src/stream_health.cpp $(KIT)/map_geometry.cpp $(KIT)/yuv_atlas.cpp \
@@ -60,7 +60,7 @@ CPP_TESTS = $(BUILD)/host/nal_reader_test $(BUILD)/host/rtp_h264_test $(BUILD)/h
 		$(BUILD)/host/map_feed_test $(BUILD)/host/keyframe_wait_test $(BUILD)/host/freeze_watch_test \
 		$(BUILD)/host/alt_screen_test $(BUILD)/host/packet_queue_test $(BUILD)/host/backlog_test \
 		$(BUILD)/host/stream_health_test $(BUILD)/host/source_crop_test \
-		$(BUILD)/host/map_rect_test $(BUILD)/host/guide_setting_test
+		$(BUILD)/host/map_rect_test $(BUILD)/host/guide_setting_test $(BUILD)/host/atlas_scale_test
 # The control socket is Linux's (accept4): built and run on Linux only (make test-x86).
 LINUX_TESTS = $(if $(filter Linux,$(shell uname -s)),$(BUILD)/host/refused_test)
 CPP_TESTS += $(LINUX_TESTS)
@@ -83,6 +83,8 @@ test-node:
 	$(NODE) patch/test/patch_test.js
 	$(NODE) patch/test/patchd_patch_test.js
 	$(NODE) patch/test/patchd_activate_test.js
+	$(NODE) patch/test/patchd_target_test.js
+	$(NODE) patch/test/patchd_profile_test.js
 	$(NODE) patch/test/patchd_dlt_test.js
 	$(NODE) patch/test/patchd_reboot_test.js
 	$(NODE) patch/test/dlt_capture_test.js
@@ -108,6 +110,7 @@ test-cpp: $(CPP_TESTS)
 	$(BUILD)/host/source_crop_test
 	$(BUILD)/host/map_rect_test
 	$(BUILD)/host/guide_setting_test
+	$(BUILD)/host/atlas_scale_test
 	$(if $(LINUX_TESTS),$(LINUX_TESTS),@echo 'refused_test: Linux only (make test-x86)')
 	$(MAKE) -C $(CR) test-kit BUILD=$(abspath $(BUILD))/kit
 
@@ -154,7 +157,7 @@ CR_CORE = $(filter-out $(addprefix $(CR)/src/,main.cpp graph_ramses19.cpp dcsm2_
 # Each of its sources compiles once, with its header dependencies.
 MF       = $(BUILD)/host/map_feed
 MF_FLAGS = $(CXXFLAGS) -Isrc -I$(KIT) -I$(CR)/include -I$(CR) -I$(CR)/src -isystem $(CR)/dcsm/third_party/vsomeip/interface
-MF_SRC   = test/map_feed_test.cpp src/map_feed.cpp src/freeze_watch.cpp $(filter-out $(CR)/client/protocol.cpp,$(CR_CORE)) $(CR_SRC) \
+MF_SRC   = test/map_feed_test.cpp src/map_feed.cpp src/map_feeds.cpp src/atlas_scale.cpp src/freeze_watch.cpp $(filter-out $(CR)/client/protocol.cpp,$(CR_CORE)) $(CR_SRC) \
            $(CR)/src/log.cpp
 
 # objects of sources in this tree under <dir>/, of the shared renderer's under <dir>/cr/
@@ -261,3 +264,7 @@ $(T)/waze-on-cluster: $(call objs,$(SRC),$(T)/obj) $(STUBS)
 
 clean:
 	rm -rf $(BUILD)
+
+$(BUILD)/host/atlas_scale_test: test/atlas_scale_test.cpp src/atlas_scale.cpp src/atlas_scale.h $(KIT)/yuv_atlas.cpp $(KIT)/yuv_atlas.h
+	mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -Isrc -I$(KIT) -o $@ test/atlas_scale_test.cpp src/atlas_scale.cpp $(KIT)/yuv_atlas.cpp

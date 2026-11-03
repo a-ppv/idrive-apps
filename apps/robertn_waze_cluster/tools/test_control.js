@@ -302,6 +302,57 @@ test('the turn card checkbox: the asked card until its change ends; the one on d
     c.close();
 });
 
+test('Show map on switches Cluster and HUD: the render moves, patchd saves it', async (render, patch) => {
+    const c = control();
+    c.open();
+    await until('connected', () => c.connectedRender() && c.connectedPatch());
+    render.stream(true);
+    await until('showing on the cluster', () => c.renderStatus && c.renderStatus.state === 'showing' &&
+        c.displayText() === 'Show map on: Cluster');
+    assert(c.canChangeDisplay());
+    c.cycleDisplay();
+    assert.strictEqual(c.displayText(), 'Show map on: HUD', 'shown at once, before the render answers');
+    await until('render on the HUD', () => render.target === 'hud' && c.renderStatus.target === 'hud');
+    c.cycleDisplay();
+    await until('back to the cluster', () => render.target === 'map' && c.displayText() === 'Show map on: Cluster');
+    assert.deepStrictEqual(render.received.map((m) => m.target), ['hud', 'map']);
+    await until('saved', () => patch.received.filter((m) => m.cmd === 'target').length === 2);
+    assert.deepStrictEqual(patch.received.filter((m) => m.cmd === 'target').map((m) => m.target), ['hud', 'map']);
+    /* an older saved choice of both: shown as the cluster, the next press picks the HUD alone */
+    render._set(render.state, 'map+hud', render.page, render.reason);
+    await until('both reads as the cluster', () => c.renderStatus.target === 'map+hud' && c.displayText() === 'Show map on: Cluster');
+    c.cycleDisplay();
+    await until('then the HUD alone', () => render.target === 'hud');
+    c.close();
+    assert(!c.canChangeDisplay(), 'no change while the render is not connected');
+});
+
+test('HUD map size steps Standard, 70, 85, 40 only while the map is on the HUD', async (render, patch) => {
+    const c = control();
+    c.open();
+    await until('connected', () => c.connectedRender() && c.connectedPatch());
+    render.stream(true);
+    await until('showing on the cluster', () => c.renderStatus && c.renderStatus.state === 'showing');
+    assert.strictEqual(c.hudSizeText(), 'HUD map size: Standard');
+    assert(!c.canChangeHudSize(), 'not while the map is only on the cluster');
+    c.cycleHudSize();
+    assert(!render.received.some((m) => m.cmd === 'hud'), 'nothing sent while not on the HUD');
+    c.cycleDisplay();
+    await until('on the HUD', () => render.target === 'hud' && c.canChangeHudSize());
+    const seen = [];
+    for (let i = 0; i < 4; i++) {
+        c.cycleHudSize();
+        seen.push(c.hudSizeText());
+        const want = [70, 85, 40, 0][i];
+        await until(`render at ${want}`, () => render.hudWidth === want && c.renderStatus.hud_width_pct === want);
+    }
+    assert.deepStrictEqual(seen, ['HUD map size: 70 %', 'HUD map size: 85 %',
+        'HUD map size: 40 %', 'HUD map size: Standard']);
+    await until('saved', () => patch.received.filter((m) => m.cmd === 'hud-size').length === 4);
+    assert.deepStrictEqual(patch.received.filter((m) => m.cmd === 'hud-size').map((m) => m.hud_width_pct), [70, 85, 40, 0]);
+    c.close();
+});
+
 test('a page opened while the map is up reads it, again after closing', async (render, patch) => {
     patch.res = SIZE;
     patch.safe = SAFE;

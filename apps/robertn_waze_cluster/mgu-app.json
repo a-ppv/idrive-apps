@@ -10,7 +10,8 @@
     "src/waze_cluster_control.js",
     "src/logs_control.js",
     "src/qr.js",
-    "src/qrcodegen.js"
+    "src/qrcodegen.js",
+    "src/profile_sync.js"
   ],
   "sdk": [
     "oap-sdk/src/core/OnlineApp.js",

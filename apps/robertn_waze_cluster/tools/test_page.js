@@ -218,7 +218,8 @@ async function main() {
         'wocHeadCarPlay CarPlay', 'wocStatus Status: Connecting…', 'wocEnable Patch', 'wocDisable Remove patch',
         'wocHeadAa Android Auto', 'wocAaStatus Status: Connecting…', 'wocAaEnable Patch', 'wocAaDisable Remove patch',
         'wocAaZoom Zoom: —', 'wocAaZoomOut Zoom out', 'wocAaZoomIn Zoom in', "wocAaCard Hide phone's turn card",
-        'wocHeadGeneral General', 'wocMap Cluster map: Off', "wocGuide Hide BMW's turn box", 'wocLogs Logs', 'wocRestart Restart head unit',
+        'wocHeadGeneral General', 'wocMap Cluster map: Off', "wocGuide Hide BMW's turn box",
+        'wocDisplay Show map on: \u2026', 'wocHudSize HUD map size: \u2026', 'wocLogs Logs', 'wocRestart Restart head unit',
         'wocRestartStatus '],
         'the main page: three sections, in order');
     assert.deepStrictEqual(xmlIds('1').map(([id, type]) => `${id} ${type}`).sort(),
@@ -267,8 +268,8 @@ async function main() {
         await until('page shows the map', () => byName.wocMap.text === `Cluster map: Showing ${RENDER_PAGE} — ${RENDER_FPS}` && status.text === 'Status: Patched');
         assert(!logs.some((l) => /^error/.test(l)), logs.filter((l) => /^error/.test(l)).join('\n'));
         const bound = logs.filter((l) => l.startsWith('info: BIND OK: ')).map((l) => l.split(' ')[3]).sort();
-        assert.deepStrictEqual(bound, ['wocAaCard', 'wocAaDisable', 'wocAaEnable', 'wocAaZoomIn', 'wocAaZoomOut', 'wocCapture', 'wocDisable', 'wocEnable',
-            'wocGuide', 'wocLogs', 'wocLogsSave', 'wocRestart'], 'bound buttons and checkbox');
+        assert.deepStrictEqual(bound, ['wocAaCard', 'wocAaDisable', 'wocAaEnable', 'wocAaZoomIn', 'wocAaZoomOut', 'wocCapture', 'wocDisable', 'wocDisplay', 'wocEnable',
+            'wocGuide', 'wocHudSize', 'wocLogs', 'wocLogsSave', 'wocRestart'], 'bound buttons and checkbox');
         assert.strictEqual(byName.wocRestart.visible, false, 'restart button hidden while the map shows');
         console.log('ok   a page opened while the map is up shows it');
 
@@ -345,7 +346,8 @@ async function main() {
         console.log('ok   held off by the cluster renderer: greyed and unticked, its label kept, presses send nothing');
 
         byName.ST_OnlineApps_WazeCluster.emit('visible', { visible: false });
-        await until('sockets closed', () => render._clients.size === 0 && patch._clients.size === 0);
+        /* the page's own; the driver-profile link to patchd stays (profile_sync.js) */
+        await until('sockets closed', () => render._clients.size === 0 && patch._clients.size === 1);
         console.log('ok   hiding the page closes both sockets');
 
         render.stream(false);
@@ -365,7 +367,7 @@ async function main() {
 
         /* Before the head-unit start that starts the daemon: from the marker. */
         byName.ST_OnlineApps_WazeCluster.emit('visible', { visible: false });
-        await until('closed', () => patch._clients.size === 0);
+        await until('closed', () => patch._clients.size === 1);
         await patch.close();
         fs.writeFileSync(PENDING, JSON.stringify({ action: 'apply' }) + '\n');
         byName.ST_OnlineApps_WazeCluster.emit('visible', { visible: true });

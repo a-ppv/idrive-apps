@@ -147,6 +147,7 @@ jobs:
       - run: node apps/robertn_waze_cluster/tools/test_control.js
       - run: node apps/robertn_waze_cluster/tools/test_page.js
       - run: node apps/robertn_waze_cluster/tools/test_i18n.js
+      - run: node apps/robertn_waze_cluster/tools/test_profiles.js
 
   waze-on-cluster-x86:
     needs: changes

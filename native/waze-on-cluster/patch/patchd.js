@@ -38,6 +38,22 @@
  *                                   reboot-reply carries ok/reason.
  *                  {"cmd":"logs"}   carplay + marker + avb log lines, dlt-receive health, patchd log
  *                                   (to the asker, read-only)
+ *                  {"cmd":"target","target":"map"|"hud"}
+ *                                   where the map goes from the next start of the
+ *                                   render on: written as "target = ..." into
+ *                                   waze-on-cluster.local.conf (the app moves the
+ *                                   running render itself with its start command).
+ *                                   target-reply carries ok/target/reason
+ *                  {"cmd":"profile","id":"<user account>"}
+ *                                   the driver profile now: profile-reply carries
+ *                                   ok/id/known/target/hud_width_pct, that
+ *                                   profile's saved choice (saved as the next
+ *                                   start's too) or, first seen, the current one;
+ *                                   target and hud-size are kept per profile
+ *                  {"cmd":"hud-size","hud_width_pct":0|20..85}
+ *                                   the HUD map's size, saved the same way as
+ *                                   "hud_width_pct = ..." (0: the default box);
+ *                                   hud-size-reply carries ok/hud_width_pct/reason
  *                  {"cmd":"capture-start"|"capture-stop"|"capture-status"}
  *                                   (capture-reply to the asker; every client gets
  *                                   ev capture, also once a second)
@@ -118,6 +134,7 @@ var FIFO = process.env.WOC_FIFO || '/run/waze-on-cluster/alt.h264';
 /* The local UDP sink for udp mode. Must match the render's udp_port
  * (waze-on-cluster.conf); the render listens on 127.0.0.1:UDP_PORT. */
 var UDP_PORT = process.env.WOC_UDP_PORT || '20557';
+var HUD_MAX_PCT = 85;   /* the widest HUD map size: wider is cut off at the HUD's edges */
 var SOCK = process.env.WOC_PATCH_SOCK || '/dev/shm/waze-on-cluster/patch.sock';
 var SOCK_GROUP = process.env.WOC_PATCH_GROUP || 'tm_oap_app';
 var MOUNT = process.env.WOC_MOUNT || '/bin/mount';
@@ -185,6 +202,62 @@ var REBOOT_CMD = (process.env.WOC_REBOOT_CMD || '/usr/bin/nsm_control --requestR
 var REBOOT_CMD_TIMEOUT_MS = 30000;
 /* A restart NSM took that has not taken the unit down by then failed. */
 var REBOOT_WAIT_MS = parseInt(process.env.WOC_REBOOT_WAIT_MS, 10) || 180000;
+/* The unit's own render settings, which updates keep: the display choice
+ * (Cluster, HUD, both) is saved there as the render's "target". */
+var LOCAL_CONF = process.env.WOC_LOCAL_CONF || '/var/opt/waze-on-cluster/waze-on-cluster.local.conf';
+/* one or the other: the cluster or the HUD */
+var DISPLAY_TARGETS = ['map', 'hud'];
+/* The display choice and HUD map size per driver profile (the app reports the
+ * head unit's current user account): { "<account>": { target, hud_width_pct } }.
+ * Each change of either is kept for the profile current at the time; a
+ * profile seen again gets its own back. */
+var PROFILES_FILE = process.env.WOC_PROFILES || path.join(path.dirname(LOCAL_CONF), 'profiles.json');
+var currentProfile = null;
+
+/* Writes key = value into the local conf, replacing any line of that key;
+ * the other lines stay as they are. Atomic: a temporary file renamed over it. */
+function saveSetting(key, value, done) {
+    var lines = [];
+    try { lines = fs.readFileSync(LOCAL_CONF, 'utf8').split('\n'); } catch (e) { if (e.code !== 'ENOENT') { done(e); return; } }
+    var re = new RegExp('^\\s*' + key + '\\s*=');
+    lines = lines.filter(function (l) { return !re.test(l); });
+    while (lines.length && lines[lines.length - 1] === '') lines.pop();
+    lines.push(key + ' = ' + value);
+    var tmp = LOCAL_CONF + '.tmp';
+    try {
+        fs.writeFileSync(tmp, lines.join('\n') + '\n', { mode: 420 });
+        fs.renameSync(tmp, LOCAL_CONF);
+    } catch (e) { done(e); return; }
+    done(null);
+}
+/* The local conf's value of key, or undefined. */
+function readSetting(key) {
+    var text = '';
+    try { text = fs.readFileSync(LOCAL_CONF, 'utf8'); } catch (e) { return undefined; }
+    var m = new RegExp('^\\s*' + key + '\\s*=\\s*(\\S*)\\s*$', 'm').exec(text);
+    return m ? m[1] : undefined;
+}
+function readProfiles() {
+    try { var p = JSON.parse(fs.readFileSync(PROFILES_FILE, 'utf8')); return p && typeof p === 'object' ? p : {}; } catch (e) { return {}; }
+}
+function writeProfiles(p) {
+    var tmp = PROFILES_FILE + '.tmp';
+    try { fs.writeFileSync(tmp, JSON.stringify(p) + '\n', { mode: 420 }); fs.renameSync(tmp, PROFILES_FILE); } catch (e) { log('saving the profiles failed: ' + e.message); }
+}
+/* The current settings, as the render starts with them. */
+function currentSettings() {
+    var t = readSetting('target'), pct = Number(readSetting('hud_width_pct'));
+    return { target: DISPLAY_TARGETS.indexOf(t) >= 0 ? t : 'map', hud_width_pct: isFinite(pct) ? Math.min(pct, HUD_MAX_PCT) : 0 };
+}
+/* A change of key kept for the current profile too. */
+function rememberForProfile(key, value) {
+    if (!currentProfile) return;
+    var p = readProfiles();
+    var e = p[currentProfile] || currentSettings();
+    e[key] = value;
+    p[currentProfile] = e;
+    writeProfiles(p);
+}
 var statusInFlight = false;  /* coalesce the carplay_patch status spawns */
 var MAX_LINE = 64 * 1024;    /* drop a client that floods without a newline */
 
@@ -1231,6 +1304,64 @@ function handle(line, sock) {
         captureCommand(msg.cmd.slice(8), function (state) {
             reply(sock, { ev: 'capture-reply', capture: state });
             send({ ev: 'capture', capture: state });
+        });
+        return;
+    }
+    if (msg.cmd === 'target') {
+        /* Only a known display choice, and only the target line: the render
+         * reads it at its next start. Not an operation on carplay, so it is
+         * not held back by one. */
+        var t = String(msg.target || '');
+        if (DISPLAY_TARGETS.indexOf(t) < 0) {
+            try { sock.write(JSON.stringify({ ev: 'target-reply', ok: false, reason: 'unknown target ' + t }) + '\n'); } catch (e) {}
+            return;
+        }
+        saveSetting('target', t, function (err) {
+            if (!err) rememberForProfile('target', t);
+            if (err) log('saving the display choice failed: ' + err.message);
+            else log('display: ' + t + ' (saved for the next start)');
+            try { sock.write(JSON.stringify({ ev: 'target-reply', ok: !err, target: t, reason: err ? err.message : undefined }) + '\n'); } catch (e) {}
+        });
+        return;
+    }
+    if (msg.cmd === 'profile') {
+        /* The driver profile now (the app reads the head unit's current user
+         * account). A profile with saved settings gets them back: saved for
+         * the render's next start, and in the reply for the app to apply now.
+         * One seen for the first time keeps the current settings as its own. */
+        var id = String(msg.id || '').slice(0, 200);
+        if (!id) {
+            try { sock.write(JSON.stringify({ ev: 'profile-reply', ok: false, reason: 'no profile id' }) + '\n'); } catch (e) {}
+            return;
+        }
+        var profiles = readProfiles(), cur = currentSettings(), saved = profiles[id];
+        var changed = id !== currentProfile;
+        currentProfile = id;
+        var want = cur;
+        if (saved && DISPLAY_TARGETS.indexOf(saved.target) >= 0) {
+            want = { target: saved.target, hud_width_pct: Math.min(Number(saved.hud_width_pct) || 0, HUD_MAX_PCT) };
+            if (want.target !== cur.target) saveSetting('target', want.target, function () {});
+            if (want.hud_width_pct !== cur.hud_width_pct) saveSetting('hud_width_pct', String(want.hud_width_pct), function () {});
+        } else {
+            profiles[id] = cur;
+            writeProfiles(profiles);
+        }
+        if (changed) log('driver profile ' + id + ': ' + want.target + (want.target === 'hud' ? ', HUD map ' + (want.hud_width_pct || 'standard') + (want.hud_width_pct ? ' %' : '') : '') + (saved ? '' : ' (first seen: the current settings kept for it)'));
+        try { sock.write(JSON.stringify({ ev: 'profile-reply', ok: true, id: id, known: !!saved, target: want.target, hud_width_pct: want.hud_width_pct }) + '\n'); } catch (e) {}
+        return;
+    }
+    if (msg.cmd === 'hud-size') {
+        var pct = Number(msg.hud_width_pct);
+        if (!(pct === 0 || (pct >= 20 && pct <= 100 && pct === Math.floor(pct)))) {
+            try { sock.write(JSON.stringify({ ev: 'hud-size-reply', ok: false, reason: 'HUD width must be 0 or 20-85 %' }) + '\n'); } catch (e) {}
+            return;
+        }
+        if (pct > HUD_MAX_PCT) pct = HUD_MAX_PCT;   /* the widest the HUD shows whole (an older app asks for 100) */
+        saveSetting('hud_width_pct', String(pct), function (err) {
+            if (!err) rememberForProfile('hud_width_pct', pct);
+            if (err) log('saving the HUD map size failed: ' + err.message);
+            else log('HUD map size: ' + (pct ? pct + ' %' : 'default') + ' (saved for the next start)');
+            try { sock.write(JSON.stringify({ ev: 'hud-size-reply', ok: !err, hud_width_pct: pct, reason: err ? err.message : undefined }) + '\n'); } catch (e) {}
         });
         return;
     }

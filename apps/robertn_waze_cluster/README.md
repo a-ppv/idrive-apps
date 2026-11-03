@@ -58,6 +58,15 @@ names those languages) and its words, each keyed by the English (`{0}`,
 the RHMI text files, which hold the tile's name and the Logs page's title.
 `node tools/test_i18n.js` checks that every language has every word with
 the same `{n}`, and every HMI language its text file.
+## HUD
+
+Contributed by [eroobeeroo](https://github.com/eroobeeroo): the map (Waze or
+Google Maps) on the head-up display instead of the cluster. **Show map on**
+switches between them. On the HUD the frames are scaled on the head unit to
+the size shown, the corners are rounded and a night map's background is made
+black, which the HUD shows as nothing, so the roads, route and labels float
+in view. The map steps aside while the HUD's media and list pop-ups show. The
+choice and the HUD map size are kept for each driver profile.
 
 ## The page
 

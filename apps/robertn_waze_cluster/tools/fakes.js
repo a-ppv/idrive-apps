@@ -139,7 +139,8 @@ class FakeRender extends LineServer {
     }
 
     _status() {
-        const s = { ev: 'status', state: this.state, target: this.target, page: this.page, reason: this.reason };
+        const s = { ev: 'status', state: this.state, target: this.target, page: this.page, reason: this.reason,
+            hud_width_pct: this.hudWidth || 0 };
         if (this.hide !== null) {
             s.hide_bmw_guidance = this.hide;
             s.guide_disabled = this.guideDisabled;
@@ -170,6 +171,14 @@ class FakeRender extends LineServer {
         this.log(`control: ${JSON.stringify(msg)}`);
         if (msg.cmd === 'guide' && this.hide !== null && (msg.hide === 0 || msg.hide === 1)) {
             this.hide = msg.hide;
+            this._broadcast(this._status());
+        }
+        /* start moves the map: the next status carries the new target */
+        if (msg.cmd === 'start' && msg.target) {
+            this._set(this.state, msg.target, this.page, this.reason);
+        }
+        if (msg.cmd === 'hud') {
+            this.hudWidth = Number(msg.hud_width_pct);
             this._broadcast(this._status());
         }
     }
