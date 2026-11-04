@@ -10,6 +10,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <cerrno>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -65,6 +66,14 @@ int main()
     const std::string dir = tmpl;
     sock = dir + "/ctl.sock";
     const std::string why = "head unit: unknown variant is not supported (no hwvariant= on the kernel command line)";
+    /* The cluster renderer's socket, with the HUD on: nothing may reach it. */
+    const std::string render = dir + "/render.sock";
+    const int rfd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    struct sockaddr_un raddr;
+    std::memset(&raddr, 0, sizeof raddr);
+    raddr.sun_family = AF_UNIX;
+    std::snprintf(raddr.sun_path, sizeof raddr.sun_path, "%s", render.c_str());
+    const bool listening = bind(rfd, (struct sockaddr *)&raddr, sizeof raddr) == 0 && listen(rfd, 4) == 0;
     const pid_t pid = fork();
     if (pid == 0) {
         cld::Config cfg;
@@ -75,6 +84,8 @@ int main()
         cfg.set_pair(("fifo_path=" + dir + "/alt.h264").c_str(), &err);
         cfg.set_pair(("socket_path=" + sock).c_str(), &err);
         cfg.set_pair("socket_group=", &err);
+        cfg.set_pair(("render_socket=" + render).c_str(), &err);
+        cfg.set_pair("hud=1", &err);
         _exit(serve_refused(cfg, why));
     }
 
@@ -86,8 +97,9 @@ int main()
        parse_flat_json(refused_status(why), &st) && st["state"] == "unsupported" &&
            st["reason"] == "Unavailable" && st["refused"] == "not supported on this car (head unit: unknown variant is not supported (no hwvariant= on the kernel command line))" &&
            st["guide_disabled"] == "1" &&
-           !st.count("hide_bmw_guidance"));
-    const std::string guide = "{\"cmd\":\"guide\",\"hide\":0}\n{\"cmd\":\"start\",\"target\":\"map\"}\n";
+           !st.count("hide_bmw_guidance") && !st.count("hud"));
+    const std::string guide = "{\"cmd\":\"guide\",\"hide\":0}\n{\"cmd\":\"start\",\"target\":\"map\"}\n"
+                              "{\"cmd\":\"hud\",\"on\":\"1\"}\n";
     ok("commands are taken without an answer", write(owner, guide.data(), guide.size()) == (ssize_t)guide.size() &&
        hear(owner).empty());
     const int second = connect_to();
@@ -100,6 +112,9 @@ int main()
     const int again = connect_to();
     ok("the next owner gets the status too", hear(again) == refused_status(why) + "\n");
     close(again);
+    ok("with the HUD on and asked for, nothing connects to the cluster renderer",
+       listening && accept(rfd, nullptr, nullptr) < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+    close(rfd);
     int code = -1;
     ok("still up", waitpid(pid, &code, WNOHANG) == 0);
     kill(pid, SIGTERM);

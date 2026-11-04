@@ -35,7 +35,7 @@ a video pipeline:
 Install the app `robertn_waze_cluster` from the catalog of
 [idrive-apps](https://github.com/robertnisipeanu/idrive-apps)
 through the [mgu Store](https://github.com/robertnisipeanu/mgu-store). The
-app requires this tool (0.8.5); this tool requires `cluster-render` 0.3.10 and
+app requires this tool (0.9.0); this tool requires `cluster-render` 0.4.0 and
 `mgu-deploy` 0.7.11, the deploy tool version that runs activate and deactivate
 hooks and puts the tool's `recmgr` and `crashNames` names, `aapd` among
 them, on the lists. Requirements resolve across catalog sources.
@@ -295,48 +295,67 @@ the render decodes through a lost packet:
   since 12:40:50`) and in `probe.txt`. A status line whose only change is
   the stream's reason is logged at most once every 10 s.
 
-**Cluster or HUD** (contributed by [eroobeeroo](https://github.com/eroobeeroo)). The app's **Show map on** button switches the map
-between the cluster (`map`) and the HUD (`hud`); from a shell the tool can
-still show both at once (`map+hud`):
-the render moves it at once and `patchd` saves the choice as `target` in
-`waze-on-cluster.local.conf` for the next start. With both, each target is
-its own layer and slot on the renderer (`src/map_feeds.*`), the HUD's map
-fitted into its 800x480 scene, within the one shared upload budget. The HUD map's size (`hud_width_pct`): Standard (0, the fitted box,
-about 57 % of the HUD's width, 453x200), 70 %, 85 % (680x300, the widest:
-wider is cut off at the HUD's edges, and a larger saved size is held to it)
-or anything from 30 % up, the picture's shape kept; the app's **HUD map
-larger / smaller** buttons step it by 5 % at once and `patchd` saves it.
-Where it sits (`hud_offset_x`, `hud_offset_y`): pixels of the HUD's scene
-moved from the centre (+x right, +y down), held so the map stays whole inside
-the HUD; the app's **Move HUD map** buttons move it 10 px a press and **Centre
-HUD map** puts it back. A move only changes the layer's place (no new texture),
-so it shows at once. Control: `{"cmd":"hud","hud_width_pct":"70"}`,
-`{"cmd":"hud","hud_x":"40","hud_y":"-20"}` (strings; an axis left out stays). The HUD's frame is scaled
-on the head unit to the size it is shown at (`src/atlas_scale.*`, area
-averaging, `hud_scale_down`), at most `target_fps` frames a second: 135,600 B
-a frame at the standard size instead of 783,360, so the frames go exact
-rather than packed within the shared budget. The HUD map steps aside while
-the HUD's media and list pop-ups show (cluster-render `hud_yield_slots`), and
-the app says so. On a HUD dark pixels are see-through, so a night-mode map reads best.
-The HUD map's corners are rounded (`hud_round_corners`, a twelfth of its
-height): they fade to black on the scaled frame, which the HUD shows as nothing.
-A night map's background is made black too (`hud_black_background`): the
-frame's most common shade, followed frame to frame, and the shades just above
-it fade to black, so the HUD shows the roads, route and labels without Waze's
-grey-blue field; a day map (light background) is left as it is.
-Green is never made black (parks are about as dark as the night field), and green
-doesn't count towards the background, so a park filling the frame can't become it.
+**The HUD (experimental)** (contributed by [eroobeeroo](https://github.com/eroobeeroo)
+and [wesleyredhat](https://github.com/wesleyredhat)). The map is always on the
+cluster. With `hud = 1` (the app's **Render in HUD (experimental)**
+checkbox, off by default) a small copy of it goes to the HUD too:
+cluster-render's `hud` target, slot 0x323 (`src/map_feeds.*`).
 
-**Per driver profile.** The app reads the head unit's current user account
-every 5 s (SOME/IP `SessionManager.currentUserAccountReference`) and tells
-`patchd` (`{"cmd":"profile","id"}`); `patchd` keeps the display choice and
-HUD size and position per profile in `profiles.json` next to the local conf, records each
-change for the profile current then, and gives a profile seen again its own
-back (saved for the next start, and applied to the running render by the
-app). A profile seen for the first time keeps what is set.
+- **Off costs nothing.** With the HUD off there is no HUD connection to the
+  renderer, no layer, no worker thread and no copy, so nothing HUD-related
+  is asked of the KOMBI.
+- **The cluster first.** The cluster's frame goes to the renderer first,
+  without a copy; once it is handed to the socket, the HUD's feed gets a
+  copy of it (`cr::Client::frame`). A worker thread at a lower
+  priority scales it to the size it is shown at (`src/atlas_scale.*`, area
+  averaging, `hud_scale_down`), at most `hud_fps` (10) frames a second, the
+  newest each time; while the map stands still the same frame is not scaled
+  again, its last scaled frame goes again; the main loop only copies and
+  hands over, so the
+  cluster's frames never wait for the HUD's. The copy goes no further than
+  the cluster's map: one decode, one capture. cluster-render writes the
+  HUD's frames, in changed tiles and never packed (a frame the budget
+  cannot cover waits for the next), only from the upload budget the cluster's
+  map leaves unused (its README.md "The HUD"): a map moving at the cap
+  leaves the HUD nothing, and the cluster's map writes byte for byte as with
+  the HUD off.
+- **Size** (`hud_width_pct`): Standard (0, the fitted box, about 57 % of the
+  HUD's width, 453x200), or 30 % to 85 % (680x300, the widest: wider is cut
+  off at the HUD's edges, and a larger saved size is held to it), the
+  picture's shape kept; the app's **Smaller** and **Larger** step it by 5 %.
+  A new size is a new layer at that size.
+- **Position** (`hud_offset_x`, `hud_offset_y`): pixels of the HUD's scene
+  moved from the centre (+x right, +y down), held so the map stays whole
+  inside the HUD (the status then reports the offset as far as it goes); the
+  app's **Move left**, **Move right**, **Move up** and **Move down** move it
+  10 px a press and **Centre** puts it back. A move only changes the layer's
+  place, so it shows at once.
+- **Made for a HUD.** At the standard size a frame is 135,600 B instead of
+  783,360. On a HUD dark pixels are see-through: the corners are rounded
+  (`hud_round_corners`, a twelfth of its height) and fade to black, and a
+  night map's background is made black (`hud_black_background`): the
+  frame's most common shade, followed frame to frame, and the shades just
+  above it, so the HUD shows the roads, route and labels without Waze's
+  grey-blue field; a day map (light background) is left as it is. Green is
+  never made black, and does not count towards the background.
+- **It gives way.** The HUD map steps aside while the HUD's media and list
+  pop-ups show (cluster-render `hud_yield_slots`), and never takes the HUD
+  from BMW's own content.
+- **Disabled after errors.** cluster-render's mapping guard turns the HUD
+  off after two cluster restarts within 10 s of its mapping; the status
+  says `hud_state` `disabled`, the app shows `HUD map: Disabled after
+  errors`, and its frames are no longer copied or scaled. The cluster's map
+  is not affected. Turning the checkbox off and on does not undo it; as
+  root, `cluster-render guard-reset` does.
+- Not with `target = panel`, which shares the HUD's scene id.
+- The settings are saved by `patchd` in `waze-on-cluster.local.conf` for the
+  next start, and the app changes the running render at once. Control:
+  `{"cmd":"hud","on":"1"}`, `{"cmd":"hud","hud_width_pct":"70"}`,
+  `{"cmd":"hud","hud_x":"40","hud_y":"-20"}` (strings; an axis left out
+  stays).
 
-From a shell, `waze-on-cluster -c <conf> run map|panel|hud|map+hud` (`sail` is an
-alias of `map`) sets the target until the service restarts and prints the
+From a shell, `waze-on-cluster -c <conf> run map|panel` (`sail` is an alias
+of `map`) sets the cluster target until the service restarts and prints the
 status.
 
 ## Status and diagnostics

@@ -61,8 +61,9 @@ struct FeedConfig {
      * pixels (+x right, +y down), held inside the HUD's scene. */
     int hud_offset_x = 0, hud_offset_y = 0;
     /* A target shown smaller than the decoded frame (the HUD) gets the frame
-     * scaled on the head unit to the size it is shown at (atlas_scale.h),
-     * at most video.fps a second, rounded to these level bits. */
+     * scaled on the head unit to the size it is shown at (atlas_scale.h), on
+     * a worker thread, at most video.fps a second, rounded to these level
+     * bits. */
     bool scale_down = true;
     unsigned scaled_level_bits = 2;
     /* the HUD map's corners rounded (a twelfth of its height, at least 6 px) */
@@ -83,6 +84,9 @@ struct FeedStatus {
     std::string upload_reason;
     bool guide_hold = true;
     bool guide_disabled = false;   /* cluster-render's guard keeps the turn box's hold off */
+    bool disabled = false;         /* cluster-render's guard keeps the target's mapping off */
+    bool hud = false;              /* the HUD setting (MapFeeds) */
+    std::string hud_state = "off";   /* off, disabled, or the HUD feed's state */
     unsigned hud_width_pct = 0;   /* the HUD map's size setting (0: the default) */
     int hud_offset_x = 0, hud_offset_y = 0;   /* and where it is moved to from the centre */
 };
@@ -109,6 +113,8 @@ class MapFeed {
 public:
     /* The reason while the stream is live and its picture blank. */
     static const char *const kWaiting;
+    /* How often poll() looks for the worker's frame while it scales. */
+    static const int64_t kScaleWaitMs = 5;
 
     explicit MapFeed(const FeedConfig &cfg);
 
@@ -123,20 +129,34 @@ public:
      * map on the HUD. */
     void set_hud_width(unsigned pct);
     /* The HUD map moved (FeedConfig::hud_offset_x/y), at once: the layer
-     * only changes place, no new texture. */
+     * only changes place, no new texture. Held inside the HUD: the offset
+     * the map is at (hud_offset_x/y, the status's) then is as far as it
+     * goes, and the one asked for is kept for the next size. */
     void set_hud_offset(int dx, int dy);
-    /* Whether the renderer has target `name` (true until connected). */
-    bool knows(const std::string &name) const;
-
+    int hud_offset_x() const { return placed_x_; }
+    int hud_offset_y() const { return placed_y_; }
+    /* A layer to take frames: made, and not disabled by cluster-render's
+     * guard. */
+    bool takes_frames() const { return layer_ && !disabled(); }
     int fd() const { return client_.fd(); }
     bool wants_write() const { return client_.wants_write(); }
     void poll(int64_t now_ms);
+    /* Until poll() has work: a scaled frame to take, or the next one due
+     * (-1: none). */
+    int64_t wake_in_ms(int64_t now_ms) const;
 
     /* The newest decoded frame (the whole atlas), taken without a copy;
      * replaces one not yet sent. *atlas comes back as a buffer of the same
      * size (undefined contents), or untouched while the renderer is not
-     * reachable. */
-    void offer(std::vector<uint8_t> *atlas, uint64_t id, int64_t now_ms);
+     * reachable. With copy, once the frame is handed to the socket, a copy
+     * of it goes there (empty when there is none to give). A feed that
+     * scales keeps the newest frame and hands it to its worker when one is
+     * due (poll). */
+    void offer(std::vector<uint8_t> *atlas, uint64_t id, int64_t now_ms, std::vector<uint8_t> *copy = nullptr);
+    /* cluster-render's mapping guard keeps the target's mapping off. */
+    bool disabled() const;
+    /* Frames scaled for this feed. */
+    uint64_t scaled_frames() const { return worker_.frames(); }
 
     /* Whether CarPlay's cluster stream is live, whether it is frozen and
      * what it has to show: the layer is visible only while it is live, not
@@ -153,9 +173,10 @@ public:
 
 private:
     void make_layer();
-    /* The newest frame waiting to be scaled, scaled and handed over once
-     * the frame rate allows (offer and poll). */
+    /* The newest frame to the worker once the frame rate allows, and a
+     * scaled one to the renderer (poll). */
     void send_pending(int64_t now_ms);
+    /* On the HUD also notes the offset it places the map at. */
     crk::QuadRect quad(uint32_t tw, uint32_t th) const;
     void count_second(int64_t now_ms);
 
@@ -167,7 +188,9 @@ private:
     Picture picture_ = Picture::None;
     const char *stream_line_ = nullptr;   /* the stream's state as last logged */
     std::string layer_state_ = "stalled", layer_reason_;
-    std::string target_state_, holder_, target_reason_;
+    std::string target_state_, holder_;
+    /* the HUD map's offset as quad() last placed it; as asked until then */
+    mutable int placed_x_ = 0, placed_y_ = 0;
     unsigned cap_kb_ = 0, max_kb_ = 0;
     std::string budget_reason_, refused_, report_;
     bool connected_ = false, status_asked_ = false;
@@ -177,8 +200,10 @@ private:
     bool down_long_ = false;
     int64_t second_ms_ = 0;
     int frames_ = 0, rate_ = 0;
-    AtlasScaler scaler_;
+    ScaleWorker worker_;
+    ScaleShape shape_;
     bool scaling_ = false, pending_ready_ = false;
+    std::vector<uint8_t> last_scaled_;   /* the worker's last frame, for a still map */
     std::vector<uint8_t> pending_, scaled_;
     uint64_t pending_id_ = 0;
     int64_t next_send_ms_ = 0;

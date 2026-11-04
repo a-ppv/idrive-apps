@@ -2,6 +2,12 @@
 // Copyright (C) 2026 Robert Nisipeanu
 #include "atlas_scale.h"
 
+#ifdef __linux__
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 #include "yuv_atlas.h"
 
 namespace woc {
@@ -241,6 +247,79 @@ void AtlasScaler::corners(uint8_t *p, uint32_t dp, uint32_t pw, uint32_t ph, uin
                     v = (uint8_t)(black + (((int)v - black) * (int)c) / 256);
                 }
         }
+}
+
+ScaleWorker::~ScaleWorker()
+{
+    if (!started_)
+        return;
+    {
+        std::lock_guard<std::mutex> l(s_->mu);
+        s_->stop = true;
+    }
+    s_->cv.notify_one();
+}
+
+bool ScaleWorker::submit(std::vector<uint8_t> *atlas, uint64_t id, const ScaleShape &shape)
+{
+    if (!idle() || shape.dw > shape.w || shape.dh > shape.h || atlas->size() != (size_t)shape.w * (shape.h + shape.h / 2))
+        return false;
+    s_->in.swap(*atlas);
+    s_->id = id;
+    s_->shape = shape;
+    if (!started_) {
+        std::thread(run, s_).detach();
+        started_ = true;
+    }
+    {
+        std::lock_guard<std::mutex> l(s_->mu);
+        s_->stage.store(kQueued, std::memory_order_release);
+    }
+    s_->cv.notify_one();
+    return true;
+}
+
+bool ScaleWorker::take(std::vector<uint8_t> *out, uint64_t *id, const ScaleShape &shape)
+{
+    if (s_->stage.load(std::memory_order_acquire) != kDone)
+        return false;
+    const bool good = s_->made == shape && !s_->out.empty();
+    if (good) {
+        out->swap(s_->out);
+        *id = s_->id;
+    }
+    s_->stage.store(kIdle, std::memory_order_release);
+    return good;
+}
+
+void ScaleWorker::run(std::shared_ptr<State> s)
+{
+#ifdef __linux__
+    /* below the map's threads: the HUD takes only spare CPU */
+    setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 10);
+#endif
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> l(s->mu);
+            s->cv.wait(l, [&s] { return s->stop || s->stage.load(std::memory_order_acquire) == kQueued; });
+            if (s->stop)
+                return;
+        }
+        if (s->made != s->shape || !s->scaler.configured()) {
+            s->made = ScaleShape();
+            if (s->scaler.configure(s->shape.w, s->shape.h, s->shape.dw, s->shape.dh, s->shape.level_bits)) {
+                s->scaler.set_corner_radius(s->shape.radius);
+                s->scaler.set_black_background(s->shape.black);
+                s->made = s->shape;
+            }
+        }
+        if (s->made == s->shape)
+            s->scaler.scale(s->in.data(), &s->out);
+        else
+            s->out.clear();
+        s->frames++;
+        s->stage.store(kDone, std::memory_order_release);
+    }
 }
 
 }  // namespace woc

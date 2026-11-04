@@ -20,6 +20,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace woc {
@@ -30,8 +35,6 @@ public:
      * dh <= h); false if not. */
     bool configure(uint32_t w, uint32_t h, uint32_t dw, uint32_t dh, unsigned level_bits);
     bool configured() const { return dw_ != 0; }
-    uint32_t dst_w() const { return dw_; }
-    uint32_t dst_h() const { return dh_; }
     size_t dst_bytes() const { return (size_t)dw_ * (dh_ + dh_ / 2); }
 
     /* src: a w x atlas_height(h) atlas; *dst is resized to dst_bytes(). */
@@ -50,7 +53,6 @@ public:
     void set_black_background(bool on) { black_bg_ = on; bg_ = -1; }
     /* the background Y followed, -1 before the first frame */
     int background() const { return bg_; }
-    uint32_t corner_radius() const { return radius_; }
 
 private:
     /* One axis: for each output index, its first source index and weights
@@ -79,6 +81,73 @@ private:
     int bg_ = -1;   /* the background's Y, x 16 (smoothed) */
     void key_background(uint8_t *d);
     std::vector<uint16_t> ycov_, ccov_;   /* corner coverage: Y at radius_, U and V at radius_ / 2 */
+};
+
+/* What a ScaleWorker makes of a frame: a w x h atlas scaled to dw x dh,
+ * rounded to level_bits, with AtlasScaler's corners and background. */
+struct ScaleShape {
+    uint32_t w = 0, h = 0, dw = 0, dh = 0;
+    unsigned level_bits = 0;
+    uint32_t radius = 0;
+    bool black = false;
+    bool operator==(const ScaleShape &o) const
+    {
+        return w == o.w && h == o.h && dw == o.dw && dh == o.dh && level_bits == o.level_bits && radius == o.radius &&
+               black == o.black;
+    }
+    bool operator!=(const ScaleShape &o) const { return !(*this == o); }
+};
+
+/* Scales one frame at a time on a thread of its own, at a low priority, so
+ * the thread offering frames does a swap and nothing more: the cluster's
+ * map, offered on the same thread, never waits for the HUD's. The thread
+ * starts with the first frame and is left to finish its frame when the
+ * worker goes. The lock is held only to hand a frame over, never while
+ * scaling, and the offering thread never waits for the worker. */
+class ScaleWorker {
+public:
+    ScaleWorker() : s_(std::make_shared<State>()) {}
+    ~ScaleWorker();
+    ScaleWorker(const ScaleWorker &) = delete;
+    ScaleWorker &operator=(const ScaleWorker &) = delete;
+
+    /* No frame is being scaled or waits to be taken. */
+    bool idle() const { return s_->stage.load(std::memory_order_acquire) == kIdle; }
+    /* While idle(): the atlas, taken by a swap (*atlas comes back with the
+     * worker's last input), to be scaled to shape; false, *atlas untouched,
+     * if not idle or the atlas is not shape's source size. */
+    bool submit(std::vector<uint8_t> *atlas, uint64_t id, const ScaleShape &shape);
+    /* The scaled frame, if done: swapped into *out (its frame id in *id) and
+     * the worker idle again. A frame made for another shape than the one
+     * asked for now is dropped. */
+    bool take(std::vector<uint8_t> *out, uint64_t *id, const ScaleShape &shape);
+    /* While idle(): atlas is the frame it last scaled, to shape. */
+    bool holds(const std::vector<uint8_t> &atlas, const ScaleShape &shape) const
+    {
+        return idle() && s_->made == shape && s_->in == atlas;
+    }
+    /* Frames scaled since start. */
+    uint64_t frames() const { return s_->frames.load(); }
+
+private:
+    enum Stage { kIdle, kQueued, kDone };
+    /* Shared with the thread, which may outlive the worker by one frame. */
+    struct State {
+        std::atomic<int> stage{kIdle};
+        std::atomic<bool> stop{false};
+        std::atomic<uint64_t> frames{0};
+        std::mutex mu;
+        std::condition_variable cv;
+        /* The offering thread's while idle; the worker's while queued. */
+        std::vector<uint8_t> in, out;
+        uint64_t id = 0;
+        ScaleShape shape, made;
+        AtlasScaler scaler;   /* the worker's */
+    };
+    static void run(std::shared_ptr<State> s);
+
+    std::shared_ptr<State> s_;
+    bool started_ = false;
 };
 
 }  // namespace woc

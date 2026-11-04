@@ -9,7 +9,7 @@
  * reports its status and log to the Waze app.
  *
  *   waze-on-cluster [-c FILE] [-s key=value]...     serve the control socket
- *   waze-on-cluster [-c FILE] run sail|map|panel|hud
+ *   waze-on-cluster [-c FILE] run sail|map|panel
  *                                                   map that target from now on,
  *                                                   and follow the status from a shell
  *                                                   (sail = map, the native central-map slot)
@@ -83,6 +83,7 @@ std::string status_line(const FeedStatus &s)
            ",\"upload_reason\":" + json_escape(s.upload_reason) +
            ",\"hide_bmw_guidance\":" + (s.guide_hold ? "1" : "0") +
            ",\"guide_disabled\":" + (s.guide_disabled ? "1" : "0") +
+           ",\"hud\":" + (s.hud ? "1" : "0") + ",\"hud_state\":" + json_escape(s.hud_state) +
            ",\"hud_width_pct\":" + std::to_string(s.hud_width_pct) +
            ",\"hud_x\":" + std::to_string(s.hud_offset_x) + ",\"hud_y\":" + std::to_string(s.hud_offset_y) + "}";
 }
@@ -92,24 +93,31 @@ public:
     Server(MapFeeds *feeds, GuideSetting *guide) : feeds_(feeds), guide_(guide) {}
     void set_control(Control *c) { control_ = c; }
 
-    /* start picks where the map goes (`run`, or the app's display choice):
-     * "map", "hud" or "map+hud"; the map itself comes and goes with the
-     * stream. guide is the app's switch for BMW's turn box
-     * (guide_setting.h). */
+    /* start picks the cluster target the map goes to (`run`); hud turns the
+     * HUD's copy on or off ("on") and sizes and places it; the map itself
+     * comes and goes with the stream. guide is the app's switch for BMW's
+     * turn box (guide_setting.h). */
     void on_command(const std::map<std::string, std::string> &msg) override
     {
         const std::string &cmd = msg.at("cmd");
         auto it = msg.find("target");
         auto hide = msg.find("hide");
         auto pct = msg.find("hud_width_pct");
-        auto hx = msg.find("hud_x"), hy = msg.find("hud_y");
+        auto hx = msg.find("hud_x"), hy = msg.find("hud_y"), on = msg.find("on");
         if (cmd == "start" && it != msg.end()) {
             log_info("start %s", it->second.c_str());
-            feeds_->set_targets(it->second);
+            if (!feeds_->set_target(it->second))
+                log_warn("start: the cluster renderer has no cluster target %s", it->second.c_str());
         } else if (cmd == "guide" && hide != msg.end() && guide_->set(hide->second)) {
             log_info("guide: BMW's turn box %s while the map shows", guide_->hide() ? "hidden" : "shown");
             feeds_->set_guide_hold(guide_->hide());
-        } else if (cmd == "hud" && (pct != msg.end() || hx != msg.end() || hy != msg.end())) {
+        } else if (cmd == "hud" && (on != msg.end() || pct != msg.end() || hx != msg.end() || hy != msg.end())) {
+            if (on != msg.end()) {
+                if (on->second == "0" || on->second == "1")
+                    feeds_->set_hud(on->second == "1");
+                else
+                    log_warn("hud: on must be 0 or 1, not %s", on->second.c_str());
+            }
             /* the HUD map's size: 0 (the default box) or 20-100 % of its width */
             if (pct != msg.end()) {
                 const long v = std::strtol(pct->second.c_str(), nullptr, 10);
@@ -192,7 +200,7 @@ int serve(const Config &cfg)
                      "(upload_kb_per_s in /var/opt/cluster-render/cluster-render.local.conf)", key, cfg.str(key).c_str());
     struct Range { const char *key; long lo, hi; } ranges[] = {
         {"dirty_threshold", 0, 64}, {"dirty_settle_ms", 0, 3600000}, {"tex_level_bits", 0, 3},
-        {"target_fps", 0, 60},      {"hud_width_pct", 0, 100},      {"hud_offset_x", -800, 800},      {"hud_offset_y", -800, 800},      {"hud_scale_down", 0, 1},      {"hud_round_corners", 0, 1},      {"hud_black_background", 0, 1},      {"pan_blocks", 0, 1},            {"stall_ms", 1000, 600000},
+        {"target_fps", 0, 60},      {"hud", 0, 1}, {"hud_fps", 1, 30}, {"hud_width_pct", 0, 100},      {"hud_offset_x", -800, 800},      {"hud_offset_y", -800, 800},      {"hud_scale_down", 0, 1},      {"hud_round_corners", 0, 1},      {"hud_black_background", 0, 1},      {"pan_blocks", 0, 1},            {"stall_ms", 1000, 600000},
         {"freeze_ms", 0, 600000},   {"freeze_min_fps", 1, 60},       {"alt_screen_port", 0, 65535},
         {"idle_ms", 1000, 600000},  {"blank_ms", 1000, 600000},
         {"alt_screen_uid", 0, 4294967294L}};
@@ -213,6 +221,10 @@ int serve(const Config &cfg)
     if (const char *why = parse_map_rect(cfg.str("map_rect"), &fc.rect))
         log_warn("map_rect = %s is ignored: %s; the map area instead", cfg.str("map_rect").c_str(), why);
     fc.hud_width_pct = (unsigned)cfg.num("hud_width_pct");
+    if (fc.hud_width_pct && fc.hud_width_pct < 20) {
+        log_warn("hud_width_pct %u: 0 or 20-100; the default box instead", fc.hud_width_pct);
+        fc.hud_width_pct = 0;
+    }
     fc.hud_offset_x = (int)cfg.num("hud_offset_x");
     fc.hud_offset_y = (int)cfg.num("hud_offset_y");
     fc.scale_down = cfg.num("hud_scale_down") != 0;
@@ -243,7 +255,7 @@ int serve(const Config &cfg)
 
     std::string err;
     VideoProducer producer(vc);
-    MapFeeds feed(fc);
+    MapFeeds feed(fc, cfg.num("hud") == 1, (unsigned)cfg.num("hud_fps"));
     Server server(&feed, &guide);
     Control control(&server);
     server.set_control(&control);
@@ -268,10 +280,11 @@ int serve(const Config &cfg)
                                  {producer.ready_fd(), POLLIN, 0}};
         feed.poll_fds(&p);   /* one per target's renderer connection */
         /* A decoded frame wakes it (the producer's ready fd), and so does the
-         * renderer's socket; four times a second otherwise, so the client
-         * retries its connection, a source that is down is retried and the
-         * status files stay current. */
-        int n = poll(p.data(), p.size(), 250);
+         * renderer's socket, and the HUD's next frame when one is due; four
+         * times a second otherwise, so the client retries its connection, a
+         * source that is down is retried and the status files stay current. */
+        const int64_t hud_wake = feed.wake_in_ms(now_ms());
+        int n = poll(p.data(), p.size(), hud_wake >= 0 && hud_wake < 250 ? (int)hud_wake : 250);
         if (n < 0 && errno != EINTR)
             break;
         if (p[0].revents & POLLIN)
@@ -385,7 +398,7 @@ bool load_local(Config *cfg, std::string *err)
 void usage()
 {
     std::fprintf(stderr,
-                 "usage: waze-on-cluster [-c FILE] [-s key=value]... [run sail|map|panel|hud | bench-pack I420_FILE]\n");
+                 "usage: waze-on-cluster [-c FILE] [-s key=value]... [run sail|map|panel | bench-pack I420_FILE]\n");
 }
 
 /* Times pan_blocks' packing (4:2:0 to RGB and the block fit) of each
@@ -464,6 +477,8 @@ void define_keys(Config *cfg)
     cfg->define("target", "map");
     cfg->define("hide_bmw_guidance", "1");
     cfg->define("state_file", "/var/opt/waze-on-cluster/state/waze-on-cluster.state.conf");
+    cfg->define("hud", "0");
+    cfg->define("hud_fps", "10");
     cfg->define("hud_width_pct", "0");
     cfg->define("hud_offset_x", "0");
     cfg->define("hud_offset_y", "0");

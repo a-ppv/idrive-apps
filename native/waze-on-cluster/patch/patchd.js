@@ -38,26 +38,18 @@
  *                                   reboot-reply carries ok/reason.
  *                  {"cmd":"logs"}   carplay + marker + avb log lines, dlt-receive health, patchd log
  *                                   (to the asker, read-only)
- *                  {"cmd":"target","target":"map"|"hud"}
- *                                   where the map goes from the next start of the
- *                                   render on: written as "target = ..." into
- *                                   waze-on-cluster.local.conf (the app moves the
- *                                   running render itself with its start command).
- *                                   target-reply carries ok/target/reason
- *                  {"cmd":"profile","id":"<user account>"}
- *                                   the driver profile now: profile-reply carries
- *                                   ok/id/known/target/hud_width_pct, that
- *                                   profile's saved choice (saved as the next
- *                                   start's too) or, first seen, the current one;
- *                                   target and hud-size are kept per profile
- *                  {"cmd":"hud-size","hud_width_pct":0|20..85}
+ *                  {"cmd":"hud","on":0|1}
+ *                  {"cmd":"hud-size","hud_width_pct":0|20..100}   (over 85 saved as 85)
  *                  {"cmd":"hud-pos","hud_x":-800..800,"hud_y":-800..800}
- *                                   the HUD map moved from its centre (HUD pixels): saved as
- *                                   "hud_offset_x / hud_offset_y = ..."; kept per profile too;
- *                                   hud-pos-reply carries ok/hud_x/hud_y/reason
- *                                   the HUD map's size, saved the same way as
- *                                   "hud_width_pct = ..." (0: the default box);
- *                                   hud-size-reply carries ok/hud_width_pct/reason
+ *                                   the HUD's copy of the map on or off, its size
+ *                                   (0: the default box) and where it is moved from
+ *                                   the centre (HUD pixels), saved for the render's
+ *                                   next start as "hud", "hud_width_pct",
+ *                                   "hud_offset_x" and "hud_offset_y" in
+ *                                   waze-on-cluster.local.conf (the app changes the
+ *                                   running render itself). The reply (hud-reply,
+ *                                   hud-size-reply, hud-pos-reply) carries ok, the
+ *                                   values saved and reason.
  *                  {"cmd":"capture-start"|"capture-stop"|"capture-status"}
  *                                   (capture-reply to the asker; every client gets
  *                                   ev capture, also once a second)
@@ -206,27 +198,20 @@ var REBOOT_CMD = (process.env.WOC_REBOOT_CMD || '/usr/bin/nsm_control --requestR
 var REBOOT_CMD_TIMEOUT_MS = 30000;
 /* A restart NSM took that has not taken the unit down by then failed. */
 var REBOOT_WAIT_MS = parseInt(process.env.WOC_REBOOT_WAIT_MS, 10) || 180000;
-/* The unit's own render settings, which updates keep: the display choice
- * (Cluster, HUD, both) is saved there as the render's "target". */
+/* The unit's own render settings, which updates keep: the HUD's settings
+ * are saved there. */
 var LOCAL_CONF = process.env.WOC_LOCAL_CONF || '/var/opt/waze-on-cluster/waze-on-cluster.local.conf';
-/* one or the other: the cluster or the HUD */
-var DISPLAY_TARGETS = ['map', 'hud'];
-/* The display choice and HUD map size per driver profile (the app reports the
- * head unit's current user account): { "<account>": { target, hud_width_pct } }.
- * Each change of either is kept for the profile current at the time; a
- * profile seen again gets its own back. */
-var PROFILES_FILE = process.env.WOC_PROFILES || path.join(path.dirname(LOCAL_CONF), 'profiles.json');
-var currentProfile = null;
 
-/* Writes key = value into the local conf, replacing any line of that key;
- * the other lines stay as they are. Atomic: a temporary file renamed over it. */
-function saveSetting(key, value, done) {
+/* Writes each key = value of settings into the local conf, replacing any
+ * line of those keys; the other lines stay as they are. Atomic: a temporary
+ * file renamed over it. */
+function saveSettings(settings, done) {
     var lines = [];
     try { lines = fs.readFileSync(LOCAL_CONF, 'utf8').split('\n'); } catch (e) { if (e.code !== 'ENOENT') { done(e); return; } }
-    var re = new RegExp('^\\s*' + key + '\\s*=');
-    lines = lines.filter(function (l) { return !re.test(l); });
+    var keys = Object.keys(settings);
+    lines = lines.filter(function (l) { return !keys.some(function (k) { return new RegExp('^\\s*' + k + '\\s*=').test(l); }); });
     while (lines.length && lines[lines.length - 1] === '') lines.pop();
-    lines.push(key + ' = ' + value);
+    keys.forEach(function (k) { lines.push(k + ' = ' + settings[k]); });
     var tmp = LOCAL_CONF + '.tmp';
     try {
         fs.writeFileSync(tmp, lines.join('\n') + '\n', { mode: 420 });
@@ -234,39 +219,17 @@ function saveSetting(key, value, done) {
     } catch (e) { done(e); return; }
     done(null);
 }
-/* The local conf's value of key, or undefined. */
-function readSetting(key) {
-    var text = '';
-    try { text = fs.readFileSync(LOCAL_CONF, 'utf8'); } catch (e) { return undefined; }
-    var m = new RegExp('^\\s*' + key + '\\s*=\\s*(\\S*)\\s*$', 'm').exec(text);
-    return m ? m[1] : undefined;
+/* A HUD offset: a whole number in -800..800. */
+function isOffset(v) {
+    return typeof v === 'number' && v === Math.floor(v) && v >= -800 && v <= 800;
 }
-function readProfiles() {
-    try { var p = JSON.parse(fs.readFileSync(PROFILES_FILE, 'utf8')); return p && typeof p === 'object' ? p : {}; } catch (e) { return {}; }
-}
-function writeProfiles(p) {
-    var tmp = PROFILES_FILE + '.tmp';
-    try { fs.writeFileSync(tmp, JSON.stringify(p) + '\n', { mode: 420 }); fs.renameSync(tmp, PROFILES_FILE); } catch (e) { log('saving the profiles failed: ' + e.message); }
-}
-/* An offset setting as a whole number in -800..800 (0 when unset or out of range). */
-function offset(v) {
-    var n = Number(v);
-    return isFinite(n) && n === Math.floor(n) && n >= -800 && n <= 800 ? n : 0;
-}
-/* The current settings, as the render starts with them. */
-function currentSettings() {
-    var t = readSetting('target'), pct = Number(readSetting('hud_width_pct'));
-    return { target: DISPLAY_TARGETS.indexOf(t) >= 0 ? t : 'map', hud_width_pct: isFinite(pct) ? Math.min(pct, HUD_MAX_PCT) : 0,
-        hud_x: offset(readSetting('hud_offset_x')), hud_y: offset(readSetting('hud_offset_y')) };
-}
-/* A change of key kept for the current profile too. */
-function rememberForProfile(key, value) {
-    if (!currentProfile) return;
-    var p = readProfiles();
-    var e = p[currentProfile] || currentSettings();
-    e[key] = value;
-    p[currentProfile] = e;
-    writeProfiles(p);
+/* Saves the HUD's settings for the next start and replies with ev. */
+function saveHud(sock, ev, settings, what) {
+    saveSettings(settings, function (err) {
+        if (err) log('saving the HUD ' + what + ' failed: ' + err.message);
+        else log('HUD ' + what + ': ' + Object.keys(settings).map(function (k) { return k + ' ' + settings[k]; }).join(', ') + ' (saved for the next start)');
+        reply(sock, Object.assign({ ev: ev, ok: !err, reason: err ? err.message : undefined }, settings));
+    });
 }
 var statusInFlight = false;  /* coalesce the carplay_patch status spawns */
 var MAX_LINE = 64 * 1024;    /* drop a client that floods without a newline */
@@ -1317,82 +1280,27 @@ function handle(line, sock) {
         });
         return;
     }
-    if (msg.cmd === 'target') {
-        /* Only a known display choice, and only the target line: the render
-         * reads it at its next start. Not an operation on carplay, so it is
-         * not held back by one. */
-        var t = String(msg.target || '');
-        if (DISPLAY_TARGETS.indexOf(t) < 0) {
-            try { sock.write(JSON.stringify({ ev: 'target-reply', ok: false, reason: 'unknown target ' + t }) + '\n'); } catch (e) {}
-            return;
-        }
-        saveSetting('target', t, function (err) {
-            if (!err) rememberForProfile('target', t);
-            if (err) log('saving the display choice failed: ' + err.message);
-            else log('display: ' + t + ' (saved for the next start)');
-            try { sock.write(JSON.stringify({ ev: 'target-reply', ok: !err, target: t, reason: err ? err.message : undefined }) + '\n'); } catch (e) {}
-        });
-        return;
-    }
-    if (msg.cmd === 'profile') {
-        /* The driver profile now (the app reads the head unit's current user
-         * account). A profile with saved settings gets them back: saved for
-         * the render's next start, and in the reply for the app to apply now.
-         * One seen for the first time keeps the current settings as its own. */
-        var id = String(msg.id || '').slice(0, 200);
-        if (!id) {
-            try { sock.write(JSON.stringify({ ev: 'profile-reply', ok: false, reason: 'no profile id' }) + '\n'); } catch (e) {}
-            return;
-        }
-        var profiles = readProfiles(), cur = currentSettings(), saved = profiles[id];
-        var changed = id !== currentProfile;
-        currentProfile = id;
-        var want = cur;
-        if (saved && DISPLAY_TARGETS.indexOf(saved.target) >= 0) {
-            want = { target: saved.target, hud_width_pct: Math.min(Number(saved.hud_width_pct) || 0, HUD_MAX_PCT),
-                hud_x: offset(saved.hud_x), hud_y: offset(saved.hud_y) };
-            if (want.target !== cur.target) saveSetting('target', want.target, function () {});
-            if (want.hud_width_pct !== cur.hud_width_pct) saveSetting('hud_width_pct', String(want.hud_width_pct), function () {});
-            if (want.hud_x !== cur.hud_x) saveSetting('hud_offset_x', String(want.hud_x), function () {});
-            if (want.hud_y !== cur.hud_y) saveSetting('hud_offset_y', String(want.hud_y), function () {});
-        } else {
-            profiles[id] = cur;
-            writeProfiles(profiles);
-        }
-        if (changed) log('driver profile ' + id + ': ' + want.target + (want.target === 'hud' ? ', HUD map ' + (want.hud_width_pct || 'standard') + (want.hud_width_pct ? ' %' : '') : '') + (saved ? '' : ' (first seen: the current settings kept for it)'));
-        try { sock.write(JSON.stringify({ ev: 'profile-reply', ok: true, id: id, known: !!saved, target: want.target, hud_width_pct: want.hud_width_pct, hud_x: want.hud_x, hud_y: want.hud_y }) + '\n'); } catch (e) {}
+    /* The HUD's settings: not operations on carplay, so not held back by one. */
+    if (msg.cmd === 'hud') {
+        if (msg.on !== 0 && msg.on !== 1) { reply(sock, { ev: 'hud-reply', ok: false, reason: 'on must be 0 or 1' }); return; }
+        saveHud(sock, 'hud-reply', { hud: msg.on }, 'copy');
         return;
     }
     if (msg.cmd === 'hud-size') {
-        var pct = Number(msg.hud_width_pct);
-        if (!(pct === 0 || (pct >= 20 && pct <= 100 && pct === Math.floor(pct)))) {
-            try { sock.write(JSON.stringify({ ev: 'hud-size-reply', ok: false, reason: 'HUD width must be 0 or 20-85 %' }) + '\n'); } catch (e) {}
+        var pct = msg.hud_width_pct;
+        if (!(pct === 0 || (typeof pct === 'number' && pct >= 20 && pct <= 100 && pct === Math.floor(pct)))) {
+            reply(sock, { ev: 'hud-size-reply', ok: false, reason: 'HUD width must be 0 or 20-100 %' });
             return;
         }
-        if (pct > HUD_MAX_PCT) pct = HUD_MAX_PCT;   /* the widest the HUD shows whole (an older app asks for 100) */
-        saveSetting('hud_width_pct', String(pct), function (err) {
-            if (!err) rememberForProfile('hud_width_pct', pct);
-            if (err) log('saving the HUD map size failed: ' + err.message);
-            else log('HUD map size: ' + (pct ? pct + ' %' : 'default') + ' (saved for the next start)');
-            try { sock.write(JSON.stringify({ ev: 'hud-size-reply', ok: !err, hud_width_pct: pct, reason: err ? err.message : undefined }) + '\n'); } catch (e) {}
-        });
+        saveHud(sock, 'hud-size-reply', { hud_width_pct: Math.min(pct, HUD_MAX_PCT) }, 'map size');
         return;
     }
     if (msg.cmd === 'hud-pos') {
-        var hx = Number(msg.hud_x), hy = Number(msg.hud_y);
-        if (offset(hx) !== hx || offset(hy) !== hy) {
-            try { sock.write(JSON.stringify({ ev: 'hud-pos-reply', ok: false, reason: 'HUD offsets must be whole numbers from -800 to 800' }) + '\n'); } catch (e) {}
+        if (!isOffset(msg.hud_x) || !isOffset(msg.hud_y)) {
+            reply(sock, { ev: 'hud-pos-reply', ok: false, reason: 'HUD offsets must be whole numbers from -800 to 800' });
             return;
         }
-        saveSetting('hud_offset_x', String(hx), function (err) {
-            if (err) { log('saving the HUD map position failed: ' + err.message); try { sock.write(JSON.stringify({ ev: 'hud-pos-reply', ok: false, reason: err.message }) + '\n'); } catch (e) {} return; }
-            saveSetting('hud_offset_y', String(hy), function (err2) {
-                if (!err2) { rememberForProfile('hud_x', hx); rememberForProfile('hud_y', hy); }
-                if (err2) log('saving the HUD map position failed: ' + err2.message);
-                else log('HUD map position: ' + (hx || hy ? (hx >= 0 ? '+' : '') + hx + ', ' + (hy >= 0 ? '+' : '') + hy + ' px from the centre' : 'centred') + ' (saved for the next start)');
-                try { sock.write(JSON.stringify({ ev: 'hud-pos-reply', ok: !err2, hud_x: hx, hud_y: hy, reason: err2 ? err2.message : undefined }) + '\n'); } catch (e) {}
-            });
-        });
+        saveHud(sock, 'hud-pos-reply', { hud_offset_x: msg.hud_x, hud_offset_y: msg.hud_y }, 'map position');
         return;
     }
     if (msg.cmd === 'reboot') { rebootCmd(sock); return; }

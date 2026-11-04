@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Robert Nisipeanu
-/* patchd's display choice ({"cmd":"target"}): a known choice is saved as the
- * render's target in waze-on-cluster.local.conf, replacing an earlier one and
- * keeping the other lines; an unknown one is refused and nothing written. */
+/* patchd's HUD settings ({"cmd":"hud"}, "hud-size", "hud-pos"): each saved
+ * in waze-on-cluster.local.conf for the render's next start, replacing an
+ * earlier value and keeping the other lines; a bad value is refused and
+ * nothing written. */
 'use strict';
 var assert = require('assert');
 var cp = require('child_process');
@@ -13,10 +14,10 @@ var os = require('os');
 var path = require('path');
 
 var PATCHD = path.join(__dirname, '..', 'patchd.js');
-var dir = fs.mkdtempSync(path.join(os.tmpdir(), 'woc-target-'));
+var dir = fs.mkdtempSync(path.join(os.tmpdir(), 'woc-hud-'));
 var SOCK = path.join(dir, 'sock', 'patch.sock');
 var CONF = path.join(dir, 'waze-on-cluster.local.conf');
-fs.writeFileSync(CONF, 'upload_kb_per_s = 3000\ntarget = map\ntarget_fps = 15\n');
+fs.writeFileSync(CONF, 'upload_kb_per_s = 3000\nhud = 0\ntarget_fps = 15\n');
 
 var p = cp.spawn(process.execPath, [PATCHD], {
     env: Object.assign({}, process.env, {
@@ -56,7 +57,7 @@ function ask(obj) {
             buf.split('\n').forEach(function (l) {
                 var m = null;
                 try { m = JSON.parse(l); } catch (e) {}
-                if (m && (m.ev === 'target-reply' || m.ev === 'hud-size-reply' || m.ev === 'hud-pos-reply')) { s.end(); resolve(m); }
+                if (m && /^(hud|hud-size|hud-pos)-reply$/.test(m.ev)) { s.end(); resolve(m); }
             });
         });
         s.on('error', reject);
@@ -73,32 +74,26 @@ function ok(name, cond) {
 
 (async function () {
     for (var t = 0; t < 5000 && !fs.existsSync(SOCK); t += 50) await sleep(50);
-    var r = await ask({ cmd: 'target', target: 'map+hud' });
+    var r = await ask({ cmd: 'hud', on: 1 });
     var conf = fs.readFileSync(CONF, 'utf8');
-    ok('map+hud (both) is refused: one or the other', !r.ok && conf === 'upload_kb_per_s = 3000\ntarget = map\ntarget_fps = 15\n');
-    r = await ask({ cmd: 'target', target: 'hud' });
-    conf = fs.readFileSync(CONF, 'utf8');
-    ok('hud is saved, replacing the earlier target, the other lines kept',
-       r.ok && r.target === 'hud' && conf === 'upload_kb_per_s = 3000\ntarget_fps = 15\ntarget = hud\n');
-    r = await ask({ cmd: 'target', target: 'hud' });
-    conf = fs.readFileSync(CONF, 'utf8');
-    ok('hud replaces it: one target line', r.ok && (conf.match(/^target =/mg) || []).length === 1 && /target = hud\n$/.test(conf));
-    r = await ask({ cmd: 'target', target: 'dashboard' });
-    ok('an unknown choice is refused and nothing written', !r.ok && fs.readFileSync(CONF, 'utf8') === conf);
+    ok('the HUD on is saved, replacing the earlier value, the other lines kept',
+       r.ok && r.hud === 1 && conf === 'upload_kb_per_s = 3000\ntarget_fps = 15\nhud = 1\n');
+    r = await ask({ cmd: 'hud', on: 'yes' });
+    ok('an on that is not 0 or 1 is refused and nothing written', !r.ok && fs.readFileSync(CONF, 'utf8') === conf);
     fs.unlinkSync(CONF);
-    r = await ask({ cmd: 'target', target: 'map' });
-    ok('no local conf yet: it is created with the target', r.ok && fs.readFileSync(CONF, 'utf8') === 'target = map\n');
+    r = await ask({ cmd: 'hud', on: 0 });
+    ok('no local conf yet: it is created with the setting', r.ok && fs.readFileSync(CONF, 'utf8') === 'hud = 0\n');
     r = await ask({ cmd: 'hud-size', hud_width_pct: 70 });
-    ok('the HUD size is saved next to the target', r.ok && fs.readFileSync(CONF, 'utf8') === 'target = map\nhud_width_pct = 70\n');
+    ok('the HUD size is saved next to it', r.ok && fs.readFileSync(CONF, 'utf8') === 'hud = 0\nhud_width_pct = 70\n');
     r = await ask({ cmd: 'hud-size', hud_width_pct: 85 });
-    ok('a new size replaces it', r.ok && fs.readFileSync(CONF, 'utf8') === 'target = map\nhud_width_pct = 85\n');
+    ok('a new size replaces it', r.ok && fs.readFileSync(CONF, 'utf8') === 'hud = 0\nhud_width_pct = 85\n');
     r = await ask({ cmd: 'hud-size', hud_width_pct: 100 });
-    ok('100 % (an older app) is saved as the widest, 85 %', r.ok && r.hud_width_pct === 85 && fs.readFileSync(CONF, 'utf8') === 'target = map\nhud_width_pct = 85\n');
+    ok('100 % is saved as the widest, 85 %', r.ok && r.hud_width_pct === 85 && fs.readFileSync(CONF, 'utf8') === 'hud = 0\nhud_width_pct = 85\n');
     r = await ask({ cmd: 'hud-size', hud_width_pct: 10 });
     ok('an out-of-range size is refused, nothing written', !r.ok && /hud_width_pct = 85\n$/.test(fs.readFileSync(CONF, 'utf8')));
     r = await ask({ cmd: 'hud-pos', hud_x: 40, hud_y: -20 });
-    ok('the HUD position is saved next to the size', r.ok && r.hud_x === 40 && r.hud_y === -20 &&
-        fs.readFileSync(CONF, 'utf8') === 'target = map\nhud_width_pct = 85\nhud_offset_x = 40\nhud_offset_y = -20\n');
+    ok('the HUD position is saved next to the size, in one write', r.ok && r.hud_offset_x === 40 && r.hud_offset_y === -20 &&
+        fs.readFileSync(CONF, 'utf8') === 'hud = 0\nhud_width_pct = 85\nhud_offset_x = 40\nhud_offset_y = -20\n');
     r = await ask({ cmd: 'hud-pos', hud_x: 0, hud_y: 0 });
     ok('centred again: both replaced', r.ok && /hud_offset_x = 0\nhud_offset_y = 0\n$/.test(fs.readFileSync(CONF, 'utf8')));
     r = await ask({ cmd: 'hud-pos', hud_x: 900, hud_y: 0 });

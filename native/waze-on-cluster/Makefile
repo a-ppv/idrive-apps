@@ -83,8 +83,7 @@ test-node:
 	$(NODE) patch/test/patch_test.js
 	$(NODE) patch/test/patchd_patch_test.js
 	$(NODE) patch/test/patchd_activate_test.js
-	$(NODE) patch/test/patchd_target_test.js
-	$(NODE) patch/test/patchd_profile_test.js
+	$(NODE) patch/test/patchd_hud_test.js
 	$(NODE) patch/test/patchd_dlt_test.js
 	$(NODE) patch/test/patchd_reboot_test.js
 	$(NODE) patch/test/dlt_capture_test.js
@@ -267,4 +266,4 @@ clean:
 
 $(BUILD)/host/atlas_scale_test: test/atlas_scale_test.cpp src/atlas_scale.cpp src/atlas_scale.h $(KIT)/yuv_atlas.cpp $(KIT)/yuv_atlas.h
 	mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -Isrc -I$(KIT) -o $@ test/atlas_scale_test.cpp src/atlas_scale.cpp $(KIT)/yuv_atlas.cpp
+	$(CXX) $(CXXFLAGS) -Isrc -I$(KIT) -o $@ test/atlas_scale_test.cpp src/atlas_scale.cpp $(KIT)/yuv_atlas.cpp -lpthread
