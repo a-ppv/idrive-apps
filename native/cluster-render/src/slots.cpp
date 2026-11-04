@@ -1036,6 +1036,7 @@ void SlotManager::tick(int64_t now_ms)
                     release(i, now_ms);
                 if (t.status.state != TargetState::Waiting || t.status.reason != kPopupReason)
                     set(i, TargetState::Waiting, Holder::Stock, kPopupReason, now_ms, -1);
+                t.verdict = false;
                 continue;
             }
             if (s == TargetState::Waiting && t.status.reason == kPopupReason) {

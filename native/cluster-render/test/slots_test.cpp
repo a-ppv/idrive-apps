@@ -2655,6 +2655,44 @@ int main()
         run(1500);
         ok("popup: asked for again once yield_ms has passed", joined().find("request hud") != std::string::npos);
     }
+    {
+        /* Lost while the table names our id, the media pop-up showing before
+         * the next report: the pop-up's wait settles that loss, so a later
+         * wait (a request unanswered) is not taken for it */
+        TargetSpec hud4;
+        FakePort port4;
+        FakeScenes scenes4;
+        SlotManager m4{&port4, &scenes4};
+        hud4.name = "hud"; hud4.slot = kHudSlot; hud4.scene_id = kPanelScene; hud4.width = 800; hud4.height = 480;
+        hud4.linger_ms = 3000;
+        hud4.yield_slots = {0x322};
+        hud4.yield_ms = 1500;
+        m4.add(hud4);
+        std::vector<std::string> ev;
+        m4.on_evidence = [&](Evidence e, const std::string &, int64_t) { ev.push_back(evidence_name(e)); };
+        int64_t now = 300000;
+        const auto run = [&](int64_t ms) { for (int64_t x = 0; x < ms; x += 10) { now += 10; m4.tick(now); } };
+        const auto row = [&](uint64_t slot, uint32_t status, uint64_t content, uint32_t map) {
+            SlotInfo si; si.slot = slot; si.status = status; si.content = content; si.map_status = map;
+            m4.on_slots({si}, now);
+        };
+        m4.want(0, true, true);
+        run(1200);
+        m4.on_shown(kPanelScene, now);
+        row(kHudSlot, 2, kPanelScene, 1);
+        run(20);
+        m4.on_lost(kPanelScene, "fetch removed", now);
+        row(0x322, 2, 0x01000251, 1);
+        row(kHudSlot, 1, 0, 0);
+        run(50);
+        row(0x322, 1, 0x01000251, 0);
+        calls.clear();
+        run(2000);
+        const bool asked = joined().find("request hud") != std::string::npos;
+        run(SlotManager::kStartTimeoutMs + 20);
+        ok("popup over an undecided loss: asked for again after it, an unanswered request waits as that, no evidence",
+           asked && m4.status(0).reason == "no answer from the display" && ev.empty());
+    }
     for (int contending = 0; contending < 2; contending++) {
         /* Stock content parked behind ours in the HUD slot (Google Maps' turn cards while only an overlay holds
          * the HUD): a target that doesn't contend gives way and waits until the slot is free; one that contends
