@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "id": "robertn_waze_cluster",
-  "version": "0.5.6",
-  "tree": "robertn_waze_cluster@0.5.6",
+  "version": "0.6.0",
+  "tree": "robertn_waze_cluster@0.6.0",
   "modules": [
     "src/robertn_waze_cluster.js",
     "src/i18n.js",
@@ -10,8 +10,7 @@
     "src/waze_cluster_control.js",
     "src/logs_control.js",
     "src/qr.js",
-    "src/qrcodegen.js",
-    "src/profile_sync.js"
+    "src/qrcodegen.js"
   ],
   "sdk": [
     "oap-sdk/src/core/OnlineApp.js",

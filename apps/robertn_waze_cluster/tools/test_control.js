@@ -302,71 +302,61 @@ test('the turn card checkbox: the asked card until its change ends; the one on d
     c.close();
 });
 
-test('Show map on switches Cluster and HUD: the render moves, patchd saves it', async (render, patch) => {
+test('the HUD: off by default, the size and place greyed; Render in HUD turns it on through the render, patchd saves it', async (render, patch) => {
     const c = control();
     c.open();
     await until('connected', () => c.connectedRender() && c.connectedPatch());
     render.stream(true);
-    await until('showing on the cluster', () => c.renderStatus && c.renderStatus.state === 'showing' &&
-        c.displayText() === 'Show map on: Cluster');
-    assert(c.canChangeDisplay());
-    c.cycleDisplay();
-    assert.strictEqual(c.displayText(), 'Show map on: HUD', 'shown at once, before the render answers');
-    await until('render on the HUD', () => render.target === 'hud' && c.renderStatus.target === 'hud');
-    c.cycleDisplay();
-    await until('back to the cluster', () => render.target === 'map' && c.displayText() === 'Show map on: Cluster');
-    assert.deepStrictEqual(render.received.map((m) => m.target), ['hud', 'map']);
-    await until('saved', () => patch.received.filter((m) => m.cmd === 'target').length === 2);
-    assert.deepStrictEqual(patch.received.filter((m) => m.cmd === 'target').map((m) => m.target), ['hud', 'map']);
-    /* an older saved choice of both: shown as the cluster, the next press picks the HUD alone */
-    render._set(render.state, 'map+hud', render.page, render.reason);
-    await until('both reads as the cluster', () => c.renderStatus.target === 'map+hud' && c.displayText() === 'Show map on: Cluster');
-    c.cycleDisplay();
-    await until('then the HUD alone', () => render.target === 'hud');
-    c.close();
-    assert(!c.canChangeDisplay(), 'no change while the render is not connected');
-});
-
-test('HUD map size steps Standard, 70, 85, 40 only while the map is on the HUD', async (render, patch) => {
-    const c = control();
-    c.open();
-    await until('connected', () => c.connectedRender() && c.connectedPatch());
-    render.stream(true);
-    await until('showing on the cluster', () => c.renderStatus && c.renderStatus.state === 'showing');
-    assert.strictEqual(c.hudSizeText(), 'HUD map size: Standard');
-    assert(!c.canChangeHudSize(), 'not while the map is only on the cluster');
-    c.cycleHudSize();
-    assert(!render.received.some((m) => m.cmd === 'hud'), 'nothing sent while not on the HUD');
-    c.cycleDisplay();
-    await until('on the HUD', () => render.target === 'hud' && c.canChangeHudSize());
-    const seen = [];
-    for (let i = 0; i < 4; i++) {
-        c.cycleHudSize();
-        seen.push(c.hudSizeText());
-        const want = [70, 85, 40, 0][i];
-        await until(`render at ${want}`, () => render.hudWidth === want && c.renderStatus.hud_width_pct === want);
-    }
-    assert.deepStrictEqual(seen, ['HUD map size: 70 %', 'HUD map size: 85 %',
-        'HUD map size: 40 %', 'HUD map size: Standard']);
-    await until('saved', () => patch.received.filter((m) => m.cmd === 'hud-size').length === 4);
-    assert.deepStrictEqual(patch.received.filter((m) => m.cmd === 'hud-size').map((m) => m.hud_width_pct), [70, 85, 40, 0]);
-    c.close();
-});
-
-test('HUD map larger / smaller in 5 % steps from 30 to 85 %, from Standard the steps next to its ~57 %', async (render, patch) => {
-    const c = control();
-    c.open();
-    await until('connected', () => c.connectedRender() && c.connectedPatch());
-    render.stream(true);
-    await until('showing', () => c.renderStatus && c.renderStatus.state === 'showing');
+    await until('off', () => c.renderStatus && c.renderStatus.state === 'showing' && c.hudOn() === false);
+    assert.strictEqual(c.hudText(), 'HUD map: Off');
+    assert(c.canToggleHud() && !c.canChangeHudSize() && !c.canHudLarger() && !c.canHudSmaller() && !c.canCentreHud(),
+        'only the checkbox while off');
     c.stepHudSize(1);
-    assert(!render.received.some((m) => m.cmd === 'hud'), 'nothing sent while not on the HUD');
-    c.cycleDisplay();
-    await until('on the HUD', () => render.target === 'hud' && c.canChangeHudSize());
-    assert.strictEqual(c.hudLargerText(), 'HUD map larger (now Standard)');
+    c.moveHud('left');
+    assert(!render.received.some((m) => m.cmd === 'hud'), 'nothing sent while off');
+    c.toggleHud();
+    assert.strictEqual(c.hudOn(), true, 'ticked at once, before the render answers');
+    await until('on', () => render.hud === 1 && c.renderStatus.hud === 1 && c.hudText() === 'HUD map: Showing');
+    assert(c.canChangeHudSize(), 'the size and place while on');
+    await until('saved', () => patch.received.some((m) => m.cmd === 'hud' && m.on === 1));
+    c.toggleHud();
+    await until('off again', () => render.hud === 0 && c.hudText() === 'HUD map: Off');
+    assert.deepStrictEqual(render.received.filter((m) => m.cmd === 'hud').map((m) => m.on), ['1', '0']);
+    assert.deepStrictEqual(patch.received.filter((m) => m.cmd === 'hud').map((m) => m.on), [1, 0]);
+    c.close();
+    assert(!c.canToggleHud(), 'no change while the render is not connected');
+    assert.strictEqual(c.hudText(), 'HUD map: Unavailable');
+});
+
+test('the HUD disabled by the cluster renderer: Disabled after errors, the size and place greyed, the checkbox kept', async (render, patch) => {
+    render.hud = 1;
+    render.hudState = 'disabled';
+    const c = control();
+    c.open();
+    await until('connected', () => c.connectedRender() && c.renderStatus);
+    render.stream(true);
+    await until('disabled', () => c.hudText() === 'HUD map: Disabled after errors');
+    assert(c.hudOn() === true && c.canToggleHud() && !c.canChangeHudSize() && !c.canHudLarger() && !c.canCentreHud());
+    c.stepHudSize(1);
+    assert(!render.received.some((m) => m.cmd === 'hud'), 'no size sent while disabled');
+    c.toggleHud();
+    c.toggleHud();
+    await until('off and on', () => render.received.filter((m) => m.cmd === 'hud').length === 2 && render.hud === 1);
+    await until('still disabled', () => c.hudText() === 'HUD map: Disabled after errors');
+    c.close();
+});
+
+test('the HUD map size: Smaller and Larger in 5 % steps from 30 to 85 %, from Standard the steps next to its ~57 %', async (render, patch) => {
+    render.hud = 1;
+    const c = control();
+    c.open();
+    await until('connected', () => c.connectedRender() && c.connectedPatch());
+    render.stream(true);
+    await until('on', () => c.renderStatus && c.canChangeHudSize());
+    assert.strictEqual(c.hudSizeText(), 'Size: Standard');
     c.stepHudSize(1);
     await until('60 %', () => render.hudWidth === 60 && c.renderStatus.hud_width_pct === 60);
-    assert.strictEqual(c.hudLargerText(), 'HUD map larger (now 60 %)');
+    assert.strictEqual(c.hudSizeText(), 'Size: 60 %');
     for (let i = 0; i < 6; i++) { c.stepHudSize(1); await until('step', () => c.renderStatus.hud_width_pct === Math.min(85, 65 + i * 5)); }
     assert(c.renderStatus.hud_width_pct === 85 && !c.canHudLarger() && c.canHudSmaller(), 'held at 85 %');
     const sent = render.received.filter((m) => m.cmd === 'hud').length;
@@ -378,28 +368,36 @@ test('HUD map larger / smaller in 5 % steps from 30 to 85 %, from Standard the s
     c.close();
 });
 
-test('Move HUD map: 10 px a press each way, Centre back; the render moves it and patchd saves it', async (render, patch) => {
+test('the HUD map position: 10 px a press each way, Centre back; the render moves it and patchd saves it', async (render, patch) => {
+    render.hud = 1;
     const c = control();
     c.open();
     await until('connected', () => c.connectedRender() && c.connectedPatch());
     render.stream(true);
-    await until('showing', () => c.renderStatus && c.renderStatus.state === 'showing');
-    c.moveHud('left');
-    assert(!render.received.some((m) => m.cmd === 'hud'), 'nothing while not on the HUD');
-    c.cycleDisplay();
-    await until('on the HUD', () => render.target === 'hud' && c.canChangeHudSize());
-    assert.strictEqual(c.centreHudText(), 'Centre HUD map (centred now)');
+    await until('on', () => c.renderStatus && c.canChangeHudSize());
+    assert.strictEqual(c.hudPositionText(), 'Position: Centre');
+    assert(!c.canCentreHud(), 'Centre greyed while centred');
     c.moveHud('right'); c.moveHud('right'); c.moveHud('up');
     await until('moved', () => c.renderStatus.hud_x === 20 && c.renderStatus.hud_y === -10);
-    assert.strictEqual(c.centreHudText(), 'Centre HUD map (now 20 px right, 10 px up)');
+    assert.strictEqual(c.hudPositionText(), 'Position: 20 px right, 10 px up');
+    assert(c.canCentreHud());
     c.moveHud('down'); c.moveHud('down'); c.moveHud('left');
     await until('moved back past the centre', () => c.renderStatus.hud_x === 10 && c.renderStatus.hud_y === 10);
     await until('saved', () => { const p = patch.received.filter((m) => m.cmd === 'hud-pos').slice(-1)[0]; return p && p.hud_x === 10 && p.hud_y === 10; });
     c.centreHud();
     await until('centred', () => c.renderStatus.hud_x === 0 && c.renderStatus.hud_y === 0);
-    assert.strictEqual(c.centreHudText(), 'Centre HUD map (centred now)');
+    assert.strictEqual(c.hudPositionText(), 'Position: Centre');
     for (let i = 0; i < 50; i++) c.moveHud('left');
     await until('held at the limit', () => c.renderStatus.hud_x === -400);
+    /* the render holds the map inside the HUD: past its edge, the place it reports */
+    render.hudMaxX = 60;
+    c.centreHud();
+    await until('centred again', () => c.renderStatus.hud_x === 0);
+    for (let i = 0; i < 9; i++) c.moveHud('right');
+    assert.strictEqual(c.hudPositionText(), 'Position: 90 px right', 'as asked at first');
+    await until('as far as it goes', () => c.hudPositionText() === 'Position: 60 px right');
+    c.moveHud('left');
+    await until('the next press moves it back at once', () => c.renderStatus.hud_x === 50);
     c.close();
 });
 
@@ -583,11 +581,12 @@ test('a conflict the install left alone is shown, and CarPlay\'s Patch button st
     c.close();
 });
 
-test('a head unit that refuses the tool: not supported in both sections, also patched or with an apply pending; no Patch, zoom or card; the map unavailable; the turn box greyed', async (render, patch) => {
+test('a head unit that refuses the tool: not supported in both sections, also patched or with an apply pending; no Patch, zoom or card; the map unavailable; the turn box and the HUD greyed', async (render, patch) => {
     const NOT = 'not supported on this car (head unit: unknown variant is not supported (no hwvariant= on the kernel command line))';
     const D = [150, 400, 10];
     render.hide = null;
     render.guideDisabled = 1;
+    render.hud = null;
     const c = control();
     c.open();
     await until('connected', () => c.aa() && c.connectedRender());
@@ -617,10 +616,17 @@ test('a head unit that refuses the tool: not supported in both sections, also pa
     await until('pending, not supported', () => c.canRestart());
     assert.deepStrictEqual([c.statusText(), c.aaStatusText()], ['Status: Not supported on this car', 'Status: Not supported on this car']);
     patch.pending = null;
+    assert.strictEqual(c.hudText(), 'HUD map: Unavailable');
+    assert.deepStrictEqual([c.canToggleHud(), c.canChangeHudSize(), c.canHudLarger(), c.canHudSmaller(), c.canCentreHud()],
+        [false, false, false, false, false], 'the HUD rows greyed');
     c.enableMap();
     c.toggleGuidance();
+    c.toggleHud();
+    c.stepHudSize(1);
+    c.moveHud('left');
     await sleep(50);
     assert.strictEqual(patch.count('apply'), 0);
+    assert.strictEqual(patch.count('hud') + patch.count('hud-size') + patch.count('hud-pos'), 0, 'nothing of the HUD saved');
     assert.deepStrictEqual(render.received, []);
     c.close();
 });

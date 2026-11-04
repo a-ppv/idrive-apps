@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0
+
+A HUD section after Android Auto, contributed by eroobeeroo and
+wesleyredhat: `HUD map: …`, the Render in HUD (experimental) checkbox (off by
+default), `Size: …` with Smaller and Larger, and `Position: …` with Move
+left, Move right, Move up, Move down and Centre. Ticked, a small copy of the
+cluster's map shows on the HUD, using only the upload bandwidth the
+cluster's map leaves; the cluster's map is unchanged. The size and position
+buttons are greyed while the HUD is off, and while the cluster renderer keeps
+it off after errors (`HUD map: Disabled after errors`). The settings take
+effect at once and are kept for the next start. Requires waze-on-cluster
+0.9.0.
+
 ## 0.5.6
 
 When boot recovery removed a patch because the head unit kept restarting

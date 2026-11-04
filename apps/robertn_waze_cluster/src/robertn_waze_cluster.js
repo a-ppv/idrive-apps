@@ -5,21 +5,22 @@
  * waze-on-cluster tool, which puts the CarPlay cluster map on the instrument
  * cluster. It drives the tool entirely from the HMI, so no shell is needed.
  *
- * The main page, one LT_State_Wide list in three sections, each under a
+ * The main page, one LT_State_Wide list in four sections, each under a
  * header row. CarPlay and Android Auto have the same rows: Status, Patch,
  * Remove patch; Android Auto adds Zoom with Zoom out and Zoom in, and the
- * Hide phone's turn card checkbox. General: Cluster map (the shared render's
+ * Hide phone's turn card checkbox. HUD: HUD map (the small copy of the
+ * cluster's map on the HUD), the Render in HUD (experimental) checkbox, Size
+ * with Smaller and Larger, Position with Move left, Move right, Move up, Move
+ * down and Centre; the size and position buttons are greyed while the HUD
+ * is off or disabled after errors. General: Cluster map (the shared render's
  * map), the Hide BMW's turn box checkbox (the render's setting; a press asks
  * the render to flip it), Logs, Restart head unit and the Restart row. Info
- * rows read "Name: Value"; every on/off setting is a Hide checkbox. Every row
+ * rows read "Name: Value"; every on/off setting is a checkbox. Every row
  * stays on the page; one that cannot act now is greyed, and while patchd
  * runs any operation every operation is. The restart's two rows, the last
  * ones, are the only rows shown and hidden, so no other row moves: the
  * button while a written change waits for the next head-unit start, its row
- * while it has something to say. General also has Show map on (Cluster or
- * HUD; each press switches, saved for the next start) and HUD map size
- * (Standard, 70 %, 85 %, 40 %; enabled while the map goes to the HUD).
- * Once patched, the render puts the map on
+ * while it has something to say. Once patched, the render puts the map on
  * the cluster whenever the phone streams it, with no button.
  *
  * The Logs page (logs_control.js): Start capture and the Capture row, Save
@@ -54,7 +55,6 @@ const i18n = require('./i18n.js');
 const { WazeClusterControl, ZOOM_STEP } = require('./waze_cluster_control.js');
 const { LogsControl, ROWS: LOGS_ROWS } = require('./logs_control.js');
 const { qrPng } = require('./qr.js');
-const { ProfileSync } = require('./profile_sync.js');
 
 const logger = logging.getSDKLogger();
 
@@ -74,10 +74,13 @@ const AA_ZOOM_IN_NAME = 'wocAaZoomIn';
 const AA_CARD_NAME = 'wocAaCard';
 const GUIDE_NAME = 'wocGuide';
 const HEAD_GENERAL_NAME = 'wocHeadGeneral';
-const DISPLAY_NAME = 'wocDisplay';
-const HUD_SIZE_NAME = 'wocHudSize';         /* HUD map larger */
+const HUD_NAME = 'wocHud';
+const HUD_ON_NAME = 'wocHudOn';
+const HUD_ON_TEXT = 'Render in HUD (experimental)';
+const HUD_SIZE_NAME = 'wocHudSize';
 const HUD_SMALLER_NAME = 'wocHudSmaller';
-/* Move HUD map left / right / up / down, and Centre HUD map */
+const HUD_LARGER_NAME = 'wocHudLarger';
+const HUD_POS_NAME = 'wocHudPos';
 const HUD_MOVE_NAMES = { left: 'wocHudLeft', right: 'wocHudRight', up: 'wocHudUp', down: 'wocHudDown' };
 const HUD_CENTRE_NAME = 'wocHudCentre';
 const CAPTURE_NAME = 'wocCapture';
@@ -127,9 +130,6 @@ class WazeClusterApp extends OnlineApp {
         this._control.on('change', () => this._render());
         this._logs = new LogsControl({ log: logger });
         this._logs.on('change', () => this._renderLogs());
-        /* the display choice per driver profile, page shown or not */
-        this._profiles = new ProfileSync({ control: this._control, log: logger });
-        this._profiles.start();
 
         this.on('initialized', () => {
             this._appInitialized()
@@ -191,7 +191,8 @@ class WazeClusterApp extends OnlineApp {
             return Promise.reject(new Error(`uiDescription has no ${STATE_NAME} or ${LOGS_STATE}`));
         }
         const names = [STATUS_NAME, MAP_NAME, RESTART_STATUS_NAME, ENABLE_NAME, DISABLE_NAME, AA_STATUS_NAME, AA_ENABLE_NAME, AA_DISABLE_NAME, AA_ZOOM_NAME,
-            AA_ZOOM_OUT_NAME, AA_ZOOM_IN_NAME, AA_CARD_NAME, RESTART_NAME, GUIDE_NAME, HEAD_GENERAL_NAME, DISPLAY_NAME, HUD_SIZE_NAME, HUD_SMALLER_NAME]
+            AA_ZOOM_OUT_NAME, AA_ZOOM_IN_NAME, AA_CARD_NAME, RESTART_NAME, GUIDE_NAME, HEAD_GENERAL_NAME, HUD_NAME, HUD_ON_NAME, HUD_SIZE_NAME, HUD_SMALLER_NAME,
+            HUD_LARGER_NAME, HUD_POS_NAME]
             .concat(Object.values(HUD_MOVE_NAMES), [HUD_CENTRE_NAME, CAPTURE_NAME, CAPTURE_STATUS,
                 LOGS_NAME, LOGS_SAVE, LOGS_STATUS, LOGS_QR, LOGS_URL], LOGS_ROW_NAMES);
         names.forEach((name) => { this._components[name] = rhmi.getByName(name); });
@@ -217,9 +218,14 @@ class WazeClusterApp extends OnlineApp {
             delete this._written[`selected:${GUIDE_NAME}`];
             this._control.toggleGuidance();
         });
-        this._bind(DISPLAY_NAME, () => this._control.cycleDisplay());
-        this._bind(HUD_SIZE_NAME, () => this._control.stepHudSize(1));
+        this._bind(HUD_ON_NAME, () => {
+            /* the HMI ticks or unticks the box itself; the control's state,
+             * as asked and then as the render says, decides what it shows */
+            delete this._written[`selected:${HUD_ON_NAME}`];
+            this._control.toggleHud();
+        });
         this._bind(HUD_SMALLER_NAME, () => this._control.stepHudSize(-1));
+        this._bind(HUD_LARGER_NAME, () => this._control.stepHudSize(1));
         Object.keys(HUD_MOVE_NAMES).forEach((dir) => this._bind(HUD_MOVE_NAMES[dir], () => this._control.moveHud(dir)));
         this._bind(HUD_CENTRE_NAME, () => this._control.centreHud());
         this._bind(CAPTURE_NAME, () => this._control.capture());
@@ -491,17 +497,19 @@ class WazeClusterApp extends OnlineApp {
         this._setEnabled(GUIDE_NAME, hide !== null && !unavailable);
         this._write(GUIDE_NAME, t("Hide BMW's turn box"));
         this._setSelected(GUIDE_NAME, !!hide && !unavailable);
-        /* Cluster or HUD: each press moves the map to the other one */
-        this._write(DISPLAY_NAME, c.displayText());
-        this._setEnabled(DISPLAY_NAME, c.canChangeDisplay());
-        /* the HUD map's size: enabled while the map goes to the HUD */
-        this._write(HUD_SIZE_NAME, c.hudLargerText());
-        this._setEnabled(HUD_SIZE_NAME, c.canHudLarger());
+        this._write(HUD_NAME, c.hudText());
+        this._write(HUD_ON_NAME, HUD_ON_TEXT);
+        this._setEnabled(HUD_ON_NAME, c.canToggleHud());
+        this._setSelected(HUD_ON_NAME, c.hudOn() === true);
+        /* the size and place buttons: greyed while the HUD is off or
+         * disabled (the HMI greys no label) */
+        const adjust = c.canChangeHudSize();
+        this._write(HUD_SIZE_NAME, c.hudSizeText());
         this._setEnabled(HUD_SMALLER_NAME, c.canHudSmaller());
-        /* where it is: enabled while the map goes to the HUD */
-        Object.values(HUD_MOVE_NAMES).forEach((n) => this._setEnabled(n, c.canChangeHudSize()));
-        this._write(HUD_CENTRE_NAME, c.centreHudText());
-        this._setEnabled(HUD_CENTRE_NAME, c.canChangeHudSize());
+        this._setEnabled(HUD_LARGER_NAME, c.canHudLarger());
+        this._write(HUD_POS_NAME, c.hudPositionText());
+        Object.values(HUD_MOVE_NAMES).forEach((n) => this._setEnabled(n, adjust));
+        this._setEnabled(HUD_CENTRE_NAME, c.canCentreHud());
     }
 
     _renderLogs() {
@@ -592,7 +600,6 @@ class WazeClusterApp extends OnlineApp {
                 /* gone already */
             }
         }
-        this._profiles.stop();
         this._shutdownPromise = Promise.resolve()
             .then(() => this.destroyBundles().catch((err) =>
                 logger.info(`destroyBundles: ${err && err.message}`)))

@@ -67,182 +67,6 @@
             }
           ]
         },
-        "30": {
-          "type": "button",
-          "name": "wocDisplay",
-          "properties": {
-            "Visible": {
-              "value": 1,
-              "type": "UInt"
-            },
-            "Focusable": {
-              "value": 3,
-              "type": "UInt"
-            }
-          },
-          "rows": [
-            {
-              "Text": {
-                "value": "Show map on: \u2026",
-                "type": "Text"
-              }
-            }
-          ]
-        },
-        "31": {
-          "type": "button",
-          "name": "wocHudSize",
-          "properties": {
-            "Visible": {
-              "value": 1,
-              "type": "UInt"
-            },
-            "Focusable": {
-              "value": 3,
-              "type": "UInt"
-            }
-          },
-          "rows": [
-            {
-              "Text": {
-                "value": "HUD map larger (now \u2026)",
-                "type": "Text"
-              }
-            }
-          ]
-        },
-        "40": {
-          "type": "button",
-          "name": "wocHudSmaller",
-          "properties": {
-            "Visible": {
-              "value": 1,
-              "type": "UInt"
-            },
-            "Focusable": {
-              "value": 3,
-              "type": "UInt"
-            }
-          },
-          "rows": [
-            {
-              "Text": {
-                "value": "HUD map smaller",
-                "type": "Text"
-              }
-            }
-          ]
-        },
-        "41": {
-          "type": "button",
-          "name": "wocHudLeft",
-          "properties": {
-            "Visible": {
-              "value": 1,
-              "type": "UInt"
-            },
-            "Focusable": {
-              "value": 3,
-              "type": "UInt"
-            }
-          },
-          "rows": [
-            {
-              "Text": {
-                "value": "Move HUD map left",
-                "type": "Text"
-              }
-            }
-          ]
-        },
-        "42": {
-          "type": "button",
-          "name": "wocHudRight",
-          "properties": {
-            "Visible": {
-              "value": 1,
-              "type": "UInt"
-            },
-            "Focusable": {
-              "value": 3,
-              "type": "UInt"
-            }
-          },
-          "rows": [
-            {
-              "Text": {
-                "value": "Move HUD map right",
-                "type": "Text"
-              }
-            }
-          ]
-        },
-        "43": {
-          "type": "button",
-          "name": "wocHudUp",
-          "properties": {
-            "Visible": {
-              "value": 1,
-              "type": "UInt"
-            },
-            "Focusable": {
-              "value": 3,
-              "type": "UInt"
-            }
-          },
-          "rows": [
-            {
-              "Text": {
-                "value": "Move HUD map up",
-                "type": "Text"
-              }
-            }
-          ]
-        },
-        "44": {
-          "type": "button",
-          "name": "wocHudDown",
-          "properties": {
-            "Visible": {
-              "value": 1,
-              "type": "UInt"
-            },
-            "Focusable": {
-              "value": 3,
-              "type": "UInt"
-            }
-          },
-          "rows": [
-            {
-              "Text": {
-                "value": "Move HUD map down",
-                "type": "Text"
-              }
-            }
-          ]
-        },
-        "45": {
-          "type": "button",
-          "name": "wocHudCentre",
-          "properties": {
-            "Visible": {
-              "value": 1,
-              "type": "UInt"
-            },
-            "Focusable": {
-              "value": 3,
-              "type": "UInt"
-            }
-          },
-          "rows": [
-            {
-              "Text": {
-                "value": "Centre HUD map",
-                "type": "Text"
-              }
-            }
-          ]
-        },
         "32": {
           "type": "button",
           "name": "wocEnable",
@@ -463,6 +287,274 @@
               "eParam_RowSelected": {
                 "value": false,
                 "type": "Bool"
+              }
+            }
+          ]
+        },
+        "93": {
+          "type": "label",
+          "name": "wocHeadHud",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 0,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "HUD",
+                "type": "Text"
+              }
+            }
+          ]
+        },
+        "50": {
+          "type": "label",
+          "name": "wocHud",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 0,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "HUD map: \u2014",
+                "type": "Text"
+              }
+            }
+          ]
+        },
+        "51": {
+          "type": "checkBox",
+          "name": "wocHudOn",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "Render in HUD (experimental)",
+                "type": "Text"
+              },
+              "eParam_RowSelected": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "52": {
+          "type": "label",
+          "name": "wocHudSize",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 0,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "Size: \u2014",
+                "type": "Text"
+              }
+            }
+          ]
+        },
+        "53": {
+          "type": "button",
+          "name": "wocHudSmaller",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "Smaller",
+                "type": "Text"
+              }
+            }
+          ]
+        },
+        "54": {
+          "type": "button",
+          "name": "wocHudLarger",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "Larger",
+                "type": "Text"
+              }
+            }
+          ]
+        },
+        "55": {
+          "type": "label",
+          "name": "wocHudPos",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 0,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "Position: \u2014",
+                "type": "Text"
+              }
+            }
+          ]
+        },
+        "56": {
+          "type": "button",
+          "name": "wocHudLeft",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "Move left",
+                "type": "Text"
+              }
+            }
+          ]
+        },
+        "57": {
+          "type": "button",
+          "name": "wocHudRight",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "Move right",
+                "type": "Text"
+              }
+            }
+          ]
+        },
+        "58": {
+          "type": "button",
+          "name": "wocHudUp",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "Move up",
+                "type": "Text"
+              }
+            }
+          ]
+        },
+        "59": {
+          "type": "button",
+          "name": "wocHudDown",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "Move down",
+                "type": "Text"
+              }
+            }
+          ]
+        },
+        "60": {
+          "type": "button",
+          "name": "wocHudCentre",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "Centre",
+                "type": "Text"
               }
             }
           ]

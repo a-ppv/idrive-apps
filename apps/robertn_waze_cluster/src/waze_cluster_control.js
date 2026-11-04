@@ -95,19 +95,12 @@ const SIZE = '1088x480';
 /* The safe area CarPlay's Patch button writes: where the phone keeps its guidance UI,
  * inside the part of the map the gauges leave visible. */
 const SAFE = '504x368+286+72';
-/* Where the map can go, in the order the Display button steps through them:
- * the render's target and the name the page shows. */
-const DISPLAYS = [['map', 'Cluster'], ['hud', 'HUD']];
-/* The HUD map's sizes, in the order the size button steps through them: its
- * width in percent of the HUD's (0: the standard fitted box, about 57 %). */
-/* 85 % is the widest the HUD shows whole (the render holds a larger saved size to it). */
-const HUD_SIZES = [[0, 'Standard'], [70, '70 %'], [85, '85 %'], [40, '40 %']];
 /* The HUD map size scaler: larger / smaller in HUD_STEP_PCT steps from HUD_MIN_PCT to HUD_MAX_PCT (85 %, the
  * widest the HUD shows whole). Standard (0) counts as HUD_STANDARD_PCT, about what the fitted box is. */
 const HUD_MIN_PCT = 30, HUD_MAX_PCT = 85, HUD_STEP_PCT = 5, HUD_STANDARD_PCT = 57;
-/* The HUD map moved from its centre, HUD_MOVE_PX a press, within +-HUD_MOVE_MAX (the render holds it inside the
- * HUD as well). */
-const HUD_MOVE_PX = 10, HUD_MOVE_MAX = 400;
+/* The HUD map moved from its centre, HUD_MOVE_PX a press, within +-HUD_MOVE_MAX; the render holds it inside the
+ * HUD and reports the offset as far as it went, shown once HUD_ASKED_MS has passed. */
+const HUD_MOVE_PX = 10, HUD_MOVE_MAX = 400, HUD_ASKED_MS = 300;
 const MOVES = { left: [-1, 0], right: [1, 0], up: [0, -1], down: [0, 1] };
 
 /* One newline-delimited-JSON stream socket, reconnecting while open.
@@ -300,6 +293,8 @@ class WazeClusterControl extends EventEmitter {
 
     /* Close both; the tools keep running. */
     close() {
+        clearTimeout(this._askedPosTimer);
+        this._askedPos = null;
         this.render.close();
         this.patch.close();
         this.renderStatus = null;
@@ -340,26 +335,69 @@ class WazeClusterControl extends EventEmitter {
         }
     }
 
-    /* ---- display: cluster, HUD or both ---- */
-    /* The render's target now ("sail" is the cluster's map), or the one just
-     * asked for until the render reports it. */
-    displayTarget() {
-        if (this._askedDisplay) {
-            return this._askedDisplay;
+    /* ---- the HUD (experimental): a small copy of the cluster's map ---- */
+    /* Whether the HUD is on: as just asked for until the render reports it,
+     * else as the render last said; null while it has not. */
+    hudOn() {
+        if (this._askedHudOn != null) {
+            return this._askedHudOn;
         }
-        const t = this.renderStatus && this.renderStatus.target;
-        return t === 'sail' ? 'map' : t || null;
+        const rs = this.renderStatus;
+        return rs && (rs.hud === 0 || rs.hud === 1) ? rs.hud === 1 : null;
     }
 
-    displayText() {
-        /* an older saved "map+hud" shows as the cluster; the next press picks one */
-        const t = this.displayTarget() === 'map+hud' ? 'map' : this.displayTarget();
-        const d = DISPLAYS.find(([v]) => v === t);
-        return `Show map on: ${d ? d[1] : '…'}`;
+    /* True while cluster-render's mapping guard keeps the HUD off. */
+    hudDisabled() {
+        const rs = this.renderStatus;
+        return !!(rs && rs.hud_state === 'disabled');
     }
 
-    canChangeDisplay() {
-        return this.render.connected();
+    /* A change goes to the render and is saved by patchd: both connected. */
+    canToggleHud() {
+        return this.render.connected() && this.connectedPatch() && this.hudOn() !== null;
+    }
+
+    /* Turns the HUD on or off: the render at once, patchd saves it. */
+    toggleHud() {
+        if (!this.canToggleHud()) {
+            return;
+        }
+        const on = !this.hudOn();
+        this._askedHudOn = on;
+        this.render.send({ cmd: 'hud', on: on ? '1' : '0' });
+        this.patch.send({ cmd: 'hud', on: on ? 1 : 0 });
+        this.emit('change');
+    }
+
+    hudText() {
+        return `HUD map: ${this._hudState()}`;
+    }
+
+    _hudState() {
+        const on = this.hudOn();
+        if (this.render.link !== 'up' || on === null) {
+            return 'Unavailable';
+        }
+        if (!on) {
+            return 'Off';
+        }
+        if (this.hudDisabled()) {
+            return 'Disabled after errors';
+        }
+        switch (this.renderStatus.hud_state) {
+        case 'showing':
+            return 'Showing';
+        case 'starting':
+            return 'Starting…';
+        case 'error':
+            return 'Error';
+        case 'frozen':
+            return 'Frozen';
+        case 'off':
+            return 'Off';
+        default:
+            return 'Waiting for the phone';
+        }
     }
 
     /* ---- the HUD map's size ---- */
@@ -372,13 +410,13 @@ class WazeClusterControl extends EventEmitter {
     }
 
     hudSizeText() {
-        const d = HUD_SIZES.find(([v]) => v === this.hudWidth());
-        return `HUD map size: ${d ? d[1] : this.hudWidth() != null ? `${this.hudWidth()} %` : '…'}`;
+        const w = this.hudWidth();
+        return `Size: ${w == null ? '—' : w === 0 ? 'Standard' : `${w} %`}`;
     }
 
-    /* Only while the map goes to the HUD. */
+    /* The size and place change only while the HUD is on and not disabled. */
     canChangeHudSize() {
-        return this.render.connected() && /hud/.test(this.displayTarget() || '');
+        return this.canToggleHud() && this.hudOn() === true && !this.hudDisabled();
     }
 
     /* The HUD map larger (dir +1) or smaller (-1) by a step: from Standard, the step next to its ~57 %. */
@@ -392,20 +430,13 @@ class WazeClusterControl extends EventEmitter {
         if (next === this.hudWidth()) {
             return;
         }
-        this._setHudSize(next);
+        this._askedHud = next;
+        this.render.send({ cmd: 'hud', hud_width_pct: String(next) });
+        this.patch.send({ cmd: 'hud-size', hud_width_pct: next });
+        this.emit('change');
     }
     canHudLarger() { return this.canChangeHudSize() && (this.hudWidth() || HUD_STANDARD_PCT) < HUD_MAX_PCT; }
     canHudSmaller() { return this.canChangeHudSize() && (this.hudWidth() || HUD_STANDARD_PCT) > HUD_MIN_PCT; }
-    hudLargerText() {
-        const w = this.hudWidth();
-        return `HUD map larger (now ${w == null ? '…' : w === 0 ? 'Standard' : `${w} %`})`;
-    }
-    _setHudSize(pct) {
-        this._askedHud = pct;
-        this.render.send({ cmd: 'hud', hud_width_pct: String(pct) });
-        this.patch.send({ cmd: 'hud-size', hud_width_pct: pct });
-        this.emit('change');
-    }
 
     /* ---- where the HUD map is: moved from its centre, in HUD pixels ---- */
     hudOffset() {
@@ -413,64 +444,49 @@ class WazeClusterControl extends EventEmitter {
             return this._askedPos;
         }
         const s = this.renderStatus;
-        return s && typeof s.hud_x === 'number' ? [s.hud_x, s.hud_y] : [0, 0];
+        return s && typeof s.hud_x === 'number' ? [s.hud_x, s.hud_y] : null;
     }
     /* Moves it a step (left / right / up / down): the render moves it at once, patchd saves it. */
     moveHud(dir) {
         const d = MOVES[dir];
-        if (!d || !this.canChangeHudSize()) {
+        const at = this.hudOffset();
+        if (!d || !at || !this.canChangeHudSize()) {
             return;
         }
-        const [x, y] = this.hudOffset();
         const clamp = (v) => Math.max(-HUD_MOVE_MAX, Math.min(HUD_MOVE_MAX, v));
-        this._setHudPos(clamp(x + d[0] * HUD_MOVE_PX), clamp(y + d[1] * HUD_MOVE_PX));
+        this._setHudPos(clamp(at[0] + d[0] * HUD_MOVE_PX), clamp(at[1] + d[1] * HUD_MOVE_PX));
+    }
+    canCentreHud() {
+        const at = this.hudOffset();
+        return this.canChangeHudSize() && !!at && (at[0] !== 0 || at[1] !== 0);
     }
     centreHud() {
-        if (this.canChangeHudSize()) {
+        if (this.canCentreHud()) {
             this._setHudPos(0, 0);
         }
     }
     _setHudPos(x, y) {
         this._askedPos = [x, y];
+        clearTimeout(this._askedPosTimer);
+        this._askedPosTimer = setTimeout(() => {
+            this._askedPos = null;
+            this.emit('change');
+        }, HUD_ASKED_MS);
         this.render.send({ cmd: 'hud', hud_x: String(x), hud_y: String(y) });
         this.patch.send({ cmd: 'hud-pos', hud_x: x, hud_y: y });
         this.emit('change');
     }
-    centreHudText() {
-        const [x, y] = this.hudOffset();
+    hudPositionText() {
+        const at = this.hudOffset();
+        if (!at) {
+            return 'Position: —';
+        }
+        const [x, y] = at;
         if (!x && !y) {
-            return 'Centre HUD map (centred now)';
+            return 'Position: Centre';
         }
         const h = x ? `${Math.abs(x)} px ${x > 0 ? 'right' : 'left'}` : '', v = y ? `${Math.abs(y)} px ${y > 0 ? 'down' : 'up'}` : '';
-        return `Centre HUD map (now ${[h, v].filter(Boolean).join(', ')})`;
-    }
-
-    /* The next size: the render resizes the HUD map at once, patchd saves it. */
-    cycleHudSize() {
-        if (!this.canChangeHudSize()) {
-            return;
-        }
-        const i = HUD_SIZES.findIndex(([v]) => v === this.hudWidth());
-        const next = HUD_SIZES[(i + 1) % HUD_SIZES.length][0];
-        this._askedHud = next;
-        this.render.send({ cmd: 'hud', hud_width_pct: String(next) });
-        this.patch.send({ cmd: 'hud-size', hud_width_pct: next });
-        this.emit('change');
-    }
-
-    /* The next choice: the running render moves at once (its start command),
-     * and patchd saves it for the render's next start. */
-    cycleDisplay() {
-        if (!this.canChangeDisplay()) {
-            return;
-        }
-        const cur = this.displayTarget() === 'map+hud' ? 'map' : this.displayTarget();
-        const i = DISPLAYS.findIndex(([t]) => t === cur);
-        const next = DISPLAYS[(i + 1) % DISPLAYS.length][0];
-        this._askedDisplay = next;
-        this.render.send({ cmd: 'start', target: next });
-        this.patch.send({ cmd: 'target', target: next });
-        this.emit('change');
+        return `Position: ${[h, v].filter(Boolean).join(', ')}`;
     }
 
     /* CarPlay's Patch button is offered for an original (never patched, or reverted), an
@@ -896,8 +912,8 @@ class WazeClusterControl extends EventEmitter {
     _onRender(msg) {
         if (msg.ev === 'status') {
             this.renderStatus = msg;
-            if (this._askedDisplay && msg.target === this._askedDisplay) {
-                this._askedDisplay = null;
+            if (this._askedHudOn != null && msg.hud === (this._askedHudOn ? 1 : 0)) {
+                this._askedHudOn = null;
             }
             if (this._askedHud != null && msg.hud_width_pct === this._askedHud) {
                 this._askedHud = null;
@@ -922,20 +938,9 @@ class WazeClusterControl extends EventEmitter {
             this._noteCardAsked(msg);
             this._wake();
             this.emit('change');
-        } else if (msg.ev === 'hud-size-reply') {
+        } else if (/^hud(-size|-pos)?-reply$/.test(msg.ev)) {
             if (!msg.ok) {
-                this._addLine('patch', `HUD size not saved: ${msg.reason || 'refused'}`);
-                this.emit('log');
-            }
-        } else if (msg.ev === 'hud-pos-reply') {
-            if (!msg.ok) {
-                this._addLine('patch', `HUD position not saved: ${msg.reason || 'refused'}`);
-                this.emit('log');
-            }
-        } else if (msg.ev === 'target-reply') {
-            if (!msg.ok) {
-                this._addLine('patch', `display choice not saved: ${msg.reason || 'refused'}`);
-                this.emit('log');
+                this._log.info(`patchd did not save the HUD setting: ${msg.reason || 'refused'}`);
             }
         } else if (msg.ev === 'reboot-reply') {
             /* A refused or failed request clears the asked flag; the status
@@ -958,5 +963,5 @@ class WazeClusterControl extends EventEmitter {
 module.exports = {
     WazeClusterControl, LineSocket,
     RENDER_PATH, PATCH_PATH, PENDING_PATH, AA_PENDING_PATH, BOOT_ID_PATH,
-    SIZE, SAFE, ZOOM_STEP, RESTART_FAILED, DISPLAYS, HUD_SIZES, HUD_MIN_PCT, HUD_MAX_PCT, HUD_STEP_PCT, HUD_MOVE_PX
+    SIZE, SAFE, ZOOM_STEP, RESTART_FAILED
 };

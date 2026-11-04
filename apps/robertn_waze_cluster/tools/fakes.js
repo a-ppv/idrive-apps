@@ -120,6 +120,9 @@ class FakeRender extends LineServer {
         this.reason = null;
         this.hide = 1;
         this.guideDisabled = 0;
+        /* the HUD: off by default; its state while on (hudState null: as the map) */
+        this.hud = 0;
+        this.hudState = null;
         this._showTimer = null;
     }
 
@@ -139,8 +142,12 @@ class FakeRender extends LineServer {
     }
 
     _status() {
-        const s = { ev: 'status', state: this.state, target: this.target, page: this.page, reason: this.reason,
-            hud_width_pct: this.hudWidth || 0, hud_x: this.hudX || 0, hud_y: this.hudY || 0 };
+        const s = { ev: 'status', state: this.state, target: this.target, page: this.page, reason: this.reason };
+        /* hud null: a tool without the HUD's fields (one refused by its head unit) */
+        if (this.hud !== null) {
+            Object.assign(s, { hud: this.hud, hud_state: this.hud ? this.hudState || this.state : 'off',
+                hud_width_pct: this.hudWidth || 0, hud_x: this.hudX || 0, hud_y: this.hudY || 0 });
+        }
         if (this.hide !== null) {
             s.hide_bmw_guidance = this.hide;
             s.guide_disabled = this.guideDisabled;
@@ -173,13 +180,12 @@ class FakeRender extends LineServer {
             this.hide = msg.hide;
             this._broadcast(this._status());
         }
-        /* start moves the map: the next status carries the new target */
-        if (msg.cmd === 'start' && msg.target) {
-            this._set(this.state, msg.target, this.page, this.reason);
-        }
         if (msg.cmd === 'hud') {
+            if (msg.on !== undefined) this.hud = Number(msg.on);
             if (msg.hud_width_pct !== undefined) this.hudWidth = Number(msg.hud_width_pct);
-            if (msg.hud_x !== undefined) this.hudX = Number(msg.hud_x);
+            /* held inside the HUD, as the render does, when hudMaxX is set */
+            const lim = (v) => (this.hudMaxX ? Math.max(-this.hudMaxX, Math.min(this.hudMaxX, v)) : v);
+            if (msg.hud_x !== undefined) this.hudX = lim(Number(msg.hud_x));
             if (msg.hud_y !== undefined) this.hudY = Number(msg.hud_y);
             this._broadcast(this._status());
         }

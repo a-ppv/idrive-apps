@@ -8,7 +8,7 @@ shell is needed.
 Install it from the catalog of
 [idrive-apps](https://github.com/robertnisipeanu/idrive-apps)
 through the [mgu Store](https://github.com/robertnisipeanu/mgu-store). It requires
-waze-on-cluster 0.8.5, which brings the cluster renderer and writes the
+waze-on-cluster 0.9.0, which brings the cluster renderer and writes the
 CarPlay patch, and the Android Auto patch where the car supports it, as it
 installs; one head-unit start activates them. After that
 the map is on the cluster whenever CarPlay streams it, whether or not this
@@ -60,21 +60,26 @@ the RHMI text files, which hold the tile's name and the Logs page's title.
 the same `{n}`, and every HMI language its text file.
 ## HUD
 
-Contributed by [eroobeeroo](https://github.com/eroobeeroo): the map (Waze or
-Google Maps) on the head-up display instead of the cluster. **Show map on**
-switches between them. On the HUD the frames are scaled on the head unit to
-the size shown, the corners are rounded and a night map's background is made
-black, which the HUD shows as nothing, so the roads, route and labels float
-in view. The map steps aside while the HUD's media and list pop-ups show. The
-choice and the HUD map size are kept for each driver profile.
+Contributed by [eroobeeroo](https://github.com/eroobeeroo) and
+[wesleyredhat](https://github.com/wesleyredhat): with **Render in HUD
+(experimental)** ticked (off by default), a small copy of the cluster's map
+(Waze or Google Maps) shows on the head-up display too. The cluster's map
+stays as it is: the HUD's copy uses only the upload bandwidth the cluster's
+map leaves unused, at most 10 frames a second. On the HUD the frames are
+scaled on the head unit to the size shown, the corners are rounded and a
+night map's background is made black, which the HUD shows as nothing, so the
+roads, route and labels float in view. The map steps aside while the HUD's
+media and list pop-ups show. If the instrument cluster restarts right after
+the HUD map shows, twice, the HUD map is disabled; the cluster's map keeps
+working.
 
 ## The page
 
-One `LT_State_Wide` list in three sections, each under a header row
+One `LT_State_Wide` list in four sections, each under a header row
 (`LT_Label_Header_1Row`). CarPlay and Android Auto have the same rows with
 the same words; no row repeats the header's name. Every info row reads
 `Name: Value`, the value starting with a capital (`Zoom: —` while there
-is none), and every on/off setting is a `Hide …` checkbox. Every row
+is none), and every on/off setting is a checkbox. Every row
 stays where it is: one that cannot act now is greyed, and while `patchd`
 runs any operation (`busy`), every operation in both sections is. A greyed
 row pressed sends nothing; a greyed checkbox keeps its label. The
@@ -105,6 +110,13 @@ supported, HIGH F included.
 | | Zoom | `Zoom: 180 dpi`, the density on disk, with `(after restart)` while it differs from the one aapd runs until the next head-unit start; `Zoom: —` without the patch |
 | | Zoom out / Zoom in | 10 dpi a press (150-400): out shows more map; enabled while patched, nothing is pending and the 10 s between changes has passed |
 | | Hide phone's turn card | a checkbox, ticked while the turn card on disk is hidden, or as asked while its change runs: the phone's own turn card cropped off the map; `(after restart)` as for the zoom; enabled as Zoom out and Zoom in |
+| **HUD** | HUD map | `HUD map: <state>`, the small copy of the cluster's map on the HUD: `Off`, `Starting…`, `Showing`, `Waiting for the phone`, `Frozen`, `Error`, `Disabled after errors` (the cluster renderer turned it off after the cluster restarted right after it showed, twice), `Unavailable` (the map service is down) |
+| | Render in HUD (experimental) | a checkbox, unticked by default: ticked, the copy shows on the HUD. A press changes it at once and it is kept for the next start. Greyed until the map service reports it |
+| | Size | `Size: Standard` (the fitted box, about 57 % of the HUD's width) or `Size: 70 %` |
+| | Smaller / Larger | 5 % a press, from 30 % to 85 % of the HUD's width, the picture's shape kept; kept for the next start; greyed while the HUD is off or disabled |
+| | Position | `Position: Centre`, or how far the HUD map is moved: `Position: 20 px right, 10 px up` |
+| | Move left / Move right / Move up / Move down | 10 px a press, held inside the HUD; kept for the next start; greyed as Smaller and Larger |
+| | Centre | puts it back in the middle; enabled while it is moved |
 | **General** | Cluster map | `Cluster map: <state>`, the map the shared render draws for either phone: `Off` unless CarPlay's or Android Auto's patch is in effect (on disk with nothing pending, as the last status outside a change said; a running or failed change keeps it), `Starting…`, `Showing Waze map — 16 frames/s`, `Waiting for the phone`, `Waiting for the phone's map`, `Stream lost`, `Frozen`, `Error`, `Unavailable` (the map service is down, or refuses the head unit) |
 | | Hide BMW's turn box | a checkbox: ticked, BMW's turn-by-turn box on the cluster stays hidden while the map shows (the default); unticked, it shows. A press changes it at once and the map service keeps it. Greyed and unticked until the map service reports it and while the cluster renderer keeps the box shown |
 | | Logs | opens the Logs page |
@@ -116,6 +128,9 @@ supported, HIGH F included.
 | CarPlay | ![](docs/main-carplay.png) |
 | Android Auto | ![](docs/main-aa-on.png) |
 | General | ![](docs/main-general.png) |
+| HUD off (the default) | ![](docs/main-hud-off.png) |
+| HUD on | ![](docs/main-hud-on.png) |
+| HUD disabled after errors | ![](docs/main-hud-disabled.png) |
 | Android Auto alone patched, the cluster map showing | ![](docs/main-aa-only.png) ![](docs/main-aa-only-map.png) |
 | Android Auto not supported | ![](docs/main-aa-unsupported.png) |
 | A change waiting for a restart | ![](docs/main-restart-pending-aa.png) ![](docs/main-restart-pending.png) |
@@ -189,8 +204,8 @@ A patch with another sink, panel, size (not `1088x480`) or safe area (not
 node tools/test_control.js           # the socket client against fake sockets
 node tools/test_page.js              # the page against a fake SDK and HMI
 node tools/test_i18n.js              # every language: its words, placeholders, RHMI text files
-node tools/build.js                  # robertn_waze_cluster@0.5.6.src.tgz
-node tools/build.js --sdk <donor>    # also robertn_waze_cluster@0.5.6.tgz
+node tools/build.js                  # robertn_waze_cluster@0.6.0.src.tgz
+node tools/build.js --sdk <donor>    # also robertn_waze_cluster@0.6.0.tgz
 ```
 
 The app ships as a source package (`mgu-app.json`; `"build": "unit"` in the
@@ -213,7 +228,7 @@ Enter starts or stops a fake CarPlay stream.
 | `src/logs_control.js` | the logs socket client |
 | `src/qr.js`, `src/qrcodegen.js` | the QR code PNG; Project Nayuki's generator (MIT, `LICENSE-qrcodegen.txt`) |
 | `tools/` | build, fakes, tests, icon |
-| `robertn_waze_cluster@0.5.6/` | the package tree (manifest, RHMI UI, config) |
+| `robertn_waze_cluster@0.6.0/` | the package tree (manifest, RHMI UI, config) |
 
 ## License
 

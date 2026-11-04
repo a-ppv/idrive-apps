@@ -13,9 +13,11 @@ Tools and apps for the iDrive 7 head unit (MGU) of a BMW, installed from the
 
 ## The map on the HUD
 
-The Waze tool can show the CarPlay map (Waze or Google Maps) on the head-up display instead of the instrument
-cluster, switched from the app's page. HUD support was contributed by [eroobeeroo](https://github.com/eroobeeroo).
-Photos from a 2021 X5 xDrive45e (G05); street names blurred.
+The map is always on the instrument cluster. With **Render in HUD (experimental)** ticked on the app's page (off by
+default) a small copy of it shows on the head-up display too, using only the upload bandwidth the cluster's map leaves
+unused, so the cluster's map is never slowed by it. HUD support was contributed by
+[eroobeeroo](https://github.com/eroobeeroo) and [wesleyredhat](https://github.com/wesleyredhat). Photos from a 2021 X5
+xDrive45e (G05); street names blurred.
 
 ![The HUD map while driving](docs/hud/hud-on-the-road.jpg)
 
@@ -26,22 +28,20 @@ bottom right, battery power and temperatures, is a separate app.)*
 |---|---|
 | ![Before](docs/hud/hud-before-black-background.jpg) | ![After](docs/hud/hud-night.jpg) |
 
-- **Show map on: Cluster / HUD** - one button moves the map between the instrument cluster and the HUD, at once.
-- **Size** - **HUD map larger / smaller** in 5 % steps from 30 % to 85 % of the HUD's width, the picture's shape
+- **Size** - **Smaller** and **Larger** in 5 % steps from 30 % to 85 % of the HUD's width, the picture's shape
   kept. Standard is the fitted box, about 57 %.
-- **Position** - **Move HUD map left / right / up / down**, 10 px a press, and **Centre HUD map**. The map moves at
-  once (only its place changes) and is held inside the HUD.
-- **Made for a HUD** - the frames are scaled on the head unit to the size shown (sharper, 2-6x less data to the
-  instrument cluster), the corners are rounded, and a night map's background is made black so only the roads,
-  route and labels float in view (green, such as parks, is kept).
-- **Gives way** - the map steps aside while the HUD's own media and list pop-ups show.
-- **Per driver** - the display choice, size and position are kept for each driver profile.
+- **Position** - **Move left / right / up / down**, 10 px a press, and **Centre**. The map moves at once and is held
+  inside the HUD.
+- **Made for a HUD** - the frames are scaled on the head unit to the size shown, at most 10 a second, the corners are
+  rounded, and a night map's background is made black so only the roads, route and labels float in view (green,
+  such as parks, is kept).
+- **Gives way** - the map steps aside while the HUD's own media and list pop-ups show, and never replaces BMW's own
+  HUD content.
+- **Turned off after errors** - if the instrument cluster restarts right after the HUD map shows, twice, the HUD map
+  stays off (`HUD map: Disabled after errors`) until the next cluster-render version or `cluster-render guard-reset`;
+  the cluster's map keeps working.
 
-![HUD map size and position](docs/hud/hud-size-and-position.png)
-
-![The app page](docs/hud/app-page.png)
-
-On the cluster, as before, the map fills the central area:
+On the cluster the map fills the central area:
 
 ![The map on the cluster](docs/hud/cluster-map.jpg)
 

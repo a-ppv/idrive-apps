@@ -8,8 +8,8 @@
  *
  *   node tools/build.js && node tools/test_page.js
  *
- * Covers: the main page's three sections in order (CarPlay, Android Auto,
- * General), each under a header row, the same in application.xml; no log
+ * Covers: the main page's four sections in order (CarPlay, Android Auto,
+ * HUD, General), each under a header row, the same in application.xml; no log
  * rows on it; its labels; every row stays on the page through every state
  * (CarPlay showing and waiting, patched and not, Android Auto on, off and
  * not supported, a patch pending), greyed where it cannot act, with Restart
@@ -19,7 +19,11 @@
  * Zoom and the Hide phone's turn card checkbox; info rows as Name: Value;
  * the Cluster map row in General; Hide BMW's turn box ticked as the render
  * reports, each press one guide command to the render, greyed and unticked,
- * its label kept, while the cluster renderer holds the box shown;
+ * its label kept, while the cluster renderer holds the box shown; the HUD
+ * off by default, its size and position buttons greyed, Render in HUD (experimental)
+ * ticked as the render reports, each press one hud command to the render
+ * and one to patchd, Disabled after errors with the size and position
+ * buttons greyed; no label greyed (the HMI's labels have no setEnabled);
  * hiding the page closes both sockets; a page opened again reads the
  * render's current state; a pending patch, from the daemon and, before the
  * daemon runs, from its marker; a failed restart on the restart's own line,
@@ -90,6 +94,9 @@ class FakeComponent extends EventEmitter {
         this.visible = (desc && desc.properties && desc.properties.Visible) ? desc.properties.Visible.value === 1 : null;
         this.enabledSeen = new Set();
         this.ticks = [];
+        if (desc && desc.type === 'label') {
+            this.setEnabled = undefined;   /* the HMI greys no label */
+        }
     }
     getId() { return this.id; }
     setValue(row, cell, value) {
@@ -218,23 +225,23 @@ async function main() {
         'wocHeadCarPlay CarPlay', 'wocStatus Status: Connecting…', 'wocEnable Patch', 'wocDisable Remove patch',
         'wocHeadAa Android Auto', 'wocAaStatus Status: Connecting…', 'wocAaEnable Patch', 'wocAaDisable Remove patch',
         'wocAaZoom Zoom: —', 'wocAaZoomOut Zoom out', 'wocAaZoomIn Zoom in', "wocAaCard Hide phone's turn card",
-        'wocHeadGeneral General', 'wocMap Cluster map: Off', "wocGuide Hide BMW's turn box",
-        'wocDisplay Show map on: \u2026', 'wocHudSize HUD map larger (now \u2026)', 'wocHudSmaller HUD map smaller',
-        'wocHudLeft Move HUD map left', 'wocHudRight Move HUD map right', 'wocHudUp Move HUD map up', 'wocHudDown Move HUD map down',
-        'wocHudCentre Centre HUD map', 'wocLogs Logs', 'wocRestart Restart head unit',
+        'wocHeadHud HUD', 'wocHud HUD map: \u2014', 'wocHudOn Render in HUD (experimental)', 'wocHudSize Size: \u2014',
+        'wocHudSmaller Smaller', 'wocHudLarger Larger', 'wocHudPos Position: \u2014', 'wocHudLeft Move left', 'wocHudRight Move right',
+        'wocHudUp Move up', 'wocHudDown Move down', 'wocHudCentre Centre',
+        'wocHeadGeneral General', 'wocMap Cluster map: Off', "wocGuide Hide BMW's turn box", 'wocLogs Logs', 'wocRestart Restart head unit',
         'wocRestartStatus '],
-        'the main page: three sections, in order');
+        'the main page: four sections, in order');
     assert.deepStrictEqual(xmlIds('1').map(([id, type]) => `${id} ${type}`).sort(),
         Object.entries(components).map(([id, d]) => `${id} ${d.type}`).sort(), 'application.xml and uiDescription agree on the main page');
     const widgets = {};
     xmlIds('1').forEach(([id, , widget]) => { widgets[components[id].name] = widget; });
-    assert.deepStrictEqual(['wocHeadCarPlay', 'wocHeadAa', 'wocHeadGeneral'].map((n) => widgets[n]), Array(3).fill('LT_Label_Header_1Row'),
+    assert.deepStrictEqual(['wocHeadCarPlay', 'wocHeadAa', 'wocHeadHud', 'wocHeadGeneral'].map((n) => widgets[n]), Array(4).fill('LT_Label_Header_1Row'),
         'the section headers are header rows');
     assert(!main.some(([, , name]) => /^wocRow|^wocSetup|^wocCapture/.test(name)), 'no log rows, setup line or capture on the main page');
-    assert.deepStrictEqual(['wocAaCard', 'wocGuide'].map((n) => widgets[n]), ['LT_CheckBox_1Row', 'LT_CheckBox_1Row'], 'the Hide settings are checkboxes');
+    assert.deepStrictEqual(['wocAaCard', 'wocHudOn', 'wocGuide'].map((n) => widgets[n]), Array(3).fill('LT_CheckBox_1Row'), 'the on/off settings are checkboxes');
     /* every info row reads "Name: Value" */
     assert(main.filter(([, type, name]) => type === 'label' && !/^wocHead|^wocRestartStatus$/.test(name))
-        .every(([, , , text]) => /^[A-Z][a-z ]+: [A-Z\u2014]/.test(text)), 'info rows as Name: Value');
+        .every(([, , , text]) => /^[A-Z][A-Za-z ]+: [A-Z\u2014]/.test(text)), 'info rows as Name: Value');
     const hidden = Object.values(components).filter((d) => d.properties.Visible.value !== 1).map((d) => d.name);
     assert.deepStrictEqual(hidden, ['wocRestart', 'wocRestartStatus'], 'every row ships shown but the restart\'s two');
     assert(/<component id="34" type="button" widget="LT_Button_1Row">\s*<property id="2" value="0"\/>/.test(XML), 'application.xml: the restart, hidden');
@@ -270,8 +277,9 @@ async function main() {
         await until('page shows the map', () => byName.wocMap.text === `Cluster map: Showing ${RENDER_PAGE} — ${RENDER_FPS}` && status.text === 'Status: Patched');
         assert(!logs.some((l) => /^error/.test(l)), logs.filter((l) => /^error/.test(l)).join('\n'));
         const bound = logs.filter((l) => l.startsWith('info: BIND OK: ')).map((l) => l.split(' ')[3]).sort();
-        assert.deepStrictEqual(bound, ['wocAaCard', 'wocAaDisable', 'wocAaEnable', 'wocAaZoomIn', 'wocAaZoomOut', 'wocCapture', 'wocDisable', 'wocDisplay', 'wocEnable',
-            'wocGuide', 'wocHudCentre', 'wocHudDown', 'wocHudLeft', 'wocHudRight', 'wocHudSize', 'wocHudSmaller', 'wocHudUp', 'wocLogs', 'wocLogsSave', 'wocRestart'],
+        assert.deepStrictEqual(bound, ['wocAaCard', 'wocAaDisable', 'wocAaEnable', 'wocAaZoomIn', 'wocAaZoomOut', 'wocCapture', 'wocDisable', 'wocEnable',
+            'wocGuide', 'wocHudCentre', 'wocHudDown', 'wocHudLarger', 'wocHudLeft', 'wocHudOn', 'wocHudRight', 'wocHudSmaller', 'wocHudUp', 'wocLogs', 'wocLogsSave',
+            'wocRestart'],
             'bound buttons and checkbox');
         assert.strictEqual(byName.wocRestart.visible, false, 'restart button hidden while the map shows');
         console.log('ok   a page opened while the map is up shows it');
@@ -348,9 +356,38 @@ async function main() {
             guide.text === "Hide BMW's turn box");
         console.log('ok   held off by the cluster renderer: greyed and unticked, its label kept, presses send nothing');
 
+        /* ---- the HUD ---- */
+        const hudOn = byName.wocHudOn;
+        const hudRows = () => ['wocHudSmaller', 'wocHudLarger', 'wocHudLeft', 'wocHudRight', 'wocHudUp', 'wocHudDown']
+            .map((n) => byName[n].enabled);
+        await until('the HUD off', () => byName.wocHud.text === 'HUD map: Off' && hudOn.enabled === true && hudOn.selected === false &&
+            hudOn.text === 'Render in HUD (experimental)' && byName.wocHudSize.text === 'Size: Standard' &&
+            byName.wocHudPos.text === 'Position: Centre');
+        assert(hudRows().every((e) => e === false) && byName.wocHudCentre.enabled === false, 'the size and position greyed while off');
+        render.received.length = 0;
+        hudOn.press();
+        await until('the HUD on', () => render.hud === 1 && hudOn.selected === true && byName.wocHud.text === 'HUD map: Showing');
+        await until('the size and position enabled', () => hudRows().every((e) => e === true));
+        assert.deepStrictEqual(render.received, [{ cmd: 'hud', on: '1' }], 'one hud command to the render');
+        await until('saved', () => patch.count('hud') === 1);
+        byName.wocHudLarger.emit('action');
+        await until('larger', () => byName.wocHudSize.text === 'Size: 60 %');
+        byName.wocHudLeft.emit('action');
+        await until('moved', () => byName.wocHudPos.text === 'Position: 10 px left' && byName.wocHudCentre.enabled === true);
+        render.hudState = 'disabled';
+        render.announce(render.state, render.reason);
+        await until('disabled after errors', () => byName.wocHud.text === 'HUD map: Disabled after errors' && hudOn.selected === true &&
+            hudRows().every((e) => e === false) && byName.wocHudCentre.enabled === false);
+        render.hudState = null;
+        await sleep(450);
+        hudOn.press();
+        await until('the HUD off again', () => render.hud === 0 && hudOn.selected === false && byName.wocHud.text === 'HUD map: Off');
+        render.received.length = 0;
+        console.log('ok   the HUD: off by default with its size and position greyed; Render in HUD (experimental) turns it on through the render ' +
+            'and patchd; Size and Position change it; Disabled after errors greys them');
+
         byName.ST_OnlineApps_WazeCluster.emit('visible', { visible: false });
-        /* the page's own; the driver-profile link to patchd stays (profile_sync.js) */
-        await until('sockets closed', () => render._clients.size === 0 && patch._clients.size === 1);
+        await until('sockets closed', () => render._clients.size === 0 && patch._clients.size === 0);
         console.log('ok   hiding the page closes both sockets');
 
         render.stream(false);
@@ -370,7 +407,7 @@ async function main() {
 
         /* Before the head-unit start that starts the daemon: from the marker. */
         byName.ST_OnlineApps_WazeCluster.emit('visible', { visible: false });
-        await until('closed', () => patch._clients.size === 1);
+        await until('closed', () => patch._clients.size === 0);
         await patch.close();
         fs.writeFileSync(PENDING, JSON.stringify({ action: 'apply' }) + '\n');
         byName.ST_OnlineApps_WazeCluster.emit('visible', { visible: true });
@@ -409,10 +446,11 @@ async function main() {
         assert.deepStrictEqual([...shownOrHidden].sort(), ['wocRestart', 'wocRestartStatus'], 'only the restart\'s rows are shown and hidden');
         Object.values(components).filter((d) => !/^wocRestart/.test(d.name) && d.type !== 'title')
             .forEach((d) => assert.strictEqual(byName[d.name].visible, true, `${d.name} stays on the page`));
-        ['wocEnable', 'wocDisable', 'wocAaEnable', 'wocAaDisable', 'wocAaZoomOut', 'wocAaZoomIn', 'wocAaCard', 'wocGuide']
+        ['wocEnable', 'wocDisable', 'wocAaEnable', 'wocAaDisable', 'wocAaZoomOut', 'wocAaZoomIn', 'wocAaCard', 'wocGuide', 'wocHudSmaller', 'wocHudLarger',
+            'wocHudLeft', 'wocHudCentre']
             .forEach((n) => assert.deepStrictEqual([...byName[n].enabledSeen].sort(), [false, true], `${n} greyed and enabled in place`));
-        const valueRow = /^[A-Z][a-z ]+: [A-Z0-9\u2014]/;
-        ['wocStatus', 'wocAaStatus', 'wocAaZoom', 'wocMap', 'wocRestartStatus']
+        const valueRow = /^[A-Z][A-Za-z ]+: [A-Z0-9\u2014]/;
+        ['wocStatus', 'wocAaStatus', 'wocAaZoom', 'wocMap', 'wocHud', 'wocHudSize', 'wocHudPos', 'wocRestartStatus']
             .forEach((n) => assert(valueRow.test(byName[n].text), `${n}: "${byName[n].text}" as Name: Value`));
         console.log('ok   no row came or went but the restart\'s; the buttons were greyed and enabled in place; info rows as Name: Value');
 
@@ -433,9 +471,7 @@ async function main() {
         await until('logs socket open', () => lserver._clients.size === 1);
         await sleep(900);
         assert.strictEqual(inactiveReports, inactiveBefore, 'moving to the Logs page keeps the app shown');
-        /* the page's patch connection and the HUD build's profile sync (its own patchd connection,
-         * src/profile_sync.js): both stay open */
-        assert.strictEqual(patch._clients.size, 2, 'and its sockets open');
+        assert.strictEqual(patch._clients.size, 1, 'and its sockets open');
         await until('logs state shown', () => byName.wocLogsStatus.text === 'Saved logs: None' &&
             byName.wocLogsUrl.text === `Address: ${lserver.url}` && byName.wocLogsSave.enabled === true);
         const qr1 = byName.wocLogsQr.text;
@@ -495,9 +531,9 @@ async function main() {
         OnlineApp.instance.emit('entryPointExecute', APP_JSON.application.entryPoints[0].uuid);
         await sleep(400);
         assert.strictEqual(lserver._clients.size, 0, 'a tile launch opens no logs socket');
-        assert.strictEqual(patch._clients.size, 2, 'the main page\'s sockets are open');   /* + the HUD build's profile sync */
+        assert.strictEqual(patch._clients.size, 1, 'the main page\'s sockets are open');
         console.log('ok   launched from the tile after leaving on the Logs page: the main page, no logs socket');
-        assert.strictEqual(patch._clients.size, 2, 'the main page keeps its sockets');   /* + the HUD build's profile sync */
+        assert.strictEqual(patch._clients.size, 1, 'the main page keeps its sockets');
         console.log('ok   leaving the Logs page closes the logs socket');
 
         /* the display language: every row in its words, English for a word it lacks */
