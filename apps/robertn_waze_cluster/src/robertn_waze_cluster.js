@@ -74,11 +74,10 @@ const AA_ZOOM_IN_NAME = 'wocAaZoomIn';
 const AA_CARD_NAME = 'wocAaCard';
 const GUIDE_NAME = 'wocGuide';
 const HEAD_GENERAL_NAME = 'wocHeadGeneral';
+const HEAD_HUD_NAME = 'wocHeadHud';
 const HUD_NAME = 'wocHud';
 const HUD_ON_NAME = 'wocHudOn';
-const HUD_ON_TEXT = 'Show on HUD (experimental)';
 const CLUSTER_ON_NAME = 'wocClusterOn';
-const CLUSTER_ON_TEXT = 'Show on cluster';
 const HUD_SIZE_NAME = 'wocHudSize';
 const HUD_SMALLER_NAME = 'wocHudSmaller';
 const HUD_LARGER_NAME = 'wocHudLarger';
@@ -193,8 +192,8 @@ class WazeClusterApp extends OnlineApp {
             return Promise.reject(new Error(`uiDescription has no ${STATE_NAME} or ${LOGS_STATE}`));
         }
         const names = [STATUS_NAME, MAP_NAME, RESTART_STATUS_NAME, ENABLE_NAME, DISABLE_NAME, AA_STATUS_NAME, AA_ENABLE_NAME, AA_DISABLE_NAME, AA_ZOOM_NAME,
-            AA_ZOOM_OUT_NAME, AA_ZOOM_IN_NAME, AA_CARD_NAME, RESTART_NAME, GUIDE_NAME, HEAD_GENERAL_NAME, CLUSTER_ON_NAME, HUD_NAME, HUD_ON_NAME, HUD_SIZE_NAME, HUD_SMALLER_NAME,
-            HUD_LARGER_NAME, HUD_POS_NAME]
+            AA_ZOOM_OUT_NAME, AA_ZOOM_IN_NAME, AA_CARD_NAME, RESTART_NAME, GUIDE_NAME, HEAD_GENERAL_NAME, HEAD_HUD_NAME, CLUSTER_ON_NAME,
+            HUD_NAME, HUD_ON_NAME, HUD_SIZE_NAME, HUD_SMALLER_NAME, HUD_LARGER_NAME, HUD_POS_NAME]
             .concat(Object.values(HUD_MOVE_NAMES), [HUD_CENTRE_NAME, CAPTURE_NAME, CAPTURE_STATUS,
                 LOGS_NAME, LOGS_SAVE, LOGS_STATUS, LOGS_QR, LOGS_URL], LOGS_ROW_NAMES);
         names.forEach((name) => { this._components[name] = rhmi.getByName(name); });
@@ -480,6 +479,9 @@ class WazeClusterApp extends OnlineApp {
         const c = this._control;
         [[ENABLE_NAME, t('Patch')], [DISABLE_NAME, t('Remove patch')], [AA_ENABLE_NAME, t('Patch')], [AA_DISABLE_NAME, t('Remove patch')],
             [AA_ZOOM_OUT_NAME, t('Zoom out')], [AA_ZOOM_IN_NAME, t('Zoom in')], [HEAD_GENERAL_NAME, t('General')], [LOGS_NAME, t('Logs')],
+            [HEAD_HUD_NAME, t('HUD')], [HUD_SMALLER_NAME, t('Smaller')], [HUD_LARGER_NAME, t('Larger')],
+            [HUD_MOVE_NAMES.left, t('Move left')], [HUD_MOVE_NAMES.right, t('Move right')], [HUD_MOVE_NAMES.up, t('Move up')],
+            [HUD_MOVE_NAMES.down, t('Move down')], [HUD_CENTRE_NAME, t('Centre')],
             [RESTART_NAME, t('Restart head unit')]].forEach(([name, text]) => this._write(name, text));
         this._write(STATUS_NAME, c.statusText());
         this._write(MAP_NAME, c.mapText());
@@ -500,7 +502,7 @@ class WazeClusterApp extends OnlineApp {
         this._setVisibleComp(RESTART_STATUS_NAME, restartText !== '');
         const hide = c.hideGuidance();
         const unavailable = c.guidanceUnavailable();
-        this._write(CLUSTER_ON_NAME, CLUSTER_ON_TEXT);
+        this._write(CLUSTER_ON_NAME, t('Show on cluster'));
         this._setEnabled(CLUSTER_ON_NAME, c.canToggleCluster());
         this._setSelected(CLUSTER_ON_NAME, c.clusterOn() === true);
         /* the turn box's hold follows the map on the cluster */
@@ -508,7 +510,7 @@ class WazeClusterApp extends OnlineApp {
         this._write(GUIDE_NAME, t("Hide BMW's turn box"));
         this._setSelected(GUIDE_NAME, !!hide && !unavailable);
         this._write(HUD_NAME, c.hudText());
-        this._write(HUD_ON_NAME, HUD_ON_TEXT);
+        this._write(HUD_ON_NAME, t('Show on HUD (experimental)'));
         this._setEnabled(HUD_ON_NAME, c.canToggleHud());
         this._setSelected(HUD_ON_NAME, c.hudOn() === true);
         /* the size and place buttons: greyed while the HUD is off or

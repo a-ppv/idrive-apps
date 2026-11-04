@@ -53,7 +53,7 @@ Object.values(require(path.join(SRC, 'waze_cluster_control.js')).RESTART_FAILED)
 Object.values(require(path.join(SRC, 'logs_control.js')).ERRORS).forEach((w) => used.add(w));
 Object.values(locales.RHMI_TEXTS).forEach((w) => used.add(w));
 ok(used.size > 40, `the app's words (${used.size})`);
-['Status: {0}', 'Patched', 'Restart: {0}', 'Save logs', 'Waze on cluster', 'the head unit stayed on', 'Not enough space']
+['Status: {0}', 'Patched', 'Restart: {0}', 'Save logs', 'Waze on cluster', 'the head unit stayed on', 'Not enough space', 'HUD map: {0}', 'Move left']
     .forEach((w) => ok(used.has(w), `"${w}" is a key`));
 
 /* ---- each locale ---- */

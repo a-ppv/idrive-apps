@@ -404,33 +404,33 @@ class WazeClusterControl extends EventEmitter {
     }
 
     hudText() {
-        return `HUD map: ${this._hudState()}`;
+        return t('HUD map: {0}', this._hudState());
     }
 
     _hudState() {
         const on = this.hudOn();
         if (this.render.link !== 'up' || on === null) {
-            return 'Unavailable';
+            return t('Unavailable');
         }
         if (!on) {
-            return 'Off';
+            return t('Off');
         }
         if (this.hudDisabled()) {
-            return 'Disabled after errors';
+            return t('Disabled after errors');
         }
         switch (this.renderStatus.hud_state) {
         case 'showing':
-            return 'Showing';
+            return t('Showing');
         case 'starting':
-            return 'Starting…';
+            return t('Starting…');
         case 'error':
-            return 'Error';
+            return t('Error');
         case 'frozen':
-            return 'Frozen';
+            return t('Frozen');
         case 'off':
-            return 'Off';
+            return t('Off');
         default:
-            return 'Waiting for the phone';
+            return t('Waiting for the phone');
         }
     }
 
@@ -445,7 +445,7 @@ class WazeClusterControl extends EventEmitter {
 
     hudSizeText() {
         const w = this.hudWidth();
-        return `Size: ${w == null ? '—' : w === 0 ? 'Standard' : `${w} %`}`;
+        return t('Size: {0}', w == null ? '—' : w === 0 ? t('Standard') : t('{0} %', w));
     }
 
     /* The size and place change only while the HUD is on and not disabled. */
@@ -513,14 +513,15 @@ class WazeClusterControl extends EventEmitter {
     hudPositionText() {
         const at = this.hudOffset();
         if (!at) {
-            return 'Position: —';
+            return t('Position: {0}', '—');
         }
         const [x, y] = at;
         if (!x && !y) {
-            return 'Position: Centre';
+            return t('Position: {0}', t('Centre'));
         }
-        const h = x ? `${Math.abs(x)} px ${x > 0 ? 'right' : 'left'}` : '', v = y ? `${Math.abs(y)} px ${y > 0 ? 'down' : 'up'}` : '';
-        return `Position: ${[h, v].filter(Boolean).join(', ')}`;
+        const h = x > 0 ? t('{0} px right', x) : x < 0 ? t('{0} px left', -x) : '';
+        const v = y > 0 ? t('{0} px down', y) : y < 0 ? t('{0} px up', -y) : '';
+        return t('Position: {0}', h && v ? t('{0}, {1}', h, v) : h || v);
     }
 
     /* CarPlay's Patch button is offered for an original (never patched, or reverted), an
