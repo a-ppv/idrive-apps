@@ -942,10 +942,10 @@ void Server::report(int64_t now_ms)
             if (!slots_->targets()[t].follows.empty())
                 continue;   /* a hold: no client's target */
             const TargetStatus &s = slots_->status((int)t);
-            const bool hold_off = slots_->hold_disabled((int)t);
+            const bool hold_off = slots_->hold_disabled((int)t), off = slots_->disabled((int)t);
             const std::string line = std::string(target_state_name(s.state)) + "\n" + holder_name(s.holder) + "\n" +
                                      s.reason + "\n" + std::to_string(s.retry_ms) + "\n" +
-                                     rendering_name(s.rendering) + "\n" + (hold_off ? "1" : "0");
+                                     rendering_name(s.rendering) + "\n" + (hold_off ? "1" : "0") + (off ? "1" : "0");
             std::string &sent = c.target_sent[slots_->targets()[t].name];
             if (line == sent)
                 continue;
@@ -958,7 +958,8 @@ void Server::report(int64_t now_ms)
                                      {"retry_in_ms", std::to_string(s.retry_ms >= 0 ? std::max<int64_t>(0, s.retry_ms - now_ms)
                                                                                    : -1)},
                                      {"rendering", cr::json_quote(rendering_name(s.rendering))},
-                                     {"guide_disabled", hold_off ? "1" : "0"}}));
+                                     {"guide_disabled", hold_off ? "1" : "0"},
+                                     {"disabled", off ? "1" : "0"}}));
         }
         const Governor &gov = comp_->governor();
         const std::string budget = std::to_string(gov.cap()) + "\n" + gov.reason();

@@ -178,6 +178,11 @@ bool load_targets(const cld::Config &cfg, int generation, std::vector<TargetSpec
             *err = "target " + name + ": " + p + "linger_ms must be from 0 to 600000";
             return false;
         }
+        std::string why;
+        if (generation == 7 && name == "hud" && !hud_rules(&t, &why)) {
+            log_warn("target hud left out: %s", why.c_str());
+            continue;
+        }
         /* Only scene ids the KOMBI is known to take: others (7702, 7703)
          * made it restart the cluster and the HUD. On iDrive 8, the ones
          * the cluster took. */

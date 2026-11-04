@@ -80,6 +80,7 @@ Compositor::Compositor(Gpu *gpu, SlotManager *slots, const GovernorConfig &budge
     : gpu_(gpu), slots_(slots), limits_(limits), governor_(budget), pacer_(budget.max_bps, upload_burst_ms),
       clock_us_(steady_us)
 {
+    spare_.feed_from(&pacer_);
 }
 
 Compositor::~Compositor()
@@ -216,7 +217,7 @@ uint32_t Compositor::add_video(uint64_t owner, int target, const LayerParams &lp
     if (!id)
         return 0;
     Entry &e = layers_[id];
-    e.layer.reset(new VideoLayer(id, target, ++seq_, pacer_, atlas_fx_, block_fx_, vp, now_ms));
+    e.layer.reset(new VideoLayer(id, target, ++seq_, pacer_for(target), atlas_fx_, block_fx_, vp, now_ms));
     e.layer->params = lp;
     e.owner = owner;
     e.pixel_bytes = bytes;
@@ -237,7 +238,7 @@ uint32_t Compositor::add_image(uint64_t owner, int target, const LayerParams &lp
     if (!id)
         return 0;
     Entry &e = layers_[id];
-    e.layer.reset(new ImageLayer(id, target, ++seq_, pacer_, image_fx_, w, h, fps, s, now_ms));
+    e.layer.reset(new ImageLayer(id, target, ++seq_, pacer_for(target), image_fx_, w, h, fps, s, now_ms));
     e.layer->params = lp;
     e.owner = owner;
     e.pixel_bytes = bytes;
@@ -262,7 +263,7 @@ uint32_t Compositor::add_effect(uint64_t owner, int target, const LayerParams &l
         return 0;
     }
     Entry &e = layers_[id];
-    e.layer.reset(new EffectLayer(id, target, ++seq_, pacer_, fx, time_fps, now_ms));
+    e.layer.reset(new EffectLayer(id, target, ++seq_, pacer_for(target), fx, time_fps, now_ms));
     e.layer->params = lp;
     e.owner = owner;
     e.effect = fx;
@@ -278,7 +279,7 @@ uint32_t Compositor::add_mesh(uint64_t owner, int target, const LayerParams &lp,
     if (!id)
         return 0;
     Entry &e = layers_[id];
-    e.layer.reset(new MeshLayer(id, target, ++seq_, pacer_, mp));
+    e.layer.reset(new MeshLayer(id, target, ++seq_, pacer_for(target), mp));
     e.layer->params = lp;
     e.owner = owner;
     if (targets_[target].graph)
@@ -369,7 +370,7 @@ uint32_t Compositor::add_asset(uint64_t owner, int target, const AssetParams &ap
     }
     const uint32_t id = next_id_++;
     AssetEntry &a = assets_[id];
-    a.asset.reset(new Asset(id, target, pacer_, ap));
+    a.asset.reset(new Asset(id, target, pacer_for(target), ap));
     a.owner = owner;
     Target &t = targets_[target];
     if (t.graph) {
@@ -668,19 +669,20 @@ void Compositor::render(int64_t now_ms)
             bytes += l->staged_bytes();
         for (const Asset *a : staged_assets)
             bytes += a->staged_bytes();
-        load(bytes, now_ms);
+        const TargetSpec &spec = slots_->targets()[ti];
+        if (!spec.spare)
+            load(bytes, now_ms);
         bool ok = false;
         if (failed)
-            governor_.evidence(Evidence::WriteRefused, now_ms, slots_->targets()[ti].name);
+            evidence(spec, Evidence::WriteRefused, now_ms, spec.name);
         if (!failed && !holds(t)) {
             const int64_t t0 = clock_us_();
             ok = t.graph->flush(++t.tag);
             const int64_t took = clock_us_() - t0;
             if (!ok)
-                governor_.evidence(Evidence::FlushFailure, now_ms, slots_->targets()[ti].name);
+                evidence(spec, Evidence::FlushFailure, now_ms, spec.name);
             else if (took >= slow_flush_us_)
-                governor_.evidence(Evidence::SlowFlush, now_ms,
-                                   slots_->targets()[ti].name + " " + std::to_string(took / 1000) + " ms");
+                evidence(spec, Evidence::SlowFlush, now_ms, spec.name + " " + std::to_string(took / 1000) + " ms");
             if (!ok && !t.flush_failing)
                 log_error("target %s: flush %llu refused", slots_->targets()[ti].name.c_str(),
                           (unsigned long long)t.tag);
@@ -699,6 +701,19 @@ void Compositor::render(int64_t now_ms)
     }
     if (governor_.tick(now_ms))
         pacer_.set_rate(governor_.cap());
+}
+
+crk::UploadPacer &Compositor::pacer_for(int target)
+{
+    return target >= 0 && target < (int)slots_->targets().size() && slots_->targets()[target].spare ? spare_ : pacer_;
+}
+
+void Compositor::evidence(const TargetSpec &t, Evidence e, int64_t now_ms, const std::string &detail)
+{
+    if (t.spare)
+        log_info("target %s: %s (a spare target's: the upload cap stays)", t.name.c_str(), detail.c_str());
+    else
+        governor_.evidence(e, now_ms, detail);
 }
 
 /* The link counts as carrying load (for the governor) from kLoadBytes a
@@ -726,9 +741,11 @@ void Compositor::resent(const TargetSpec &spec, int64_t now_ms)
             bytes += kv.second.asset->bytes();
     if (!bytes)
         return;
-    pacer_.ready(now_ms);
-    pacer_.spend(bytes);
-    load(bytes, now_ms);
+    crk::UploadPacer &pacer = pacer_for(ti);
+    pacer.ready(now_ms);
+    pacer.spend(bytes);
+    if (!spec.spare)
+        load(bytes, now_ms);
     log_info("target %s: its scene goes whole to the renderer again: %llu KB charged to the upload budget",
              spec.name.c_str(), (unsigned long long)(bytes / 1024));
 }

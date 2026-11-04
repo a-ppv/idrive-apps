@@ -564,6 +564,86 @@ static void test_pacer()
     }
 }
 
+/* The spare budget (the HUD's): only what the source's cap clips off. */
+static void test_spare_pacer()
+{
+    const uint64_t rate = 5500 * 1024;
+    /* The source's spenders decide exactly as without a spare, whatever the
+     * spare spends: a map writing 0.5 to 1.2 MB a frame at 30 fps, some
+     * frames unchanged, with and without a spare taking 136 KB whenever it
+     * may at 10 fps. */
+    for (int greedy = 0; greedy < 2; greedy++) {
+        UploadPacer alone(rate, 250), shared(rate, 250), spare;
+        spare.feed_from(&shared);
+        uint32_t seed = 7;
+        int same = 0, frames = 0;
+        uint64_t map_bytes = 0, spare_bytes = 0;
+        for (int64_t t = 0; t < 60000; t += 33) {
+            seed = seed * 1664525u + 1013904223u;
+            const uint64_t want = (seed >> 28) < 4 ? 0 : 500000 + (seed >> 8) % 700000;
+            const bool a = alone.ready(t), b = shared.ready(t);
+            same += a == b && alone.allowance() == shared.allowance();
+            frames++;
+            if (want && a)
+                alone.spend(want);
+            if (want && b) {
+                shared.spend(want);
+                map_bytes += want;
+            }
+            if (greedy && t % 99 == 0 && spare.ready(t)) {
+                spare.spend(136000);
+                spare_bytes += 136000;
+            }
+        }
+        char name[128];
+        std::snprintf(name, sizeof name, "spare pacer: the source decides as alone, with the spare %s (%d of %d ticks)",
+                      greedy ? "spending" : "idle", same, frames);
+        ok(name, same == frames);
+        if (greedy) {
+            const bool within = map_bytes + spare_bytes <= rate * 60 + 2 * rate / 4 + 1200000 + 136000;
+            std::snprintf(name, sizeof name, "spare pacer: map %llu KB + spare %llu KB in 60 s, within the rate",
+                          (unsigned long long)(map_bytes / 1024), (unsigned long long)(spare_bytes / 1024));
+            ok(name, within);
+        }
+    }
+
+    /* A source spending all its rate leaves the spare nothing. */
+    UploadPacer busy(rate, 250), starved;
+    starved.feed_from(&busy);
+    int spare_writes = 0;
+    for (int64_t t = 0; t < 20000; t += 33) {
+        if (busy.ready(t))
+            busy.spend(783360);
+        spare_writes += starved.ready(t);
+    }
+    ok("spare pacer: a source writing whole frames at its rate leaves the spare nothing", spare_writes == 0);
+
+    /* An idle source gives the spare its whole rate, up to one burst. */
+    UploadPacer quiet(rate, 250), fed;
+    fed.feed_from(&quiet);
+    quiet.ready(0);
+    ok("spare pacer: nothing at first, the source holds its starting burst", !fed.ready(0));
+    ok("spare pacer: the source's clipped refill, up to a burst", fed.ready(10000) && fed.allowance() == (int64_t)(rate / 4));
+    uint64_t got = 0;
+    for (int64_t t = 10000; t < 30000; t += 100)
+        while (fed.ready(t)) {
+            fed.spend(136000);
+            got += 136000;
+        }
+    ok("spare pacer: an idle source's rate goes to the spare", got >= rate * 19 && got <= rate * 20 + rate / 4 + 136000);
+    ok("spare pacer: and the source's own allowance stays whole", quiet.ready(30000) && quiet.allowance() == (int64_t)(rate / 4));
+
+    UploadPacer unlimited, free_spare;
+    free_spare.feed_from(&unlimited);
+    ok("spare pacer: an unlimited source's spare is unlimited", free_spare.ready(0) && free_spare.allowance() == INT64_MAX);
+    UploadPacer lowered(rate, 250), clipped;
+    clipped.feed_from(&lowered);
+    lowered.ready(0);
+    clipped.ready(5000);
+    lowered.set_rate(2000 * 1024);
+    ok("spare pacer: a lower rate clips the spare to its burst too", clipped.allowance() == (int64_t)(2000 * 1024 / 4));
+}
+
 int main()
 {
     test_geometry();
@@ -575,6 +655,7 @@ int main()
     test_r8_atlas_writes();
     test_write_rects();
     test_pacer();
+    test_spare_pacer();
     if (failures) {
         std::printf("%d FAILED\n", failures);
         return 1;

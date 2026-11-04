@@ -81,6 +81,21 @@ int main()
 {
     std::vector<TargetSpec> t;
     std::string err;
+    {
+        TargetSpec h;
+        h.name = "hud"; h.slot = 0x323; h.scene_id = 0x01000400;
+        ok("hud: slot 0x323 taken, spare, struck out at 2", hud_rules(&h, &err) && h.spare && h.strike_limit == 2);
+        TargetSpec scene;
+        scene.name = "hud"; scene.slot = 0x323; scene.scene_id = 0x010004f0;
+        ok("hud: another scene id (the map's) refused", !hud_rules(&scene, &err) && !scene.spare);
+        TargetSpec other;
+        other.name = "hud"; other.slot = 0x330; other.scene_id = 0x01000400;
+        ok("hud: any other slot refused, nothing set", !hud_rules(&other, &err) && !other.spare && other.strike_limit == 0 &&
+                                                        err.find("hud_slot 0x330") != std::string::npos);
+        TargetSpec taking;
+        taking.name = "hud"; taking.slot = 0x323; taking.scene_id = 0x01000400; taking.take_over_stock = true;
+        ok("hud: a take-over from the stock HMI refused", !hud_rules(&taking, &err));
+    }
     ok("shipped: a hold", shipped("guide_hold") == "1" && load({}, &t, &err) && t.size() == 2 && err.empty());
     {
         std::vector<uint64_t> allowed;

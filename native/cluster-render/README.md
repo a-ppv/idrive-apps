@@ -122,6 +122,21 @@ cluster is offered, and what differs is in "iDrive 8".
   pushed the pop-up from the HUD to the cluster. It is asked for again
   `<target>_yield_ms` (1500) after the pop-up goes, and an overlay-only
   target gives way to stock content parked behind it the same way.
+- **The HUD** (iDrive 7, `hud`): slot 0x323 only, the slot the HUD map of
+  [eroobeeroo](https://github.com/eroobeeroo) was shown in on a G80 and a
+  G05 (VERIFIED there), scene 0x01000400, class 0.
+  - Another `hud_slot` or `hud_scene_id`, or `hud_take_over_stock` 1,
+    leaves the HUD out: the
+    service runs without it and logs why (`target hud left out: …`). It
+    never takes a slot from the stock HMI, so BMW's own HUD content (its
+    guidance, 0x01000210, in 0x330-0x332) is never unmapped; it gives way
+    to the HUD's pop-ups (below).
+  - Its scene id is `panel`'s: the two are never asked for at once
+    ("Scene ids").
+  - It is a spare target ("Upload budget"): its layers write only from the
+    budget the other targets leave unused, and nothing it shows the
+    governor lowers the cap.
+  - The mapping guard disables it after two strikes, and only it.
 - **Take-over.** A target with `<target>_take_over_stock` (the map's
   default) takes the slot from the stock HMI, as long as a wanting layer
   has `contend`, such as the Waze map:
@@ -341,18 +356,18 @@ cluster is offered, and what differs is in "iDrive 8".
 - **Mapping guard** (`src/guard.h`). A mapping the KOMBI cannot take can
   make it restart the cluster and the HUD (scene ids 7702 and 7703 did), and
   the service would map it again after every restart and every boot. Only
-  a guide hold can be disabled; the map, `panel` and `hud` only have their
-  strikes logged, and the map's mapping in 0x100 with 0x010004f0, the one
+  a guide hold and the HUD can be disabled; the map and `panel` only have
+  their strikes logged, and the map's mapping in 0x100 with 0x010004f0, the one
   the car has shown for longest, is never disabled whatever the file says.
   - A mapping event is our request of a target and the display's first
     showing of it after that request. A re-park or re-show the KOMBI makes
     on its own is none.
   - The display service (Dcsm2, or iDrive 8's DCSM) going away within 10 s
-    of a hold's mapping event, held still or released since, is a strike
-    against that hold's mapping (its slot, scene id and class), even when
-    the map had a later event; the
-    map, `panel` and `hud` are never blamed while a hold's event is in the
-    window. With no hold's event in it, the target with the latest event
+    of a hold's or the HUD's mapping event, held still or released since, is
+    a strike against that mapping (its slot, scene id and class), even when
+    the map had a later event; the map and `panel` are never blamed while
+    such an event is in the window. With a hold's and the HUD's both in it,
+    the latest is struck. With neither, the target with the latest event
     gets the strike, logged only. A KOMBI restart takes its SOME/IP
     service, and with it Dcsm2's TCP connection, away (INFERRED;
     CAR-ONLY). A scene removed, a silent heartbeat or a slot table without
@@ -369,7 +384,10 @@ cluster is offered, and what differs is in "iDrive 8".
   - Two strikes disable the hold's mapping: never asked for again, the
     box shown, the map's clients told (`guide_disabled` in the map's
     `target` event, PROTOCOL.md), and `status` says so (`guard: guide_auto
-    auto 0x10004f1 0: disabled, 2 strikes`).
+    auto 0x10004f1 0: disabled, 2 strikes`). Two strikes disable the HUD's
+    the same way: never asked for again, however often its layers come and
+    go, its clients told (`disabled` in the HUD's `target` event), the map
+    untouched (`guard: hud 0x323 0x1000400 0: disabled, 2 strikes`).
   - A strike stops counting after three boots with no other against the
     same mapping; a disabled mapping stays disabled.
   - The strikes are kept in `guard_path`
@@ -432,6 +450,18 @@ evidence at other times is logged, not counted:
 - A removal that steps the cap down, or comes at the floor, holds the cap
   for 10 min before any step up: on the car the KOMBI dropped the map again
   within a minute of the cap going back up.
+
+**The spare budget** (`kit/upload_pacer.h`, the HUD's). A spare target's
+layers and assets write only from what the cap's burst clips off the
+budget's refill, so only bytes the other targets left unused: the other
+targets' writes go exactly as they would with no spare target, byte for
+byte and tick for tick (`compositor_test`), and the two together stay
+within the cap. A map writing at the cap leaves the HUD nothing; a still
+map leaves it the whole cap. A spare target's resend is charged to the
+spare budget too, evidence from it (a flush, a refusal, a scene removed)
+is logged, never counted, and its writes are not the link's load the
+governor counts evidence and healthy time by: a HUD the KOMBI drops never
+lowers the cluster's cap, and the HUD alone writing never raises it.
 
 Down is quick and up is slow, so the cap does not oscillate. Within the cap,
 the top layers write first, and in a video layer a
@@ -782,7 +812,11 @@ The host tests:
   over no more, the seat-belt panel left alone while parked and yielded to
   while shown, never released by rendering verification, and no flapping;
   never asked for while the table reports its slot disabled, however long
-  ago, or does not name it; the mapping guard: the hold, released since,
+  ago, or does not name it; the HUD under the guard: a display drop after its
+  mapping striking it and not the map, also with the map mapped after it,
+  two disabling it and only it, in that boot and the next, wanting it again
+  not undoing that; `panel` and `hud` never asked for at once; the mapping
+  guard: the hold, released since,
   blamed for the display service going away over a map asked for after it, a re-park and
   re-show by the display no mapping event, a slot refused as unknown a
   strike and never asked for again, a give-up on unmaps alone in each of
@@ -797,6 +831,13 @@ The host tests:
   prints (subscriptions, unsubscriptions, a renderer gone, resource
   requests), which lines are kept raw, and the raw lines' rate limit;
 - `governor_test`: the budget's steps, cooldown, recovery and probation;
+- `map_upload_test` (the kit's): the spare budget: its source deciding
+  exactly as alone whatever the spare spends, nothing for the spare while the
+  source writes at the rate, an idle source's whole rate for it, within a
+  burst;
+- `compositor_test`: with a spare HUD, the map's flushes byte for byte as
+  without one, moving and still, and the HUD's video at most its 10 a
+  second, from what the map leaves;
 - `compositor_test`: layers on a fake renderer that keeps pending and
   flushed state apart. It covers dirty, packed and exact writes, failure
   parking, the stack and the closed budget loop: slow flushes lower the cap
@@ -817,7 +858,8 @@ The host tests:
   is accepted, a request while it is not, refusals, two targets;
 - `generation_test`: telling iDrive 7 from iDrive 8 by MainApp's folders and
   the running HMI;
-- `holds_test`: the guide hold's settings, on as shipped, `guide_hold`
+- `holds_test`: the HUD's rules (0x323 and spare, any other slot or a
+  take-over refused); the guide hold's settings, on as shipped, `guide_hold`
   other than 0 or 1 taken as 1 with a warning, and every other malformed
   value refused with no hold added (a slot that is not whole hex from 0x1
   to 0xfff, listed twice or another target's, a scene id not allowed or

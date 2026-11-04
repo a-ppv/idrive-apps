@@ -39,7 +39,14 @@
  * subscribes gets the scene whole, as last flushed, from the RAMSES client
  * (VERIFIED in the emulator: sent at the subscription), so a video writes
  * the tiles that differ from it, not the whole frame. That resend is
- * charged to the byte budget when the display takes the scene (resent()). */
+ * charged to the byte budget when the display takes the scene (resent()).
+ *
+ * A spare target's assets and layers (TargetSpec::spare, the HUD) write
+ * only from the spare budget: what the other targets' budget clips off its
+ * refill, unused by them (upload_pacer.h). The other targets' writes go
+ * exactly as they would without it; evidence from a spare target is logged,
+ * never counted towards the cap, and its bytes are not the link's load for
+ * the governor, so it never moves the cap. */
 #ifndef CRS_COMPOSITOR_H
 #define CRS_COMPOSITOR_H
 
@@ -179,6 +186,11 @@ private:
     };
 
     uint32_t admit(uint64_t owner, int target, size_t pixel_bytes, std::string *err);
+    /* The budget the target's writes spend: the spare one for a spare
+     * target. */
+    crk::UploadPacer &pacer_for(int target);
+    /* The governor's evidence, but a spare target's only logged. */
+    void evidence(const TargetSpec &t, Evidence e, int64_t now_ms, const std::string &detail);
     /* Bytes written now_ms, flushed or not, for the governor's load. */
     void load(uint64_t bytes, int64_t now_ms);
     /* Moves the target's fade on to now_ms and, fading out, keeps the
@@ -199,6 +211,7 @@ private:
     CompositorLimits limits_;
     Governor governor_;
     crk::UploadPacer pacer_;
+    crk::UploadPacer spare_;
     int64_t slow_flush_us_ = 150000;
     int fade_ms_ = 0;
     /* Bytes written this second, flushed or not: the link counts as

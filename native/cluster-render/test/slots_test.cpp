@@ -2007,6 +2007,107 @@ static bool has_line(const std::string &text, const std::string &line)
     return text.find(line + "\n") != std::string::npos;
 }
 
+/* The HUD under the mapping guard: a display drop within 10 s of its
+ * mapping is a strike against it, not the map, whichever was mapped last;
+ * two (one a boot) disable it, and only it; wanting it again does not undo
+ * that. panel and hud (one scene id) are never asked for at once. */
+struct HudRig {
+    FakePort port;
+    FakeScenes scenes;
+    SlotManager m{&port, &scenes};
+    int64_t now = 100000;
+    int map = 0, panel = 1, hud = 2;
+    HudRig()
+    {
+        TargetSpec mp, pn, h;
+        mp.name = "map"; mp.slot = kMapSlot; mp.scene_id = kMapScene; mp.width = 1088; mp.height = 480; mp.linger_ms = 0;
+        pn.name = "panel"; pn.slot = kPanelSlot; pn.scene_id = kPanelScene; pn.width = 1920; pn.height = 720;
+        h.name = "hud"; h.slot = kHudSlot; h.scene_id = kPanelScene; h.width = 800; h.height = 480;
+        h.spare = true; h.strike_limit = 2;   /* as cluster-render's main sets the iDrive 7 HUD */
+        m.add(mp);
+        m.add(pn);
+        m.add(h);
+    }
+    void pass(int64_t ms) { for (int64_t t = 0; t < ms; t += 10) { now += 10; m.tick(now); } }
+    void show(int i, uint64_t scene)
+    {
+        m.want(i, true, true);
+        pass(1200);
+        m.on_shown(scene, now);
+        pass(20);
+    }
+    void drop()
+    {
+        port.up = false;
+        m.on_availability(false, now);
+        port.up = true;
+        m.on_availability(true, now);
+    }
+};
+
+static void hud_guard()
+{
+    const std::string path = "/tmp/crs-slots-hud-guard-" + std::to_string(getpid()) + ".txt";
+    unlink(path.c_str());
+    {
+        Guard g;
+        g.load(path, "t", "boot-1");
+        HudRig r;
+        r.m.set_guard(&g);
+        r.show(r.map, kMapScene);
+        r.show(r.hud, kPanelScene);
+        r.pass(3000);
+        r.drop();
+        ok("hud guard: a drop 3 s after the HUD's mapping strikes the HUD, not the map",
+           g.status_text() == "guard: hud 0x323 0x1000400 0: 1 strike\n");
+        r.pass(1500);
+        r.m.on_shown(kPanelScene, r.now);
+        r.pass(100);
+        r.m.on_shown(kMapScene, r.now);   /* the map mapped again after the HUD */
+        r.pass(2000);
+        r.drop();
+        ok("hud guard: the HUD blamed again over a map mapped after it, and the HUD, struck twice, disabled",
+           g.status_text() == "guard: hud 0x323 0x1000400 0: disabled, 2 strikes\n" && r.m.disabled(r.hud) &&
+               !r.m.disabled(r.map));
+    }
+    {
+        Guard g;
+        g.load(path, "t", "boot-2");
+        HudRig r;
+        r.m.set_guard(&g);
+        calls.clear();
+        r.show(r.map, kMapScene);
+        r.m.want(r.hud, true, true);
+        r.pass(5000);
+        const std::string c = joined();
+        ok("hud guard, next boot: the HUD never asked for, the map shown",
+           c.find("request hud") == std::string::npos && r.m.status(r.map).state == TargetState::Shown &&
+               r.m.disabled(r.hud));
+        r.m.want(r.hud, false, false);
+        r.pass(100);
+        r.m.want(r.hud, true, true);
+        r.pass(5000);
+        ok("hud guard: turned off and on, still disabled and never asked for",
+           joined().find("request hud") == std::string::npos && r.m.disabled(r.hud));
+    }
+    unlink(path.c_str());
+
+    HudRig r;
+    calls.clear();
+    r.m.want(r.panel, true, false);
+    r.m.want(r.hud, true, true);
+    bool both = false;
+    for (int k = 0; k < 600; k++) {
+        r.pass(10);
+        if (k == 150)
+            r.m.on_shown(kPanelScene, r.now);
+        const bool p = r.m.requested(r.panel), h = r.m.requested(r.hud);
+        both = both || (p && h);
+    }
+    ok("panel and hud wanted at once: never both asked for, the second waits for the scene id",
+       !both && r.m.status(r.hud).reason == "scene id in use by another target");
+}
+
 /* The mapping guard (guard.h) in the slot manager: one strike per mapping
  * event. */
 static void guide_guard()
@@ -2514,9 +2615,9 @@ int main()
     guide_gives_up_twice();
     guide_no_flapping();
     guide_auto_slot();
+    hud_guard();
     {
         /* The HUD's media pop-up (0x322): the HUD map gives way while it shows */
-        Rig r;
         TargetSpec hud2;
         FakePort port2;
         FakeScenes scenes2;
@@ -2553,13 +2654,11 @@ int main()
         ok("popup: still waiting within yield_ms after it closed", joined().find("request hud") == std::string::npos);
         run(1500);
         ok("popup: asked for again once yield_ms has passed", joined().find("request hud") != std::string::npos);
-        (void)r;
     }
     for (int contending = 0; contending < 2; contending++) {
         /* Stock content parked behind ours in the HUD slot (Google Maps' turn cards while only an overlay holds
          * the HUD): a target that doesn't contend gives way and waits until the slot is free; one that contends
          * (the Waze map) keeps it */
-        Rig r;
         TargetSpec hud3;
         FakePort port3;
         FakeScenes scenes3;
@@ -2596,7 +2695,6 @@ int main()
             ok("parked behind: a contending target (the Waze map) keeps its slot",
                m3.status(0).state == TargetState::Shown && joined().find("release hud") == std::string::npos);
         }
-        (void)r;
     }
 
     std::printf(failures ? "%d FAILED\n" : "all ok\n", failures);

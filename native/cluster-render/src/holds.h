@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2026 Robert Nisipeanu */
-/* The guide hold's settings (cluster-render.conf "guide hold", iDrive 7):
+/* The rules the service adds to iDrive 7's targets: the guide hold's
+ * settings and the HUD's.
+ *
+ * The guide hold's settings (cluster-render.conf "guide hold", iDrive 7):
  * unless guide_hold = 0, a hold (slots.h) that follows the map, appended to
  * the targets: one in 0x105 or 0x103, as the slot table reports them and
  * the box in them (guide_slots = auto), or one per slot of guide_slots; the
@@ -33,6 +36,16 @@ struct HoldSettings {
  * targets left as they were. */
 bool load_holds(const HoldSettings &cfg, const std::vector<uint64_t> &allowed, std::vector<TargetSpec> *targets,
                 std::string *warn);
+
+/* The HUD's slot and scene on iDrive 7 (README.md "The HUD"). */
+const uint64_t kHudSlot = 0x323, kHudScene = 0x01000400;
+
+/* The iDrive 7 HUD's rules for t, the hud target: only slot kHudSlot with
+ * scene kHudScene, never
+ * taking a slot from the stock HMI; then its layers write only from the
+ * spare budget and the guard disables it after two strikes. False, with
+ * *why, for any other slot or a take-over: the HUD is left out. */
+bool hud_rules(TargetSpec *t, std::string *why);
 
 }  // namespace crs
 

@@ -180,6 +180,7 @@ void Client::read_events()
             on_layer((uint32_t)std::strtoul(j["ref"].c_str(), nullptr, 10), j["state"], j["reason"]);
         } else if (ev == "target") {
             guide_disabled[j["target"]] = j["guide_disabled"] == "1";
+            disabled[j["target"]] = j["disabled"] == "1";
             if (on_target)
                 on_target(j["target"], j["state"], j["holder"], j["reason"]);
         } else if (ev == "error" && on_error) {

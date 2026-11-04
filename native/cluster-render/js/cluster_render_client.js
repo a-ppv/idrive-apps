@@ -10,7 +10,7 @@
  *   const cr = new ClusterRender('robertn_myapp');
  *   const badge = cr.image({ target: 'panel', klass: 'overlay', x: 1700, y: 40, w: 160, h: 64, iw: 160, ih: 64 });
  *   cr.on('layer', (ref, state, reason) => { ... });   // shown, waiting, suspended, stalled, hidden, error
- *   cr.on('target', (name, state, holder, reason, guideDisabled) => { ... });
+ *   cr.on('target', (name, state, holder, reason, guideDisabled, disabled) => { ... });
  *   cr.on('budget', (capKb, maxKb, reason) => { ... });
  *   cr.on('ready', () => cr.pixels(badge, null, rgba));   // after every (re)connect
  *   cr.connect();
@@ -215,7 +215,7 @@ class ClusterRender extends EventEmitter {
         } else if (ev.ev === 'layer') {
             this.emit('layer', ev.ref, ev.state, ev.reason);
         } else if (ev.ev === 'target') {
-            this.emit('target', ev.target, ev.state, ev.holder, ev.reason, ev.guide_disabled === 1);
+            this.emit('target', ev.target, ev.state, ev.holder, ev.reason, ev.guide_disabled === 1, ev.disabled === 1);
         } else if (ev.ev === 'budget') {
             this.emit('budget', ev.cap_kb_per_s, ev.max_kb_per_s, ev.reason);
         } else if (ev.ev === 'error') {

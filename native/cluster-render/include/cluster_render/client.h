@@ -207,8 +207,9 @@ public:
                        const std::string &reason)>
         on_target;
     /* By target, from its last target event (before on_target): a guide
-     * hold following it is disabled (PROTOCOL.md). */
-    std::map<std::string, bool> guide_disabled;
+     * hold following it is disabled; the target's own mapping is disabled
+     * (PROTOCOL.md). */
+    std::map<std::string, bool> guide_disabled, disabled;
     std::function<void(const std::string &op, uint32_t ref, const std::string &reason)> on_error;
     /* The shared upload cap changed (governor): KB/s now, the ceiling, why. */
     std::function<void(unsigned cap_kb, unsigned max_kb, const std::string &reason)> on_budget;
