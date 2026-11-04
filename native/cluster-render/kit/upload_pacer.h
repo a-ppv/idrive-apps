@@ -117,6 +117,8 @@ public:
                 const int64_t give = full ? refill : std::min(refill * share_pct_ / 100, pos(part - hud));
                 hud = std::min(hud + give, cap);
                 refill -= give;
+                /* While the cluster writes, what the HUD holds over its part
+                 * goes back as far as the two would hold more than a burst. */
                 if (!full)
                     hud -= std::min(pos(pos(allowance_ + refill) + pos(hud) - cap), pos(hud - part));
                 room = cap - pos(hud);

@@ -456,7 +456,7 @@ While the HUD is asked for and has a layer, its layers and assets write from
 a budget of their own: up to half of each refill of the budget, but only as
 much as they spend; what the HUD leaves goes back to the other targets in
 the same refill, so a still or small HUD costs the cluster almost nothing
-(its share holds at most half a burst). The cluster never gets less than
+(while the cluster writes, its share holds at most half a burst). The cluster never gets less than
 half while the HUD writes, and everything when it does not. While the
 cluster's budget sits full, nothing written since a refill filled it (a
 still cluster map, or the HUD alone), the HUD gets the whole refill: then
