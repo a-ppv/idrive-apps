@@ -57,7 +57,7 @@ function ask(obj) {
             buf.split('\n').forEach(function (l) {
                 var m = null;
                 try { m = JSON.parse(l); } catch (e) {}
-                if (m && /^(hud|hud-size|hud-pos)-reply$/.test(m.ev)) { s.end(); resolve(m); }
+                if (m && /^(cluster|hud|hud-size|hud-pos)-reply$/.test(m.ev)) { s.end(); resolve(m); }
             });
         });
         s.on('error', reject);
@@ -78,6 +78,11 @@ function ok(name, cond) {
     var conf = fs.readFileSync(CONF, 'utf8');
     ok('the HUD on is saved, replacing the earlier value, the other lines kept',
        r.ok && r.hud === 1 && conf === 'upload_kb_per_s = 3000\ntarget_fps = 15\nhud = 1\n');
+    r = await ask({ cmd: 'cluster', on: 0 });
+    conf = fs.readFileSync(CONF, 'utf8');
+    ok('the cluster off is saved next to it', r.ok && r.cluster === 0 && /hud = 1\ncluster = 0\n$/.test(conf));
+    r = await ask({ cmd: 'cluster', on: 2 });
+    ok('a cluster on that is not 0 or 1 is refused and nothing written', !r.ok && fs.readFileSync(CONF, 'utf8') === conf);
     r = await ask({ cmd: 'hud', on: 'yes' });
     ok('an on that is not 0 or 1 is refused and nothing written', !r.ok && fs.readFileSync(CONF, 'utf8') === conf);
     fs.unlinkSync(CONF);

@@ -38,16 +38,18 @@
  *                                   reboot-reply carries ok/reason.
  *                  {"cmd":"logs"}   carplay + marker + avb log lines, dlt-receive health, patchd log
  *                                   (to the asker, read-only)
+ *                  {"cmd":"cluster","on":0|1}
  *                  {"cmd":"hud","on":0|1}
  *                  {"cmd":"hud-size","hud_width_pct":0|20..100}   (over 85 saved as 85)
  *                  {"cmd":"hud-pos","hud_x":-800..800,"hud_y":-800..800}
- *                                   the HUD's copy of the map on or off, its size
+ *                                   the map on the cluster on or off, on the HUD on
+ *                                   or off, the HUD's size
  *                                   (0: the default box) and where it is moved from
  *                                   the centre (HUD pixels), saved for the render's
- *                                   next start as "hud", "hud_width_pct",
+ *                                   next start as "cluster", "hud", "hud_width_pct",
  *                                   "hud_offset_x" and "hud_offset_y" in
  *                                   waze-on-cluster.local.conf (the app changes the
- *                                   running render itself). The reply (hud-reply,
+ *                                   running render itself). The reply (cluster-reply, hud-reply,
  *                                   hud-size-reply, hud-pos-reply) carries ok, the
  *                                   values saved and reason.
  *                  {"cmd":"capture-start"|"capture-stop"|"capture-status"}
@@ -223,11 +225,11 @@ function saveSettings(settings, done) {
 function isOffset(v) {
     return typeof v === 'number' && v === Math.floor(v) && v >= -800 && v <= 800;
 }
-/* Saves the HUD's settings for the next start and replies with ev. */
-function saveHud(sock, ev, settings, what) {
+/* Saves the map's settings for the next start and replies with ev. */
+function saveMapSettings(sock, ev, settings, what) {
     saveSettings(settings, function (err) {
-        if (err) log('saving the HUD ' + what + ' failed: ' + err.message);
-        else log('HUD ' + what + ': ' + Object.keys(settings).map(function (k) { return k + ' ' + settings[k]; }).join(', ') + ' (saved for the next start)');
+        if (err) log('saving ' + what + ' failed: ' + err.message);
+        else log(what + ': ' + Object.keys(settings).map(function (k) { return k + ' ' + settings[k]; }).join(', ') + ' (saved for the next start)');
         reply(sock, Object.assign({ ev: ev, ok: !err, reason: err ? err.message : undefined }, settings));
     });
 }
@@ -1280,10 +1282,13 @@ function handle(line, sock) {
         });
         return;
     }
-    /* The HUD's settings: not operations on carplay, so not held back by one. */
-    if (msg.cmd === 'hud') {
-        if (msg.on !== 0 && msg.on !== 1) { reply(sock, { ev: 'hud-reply', ok: false, reason: 'on must be 0 or 1' }); return; }
-        saveHud(sock, 'hud-reply', { hud: msg.on }, 'copy');
+    /* Where the map shows and the HUD's size and place: not operations on
+     * carplay, so not held back by one. */
+    if (msg.cmd === 'cluster' || msg.cmd === 'hud') {
+        var set = {};
+        if (msg.on !== 0 && msg.on !== 1) { reply(sock, { ev: msg.cmd + '-reply', ok: false, reason: 'on must be 0 or 1' }); return; }
+        set[msg.cmd] = msg.on;
+        saveMapSettings(sock, msg.cmd + '-reply', set, 'where the map shows');
         return;
     }
     if (msg.cmd === 'hud-size') {
@@ -1292,7 +1297,7 @@ function handle(line, sock) {
             reply(sock, { ev: 'hud-size-reply', ok: false, reason: 'HUD width must be 0 or 20-100 %' });
             return;
         }
-        saveHud(sock, 'hud-size-reply', { hud_width_pct: Math.min(pct, HUD_MAX_PCT) }, 'map size');
+        saveMapSettings(sock, 'hud-size-reply', { hud_width_pct: Math.min(pct, HUD_MAX_PCT) }, 'the HUD map size');
         return;
     }
     if (msg.cmd === 'hud-pos') {
@@ -1300,7 +1305,7 @@ function handle(line, sock) {
             reply(sock, { ev: 'hud-pos-reply', ok: false, reason: 'HUD offsets must be whole numbers from -800 to 800' });
             return;
         }
-        saveHud(sock, 'hud-pos-reply', { hud_offset_x: msg.hud_x, hud_offset_y: msg.hud_y }, 'map position');
+        saveMapSettings(sock, 'hud-pos-reply', { hud_offset_x: msg.hud_x, hud_offset_y: msg.hud_y }, 'the HUD map position');
         return;
     }
     if (msg.cmd === 'reboot') { rebootCmd(sock); return; }

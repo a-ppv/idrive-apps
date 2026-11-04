@@ -108,6 +108,12 @@ public:
     /* Whether CarPlay's cluster stream is live (FreezeWatch::live). Main
      * thread. */
     void set_live(bool on, int64_t now_ms);
+    /* Whether anyone takes the frames (the map on the cluster or the HUD).
+     * Without, every frame is still decoded, since the phone sends its
+     * keyframes only when its stream starts and the next ones refer to it,
+     * but none gets a picture: no VPP, readback, rounding or hand-off. The
+     * first picture after it is wanted again counts as a change. */
+    void set_pictures(bool on);
     /* When the last frame of the decode size was decoded; -1 for none. */
     int64_t last_frame_ms() const { return last_frame_ms_.load(); }
     /* The last minute's pictures of the decode size, how many of them
@@ -211,6 +217,9 @@ private:
     int64_t rtp_ts_[3] = {-1, -1, -1};   /* each source's last RTP timestamp, its receive thread's */
 
     std::atomic<uint64_t> decoded_total_{0};
+    std::atomic<bool> pictures_{true};
+    std::atomic<bool> resumed_{false};   /* the next picture is the first since pictures were off */
+    bool catching_up_ = false;           /* the last feed decoded without a picture to catch up (decode thread) */
     std::atomic<int64_t> last_frame_ms_{-1};
     KeyframeWait keyframe_wait_;            /* main thread */
     std::string udp_status_, avb_status_, fifo_status_;   /* each source's state, for the probe report */

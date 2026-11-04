@@ -85,6 +85,7 @@ struct FeedStatus {
     bool guide_hold = true;
     bool guide_disabled = false;   /* cluster-render's guard keeps the turn box's hold off */
     bool disabled = false;         /* cluster-render's guard keeps the target's mapping off */
+    bool cluster = true;           /* the cluster setting (MapFeeds) */
     bool hud = false;              /* the HUD setting (MapFeeds) */
     std::string hud_state = "off";   /* off, disabled, or the HUD feed's state */
     unsigned hud_width_pct = 0;   /* the HUD map's size setting (0: the default) */

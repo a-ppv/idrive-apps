@@ -83,6 +83,7 @@ std::string status_line(const FeedStatus &s)
            ",\"upload_reason\":" + json_escape(s.upload_reason) +
            ",\"hide_bmw_guidance\":" + (s.guide_hold ? "1" : "0") +
            ",\"guide_disabled\":" + (s.guide_disabled ? "1" : "0") +
+           ",\"cluster\":" + (s.cluster ? "1" : "0") +
            ",\"hud\":" + (s.hud ? "1" : "0") + ",\"hud_state\":" + json_escape(s.hud_state) +
            ",\"hud_width_pct\":" + std::to_string(s.hud_width_pct) +
            ",\"hud_x\":" + std::to_string(s.hud_offset_x) + ",\"hud_y\":" + std::to_string(s.hud_offset_y) + "}";
@@ -93,8 +94,9 @@ public:
     Server(MapFeeds *feeds, GuideSetting *guide) : feeds_(feeds), guide_(guide) {}
     void set_control(Control *c) { control_ = c; }
 
-    /* start picks the cluster target the map goes to (`run`); hud turns the
-     * HUD's copy on or off ("on") and sizes and places it; the map itself
+    /* start picks the cluster target the map goes to (`run`); cluster and
+     * hud turn the map on each off or on ("on"), hud also sizes and places
+     * the HUD's; the map itself
      * comes and goes with the stream. guide is the app's switch for BMW's
      * turn box (guide_setting.h). */
     void on_command(const std::map<std::string, std::string> &msg) override
@@ -111,6 +113,8 @@ public:
         } else if (cmd == "guide" && hide != msg.end() && guide_->set(hide->second)) {
             log_info("guide: BMW's turn box %s while the map shows", guide_->hide() ? "hidden" : "shown");
             feeds_->set_guide_hold(guide_->hide());
+        } else if (cmd == "cluster" && on != msg.end() && (on->second == "0" || on->second == "1")) {
+            feeds_->set_cluster(on->second == "1");
         } else if (cmd == "hud" && (on != msg.end() || pct != msg.end() || hx != msg.end() || hy != msg.end())) {
             if (on != msg.end()) {
                 if (on->second == "0" || on->second == "1")
@@ -200,7 +204,10 @@ int serve(const Config &cfg)
                      "(upload_kb_per_s in /var/opt/cluster-render/cluster-render.local.conf)", key, cfg.str(key).c_str());
     struct Range { const char *key; long lo, hi; } ranges[] = {
         {"dirty_threshold", 0, 64}, {"dirty_settle_ms", 0, 3600000}, {"tex_level_bits", 0, 3},
-        {"target_fps", 0, 60},      {"hud", 0, 1}, {"hud_fps", 1, 30}, {"hud_width_pct", 0, 100},      {"hud_offset_x", -800, 800},      {"hud_offset_y", -800, 800},      {"hud_scale_down", 0, 1},      {"hud_round_corners", 0, 1},      {"hud_black_background", 0, 1},      {"pan_blocks", 0, 1},            {"stall_ms", 1000, 600000},
+        {"target_fps", 0, 60},      {"pan_blocks", 0, 1},            {"stall_ms", 1000, 600000},
+        {"cluster", 0, 1},          {"hud", 0, 1},                   {"hud_fps", 1, 30},
+        {"hud_width_pct", 0, 100},  {"hud_offset_x", -800, 800},     {"hud_offset_y", -800, 800},
+        {"hud_scale_down", 0, 1},   {"hud_round_corners", 0, 1},     {"hud_black_background", 0, 1},
         {"freeze_ms", 0, 600000},   {"freeze_min_fps", 1, 60},       {"alt_screen_port", 0, 65535},
         {"idle_ms", 1000, 600000},  {"blank_ms", 1000, 600000},
         {"alt_screen_uid", 0, 4294967294L}};
@@ -255,7 +262,7 @@ int serve(const Config &cfg)
 
     std::string err;
     VideoProducer producer(vc);
-    MapFeeds feed(fc, cfg.num("hud") == 1, (unsigned)cfg.num("hud_fps"));
+    MapFeeds feed(fc, cfg.num("cluster") == 1, cfg.num("hud") == 1, (unsigned)cfg.num("hud_fps"));
     Server server(&feed, &guide);
     Control control(&server);
     server.set_control(&control);
@@ -307,6 +314,7 @@ int serve(const Config &cfg)
         }
         const bool live = liveness.live(alt_state, producer.last_frame_ms(), now);
         producer.set_live(live, now);
+        producer.set_pictures(feed.wants_frames());
         feed.set_stream(live, producer.frozen(now), producer.picture(now));
         feed.poll(now);
         producer.retry_sources(now);
@@ -477,6 +485,7 @@ void define_keys(Config *cfg)
     cfg->define("target", "map");
     cfg->define("hide_bmw_guidance", "1");
     cfg->define("state_file", "/var/opt/waze-on-cluster/state/waze-on-cluster.state.conf");
+    cfg->define("cluster", "1");
     cfg->define("hud", "0");
     cfg->define("hud_fps", "10");
     cfg->define("hud_width_pct", "0");

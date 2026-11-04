@@ -279,8 +279,14 @@ class WazeClusterControl extends EventEmitter {
             onMessage: (msg) => this._onPatch(msg)
         });
 
-        this.render.on('connect', () => { this.renderStatus = null; this.emit('change'); });
-        this.render.on('close', () => { this.renderStatus = null; this.emit('change'); });
+        /* a new connection's status decides: an asked change it never answered is dropped */
+        const reset = () => {
+            this.renderStatus = null;
+            this._askedClusterOn = this._askedHudOn = null;
+            this.emit('change');
+        };
+        this.render.on('connect', reset);
+        this.render.on('close', reset);
         this.patch.on('connect', () => { this._forget(); this.emit('change'); });
         this.patch.on('close', () => { this._forget(); this._restartRequested = false; this.emit('change'); });
     }
@@ -335,7 +341,35 @@ class WazeClusterControl extends EventEmitter {
         }
     }
 
-    /* ---- the HUD (experimental): a small copy of the cluster's map ---- */
+    /* ---- where the map shows: the cluster ---- */
+    /* Whether the map shows on the cluster: as just asked for until the
+     * render reports it, else as the render last said; null while it has not. */
+    clusterOn() {
+        if (this._askedClusterOn != null) {
+            return this._askedClusterOn;
+        }
+        const rs = this.renderStatus;
+        return rs && (rs.cluster === 0 || rs.cluster === 1) ? rs.cluster === 1 : null;
+    }
+
+    /* A change goes to the render and is saved by patchd: both connected. */
+    canToggleCluster() {
+        return this.render.connected() && this.connectedPatch() && this.clusterOn() !== null;
+    }
+
+    /* Turns the map on the cluster on or off: the render at once, patchd saves it. */
+    toggleCluster() {
+        if (!this.canToggleCluster()) {
+            return;
+        }
+        const on = !this.clusterOn();
+        this._askedClusterOn = on;
+        this.render.send({ cmd: 'cluster', on: on ? '1' : '0' });
+        this.patch.send({ cmd: 'cluster', on: on ? 1 : 0 });
+        this.emit('change');
+    }
+
+    /* ---- where the map shows: the HUD (experimental) ---- */
     /* Whether the HUD is on: as just asked for until the render reports it,
      * else as the render last said; null while it has not. */
     hudOn() {
@@ -568,7 +602,7 @@ class WazeClusterControl extends EventEmitter {
     }
 
     _mapState() {
-        if (!this._inEffect.carplay && !this._inEffect.androidAuto) {
+        if ((!this._inEffect.carplay && !this._inEffect.androidAuto) || this.clusterOn() === false) {
             return t('Off');
         }
         if (this.render.link !== 'up') {
@@ -912,6 +946,9 @@ class WazeClusterControl extends EventEmitter {
     _onRender(msg) {
         if (msg.ev === 'status') {
             this.renderStatus = msg;
+            if (this._askedClusterOn != null && msg.cluster === (this._askedClusterOn ? 1 : 0)) {
+                this._askedClusterOn = null;
+            }
             if (this._askedHudOn != null && msg.hud === (this._askedHudOn ? 1 : 0)) {
                 this._askedHudOn = null;
             }
@@ -938,9 +975,9 @@ class WazeClusterControl extends EventEmitter {
             this._noteCardAsked(msg);
             this._wake();
             this.emit('change');
-        } else if (/^hud(-size|-pos)?-reply$/.test(msg.ev)) {
+        } else if (/^(cluster|hud|hud-size|hud-pos)-reply$/.test(msg.ev)) {
             if (!msg.ok) {
-                this._log.info(`patchd did not save the HUD setting: ${msg.reason || 'refused'}`);
+                this._log.info(`patchd did not save the setting: ${msg.reason || 'refused'}`);
             }
         } else if (msg.ev === 'reboot-reply') {
             /* A refused or failed request clears the asked flag; the status

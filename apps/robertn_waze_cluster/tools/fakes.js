@@ -122,6 +122,7 @@ class FakeRender extends LineServer {
         this.guideDisabled = 0;
         /* the HUD: off by default; its state while on (hudState null: as the map) */
         this.hud = 0;
+        this.cluster = 1;
         this.hudState = null;
         this._showTimer = null;
     }
@@ -145,7 +146,7 @@ class FakeRender extends LineServer {
         const s = { ev: 'status', state: this.state, target: this.target, page: this.page, reason: this.reason };
         /* hud null: a tool without the HUD's fields (one refused by its head unit) */
         if (this.hud !== null) {
-            Object.assign(s, { hud: this.hud, hud_state: this.hud ? this.hudState || this.state : 'off',
+            Object.assign(s, { cluster: this.cluster, hud: this.hud, hud_state: this.hud ? this.hudState || this.state : 'off',
                 hud_width_pct: this.hudWidth || 0, hud_x: this.hudX || 0, hud_y: this.hudY || 0 });
         }
         if (this.hide !== null) {
@@ -178,6 +179,10 @@ class FakeRender extends LineServer {
         this.log(`control: ${JSON.stringify(msg)}`);
         if (msg.cmd === 'guide' && this.hide !== null && (msg.hide === 0 || msg.hide === 1)) {
             this.hide = msg.hide;
+            this._broadcast(this._status());
+        }
+        if (msg.cmd === 'cluster' && msg.on !== undefined) {
+            this.cluster = Number(msg.on);
             this._broadcast(this._status());
         }
         if (msg.cmd === 'hud') {

@@ -351,7 +351,7 @@
           "rows": [
             {
               "Text": {
-                "value": "Render in HUD (experimental)",
+                "value": "Show on HUD (experimental)",
                 "type": "Text"
               },
               "eParam_RowSelected": {
@@ -669,6 +669,32 @@
               "Text": {
                 "value": "Cluster map: Off",
                 "type": "Text"
+              }
+            }
+          ]
+        },
+        "61": {
+          "type": "checkBox",
+          "name": "wocClusterOn",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "Show on cluster",
+                "type": "Text"
+              },
+              "eParam_RowSelected": {
+                "value": false,
+                "type": "Bool"
               }
             }
           ]

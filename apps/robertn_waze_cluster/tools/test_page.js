@@ -20,7 +20,7 @@
  * the Cluster map row in General; Hide BMW's turn box ticked as the render
  * reports, each press one guide command to the render, greyed and unticked,
  * its label kept, while the cluster renderer holds the box shown; the HUD
- * off by default, its size and position buttons greyed, Render in HUD (experimental)
+ * off by default, its size and position buttons greyed, Show on HUD (experimental)
  * ticked as the render reports, each press one hud command to the render
  * and one to patchd, Disabled after errors with the size and position
  * buttons greyed; no label greyed (the HMI's labels have no setEnabled);
@@ -225,10 +225,10 @@ async function main() {
         'wocHeadCarPlay CarPlay', 'wocStatus Status: Connecting…', 'wocEnable Patch', 'wocDisable Remove patch',
         'wocHeadAa Android Auto', 'wocAaStatus Status: Connecting…', 'wocAaEnable Patch', 'wocAaDisable Remove patch',
         'wocAaZoom Zoom: —', 'wocAaZoomOut Zoom out', 'wocAaZoomIn Zoom in', "wocAaCard Hide phone's turn card",
-        'wocHeadHud HUD', 'wocHud HUD map: \u2014', 'wocHudOn Render in HUD (experimental)', 'wocHudSize Size: \u2014',
+        'wocHeadHud HUD', 'wocHud HUD map: \u2014', 'wocHudOn Show on HUD (experimental)', 'wocHudSize Size: \u2014',
         'wocHudSmaller Smaller', 'wocHudLarger Larger', 'wocHudPos Position: \u2014', 'wocHudLeft Move left', 'wocHudRight Move right',
         'wocHudUp Move up', 'wocHudDown Move down', 'wocHudCentre Centre',
-        'wocHeadGeneral General', 'wocMap Cluster map: Off', "wocGuide Hide BMW's turn box", 'wocLogs Logs', 'wocRestart Restart head unit',
+        'wocHeadGeneral General', 'wocMap Cluster map: Off', 'wocClusterOn Show on cluster', "wocGuide Hide BMW's turn box", 'wocLogs Logs', 'wocRestart Restart head unit',
         'wocRestartStatus '],
         'the main page: four sections, in order');
     assert.deepStrictEqual(xmlIds('1').map(([id, type]) => `${id} ${type}`).sort(),
@@ -238,7 +238,8 @@ async function main() {
     assert.deepStrictEqual(['wocHeadCarPlay', 'wocHeadAa', 'wocHeadHud', 'wocHeadGeneral'].map((n) => widgets[n]), Array(4).fill('LT_Label_Header_1Row'),
         'the section headers are header rows');
     assert(!main.some(([, , name]) => /^wocRow|^wocSetup|^wocCapture/.test(name)), 'no log rows, setup line or capture on the main page');
-    assert.deepStrictEqual(['wocAaCard', 'wocHudOn', 'wocGuide'].map((n) => widgets[n]), Array(3).fill('LT_CheckBox_1Row'), 'the on/off settings are checkboxes');
+    assert.deepStrictEqual(['wocAaCard', 'wocHudOn', 'wocClusterOn', 'wocGuide'].map((n) => widgets[n]), Array(4).fill('LT_CheckBox_1Row'),
+        'the on/off settings are checkboxes');
     /* every info row reads "Name: Value" */
     assert(main.filter(([, type, name]) => type === 'label' && !/^wocHead|^wocRestartStatus$/.test(name))
         .every(([, , , text]) => /^[A-Z][A-Za-z ]+: [A-Z\u2014]/.test(text)), 'info rows as Name: Value');
@@ -277,7 +278,7 @@ async function main() {
         await until('page shows the map', () => byName.wocMap.text === `Cluster map: Showing ${RENDER_PAGE} — ${RENDER_FPS}` && status.text === 'Status: Patched');
         assert(!logs.some((l) => /^error/.test(l)), logs.filter((l) => /^error/.test(l)).join('\n'));
         const bound = logs.filter((l) => l.startsWith('info: BIND OK: ')).map((l) => l.split(' ')[3]).sort();
-        assert.deepStrictEqual(bound, ['wocAaCard', 'wocAaDisable', 'wocAaEnable', 'wocAaZoomIn', 'wocAaZoomOut', 'wocCapture', 'wocDisable', 'wocEnable',
+        assert.deepStrictEqual(bound, ['wocAaCard', 'wocAaDisable', 'wocAaEnable', 'wocAaZoomIn', 'wocAaZoomOut', 'wocCapture', 'wocClusterOn', 'wocDisable', 'wocEnable',
             'wocGuide', 'wocHudCentre', 'wocHudDown', 'wocHudLarger', 'wocHudLeft', 'wocHudOn', 'wocHudRight', 'wocHudSmaller', 'wocHudUp', 'wocLogs', 'wocLogsSave',
             'wocRestart'],
             'bound buttons and checkbox');
@@ -361,7 +362,7 @@ async function main() {
         const hudRows = () => ['wocHudSmaller', 'wocHudLarger', 'wocHudLeft', 'wocHudRight', 'wocHudUp', 'wocHudDown']
             .map((n) => byName[n].enabled);
         await until('the HUD off', () => byName.wocHud.text === 'HUD map: Off' && hudOn.enabled === true && hudOn.selected === false &&
-            hudOn.text === 'Render in HUD (experimental)' && byName.wocHudSize.text === 'Size: Standard' &&
+            hudOn.text === 'Show on HUD (experimental)' && byName.wocHudSize.text === 'Size: Standard' &&
             byName.wocHudPos.text === 'Position: Centre');
         assert(hudRows().every((e) => e === false) && byName.wocHudCentre.enabled === false, 'the size and position greyed while off');
         render.received.length = 0;
@@ -382,8 +383,20 @@ async function main() {
         await sleep(450);
         hudOn.press();
         await until('the HUD off again', () => render.hud === 0 && hudOn.selected === false && byName.wocHud.text === 'HUD map: Off');
+        /* the cluster off and on: Cluster map Off, the turn box greyed, both through the render and patchd */
+        const clusterOn = byName.wocClusterOn;
+        await until('the cluster on', () => clusterOn.selected === true && clusterOn.enabled === true && clusterOn.text === 'Show on cluster');
         render.received.length = 0;
-        console.log('ok   the HUD: off by default with its size and position greyed; Render in HUD (experimental) turns it on through the render ' +
+        clusterOn.press();
+        await until('the cluster off', () => render.cluster === 0 && clusterOn.selected === false &&
+            byName.wocMap.text === 'Cluster map: Off' && byName.wocGuide.enabled === false);
+        assert.deepStrictEqual(render.received, [{ cmd: 'cluster', on: '0' }]);
+        await until('saved', () => patch.count('cluster') === 1);
+        await sleep(450);
+        clusterOn.press();
+        await until('the cluster on again', () => render.cluster === 1 && clusterOn.selected === true && byName.wocGuide.enabled === true);
+        render.received.length = 0;
+        console.log('ok   the HUD: off by default with its size and position greyed; Show on HUD (experimental) turns it on through the render ' +
             'and patchd; Size and Position change it; Disabled after errors greys them');
 
         byName.ST_OnlineApps_WazeCluster.emit('visible', { visible: false });

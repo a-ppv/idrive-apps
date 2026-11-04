@@ -4,12 +4,13 @@
  * `waze-on-cluster run`) and the tool (README.md "Using it").
  *
  *   owner -> tool  {"cmd":"start","target":"sail"|"map"|"panel"}
- *                  {"cmd":"hud","on":"0"|"1"}  the HUD's copy of the map off or on
+ *                  {"cmd":"cluster","on":"0"|"1"}  the map on the cluster off or on
+ *                  {"cmd":"hud","on":"0"|"1"}  the map on the HUD off or on
  *                  {"cmd":"hud","hud_width_pct":"0"|"20".."100"}  the HUD map's size
  *                  {"cmd":"hud","hud_x":"-800".."800","hud_y":...}  where it is, from the centre
  *                  {"cmd":"guide","hide":0|1}  BMW's turn box hidden or not (guide_setting.h)
  *   tool -> owner  {"ev":"status",...,"hide_bmw_guidance":0|1,"guide_disabled":0|1,
- *                   "hud":0|1,"hud_state":"off"|"disabled"|"idle"|"starting"|"showing"|...,
+ *                   "cluster":0|1,"hud":0|1,"hud_state":"off"|"disabled"|"idle"|"starting"|"showing"|...,
  *                   "hud_width_pct":...,"hud_x":...,"hud_y":...}
  *                  {"ev":"log","line":...}
  *

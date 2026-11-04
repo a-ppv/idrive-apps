@@ -13,9 +13,9 @@ Tools and apps for the iDrive 7 head unit (MGU) of a BMW, installed from the
 
 ## The map on the HUD
 
-The map is always on the instrument cluster. With **Render in HUD (experimental)** ticked on the app's page (off by
-default) a small copy of it shows on the head-up display too, using only the upload bandwidth the cluster's map leaves
-unused, so the cluster's map is never slowed by it. HUD support was contributed by
+The map shows on the instrument cluster (**Show on cluster**, on by default), on the head-up display (**Show on
+HUD (experimental)**, off by default), on both, or on neither. With both, the HUD gets up to half the upload
+bandwidth, only what it uses, so both stay smooth. HUD support was contributed by
 [eroobeeroo](https://github.com/eroobeeroo) and [wesleyredhat](https://github.com/wesleyredhat). Photos from a 2021 X5
 xDrive45e (G05); street names blurred.
 

@@ -58,20 +58,21 @@ names those languages) and its words, each keyed by the English (`{0}`,
 the RHMI text files, which hold the tile's name and the Logs page's title.
 `node tools/test_i18n.js` checks that every language has every word with
 the same `{n}`, and every HMI language its text file.
-## HUD
 
-Contributed by [eroobeeroo](https://github.com/eroobeeroo) and
-[wesleyredhat](https://github.com/wesleyredhat): with **Render in HUD
-(experimental)** ticked (off by default), a small copy of the cluster's map
-(Waze or Google Maps) shows on the head-up display too. The cluster's map
-stays as it is: the HUD's copy uses only the upload bandwidth the cluster's
-map leaves unused, at most 10 frames a second. On the HUD the frames are
-scaled on the head unit to the size shown, the corners are rounded and a
-night map's background is made black, which the HUD shows as nothing, so the
-roads, route and labels float in view. The map steps aside while the HUD's
-media and list pop-ups show. If the instrument cluster restarts right after
-the HUD map shows, twice, the HUD map is disabled; the cluster's map keeps
-working.
+## Where the map shows
+
+**Show on cluster** (on by default) and **Show on HUD (experimental)** (off
+by default) choose: the cluster only, the HUD only, both, or neither. HUD
+support was contributed by [eroobeeroo](https://github.com/eroobeeroo), and
+the choice of both or one follows [wesleyredhat](https://github.com/wesleyredhat)'s.
+With both, the HUD gets up to half the upload bandwidth, only what it uses;
+alone, all of it. On the HUD the frames are scaled on the head unit to the
+size shown, the corners are rounded and a night map's background is made
+black, which the HUD shows as nothing, so the roads, route and labels float
+in view. The map steps aside while the HUD's media and list pop-ups show.
+With the map on the HUD only, the cluster shows BMW's own content. If the
+instrument cluster restarts right after the HUD map shows, twice, the HUD
+map is disabled; the cluster's map keeps working.
 
 ## The page
 
@@ -110,15 +111,16 @@ supported, HIGH F included.
 | | Zoom | `Zoom: 180 dpi`, the density on disk, with `(after restart)` while it differs from the one aapd runs until the next head-unit start; `Zoom: —` without the patch |
 | | Zoom out / Zoom in | 10 dpi a press (150-400): out shows more map; enabled while patched, nothing is pending and the 10 s between changes has passed |
 | | Hide phone's turn card | a checkbox, ticked while the turn card on disk is hidden, or as asked while its change runs: the phone's own turn card cropped off the map; `(after restart)` as for the zoom; enabled as Zoom out and Zoom in |
-| **HUD** | HUD map | `HUD map: <state>`, the small copy of the cluster's map on the HUD: `Off`, `Starting…`, `Showing`, `Waiting for the phone`, `Frozen`, `Error`, `Disabled after errors` (the cluster renderer turned it off after the cluster restarted right after it showed, twice), `Unavailable` (the map service is down) |
-| | Render in HUD (experimental) | a checkbox, unticked by default: ticked, the copy shows on the HUD. A press changes it at once and it is kept for the next start. Greyed until the map service reports it |
+| **HUD** | HUD map | `HUD map: <state>`, the map on the HUD: `Off`, `Starting…`, `Showing`, `Waiting for the phone`, `Frozen`, `Error`, `Disabled after errors` (the cluster renderer turned it off after the cluster restarted right after it showed, twice), `Unavailable` (the map service is down) |
+| | Show on HUD (experimental) | a checkbox, unticked by default: ticked, the map shows on the HUD, beside the cluster's or alone. A press changes it at once and it is kept for the next start. Greyed until the map service reports it |
 | | Size | `Size: Standard` (the fitted box, about 57 % of the HUD's width) or `Size: 70 %` |
 | | Smaller / Larger | 5 % a press, from 30 % to 85 % of the HUD's width, the picture's shape kept; kept for the next start; greyed while the HUD is off or disabled |
 | | Position | `Position: Centre`, or how far the HUD map is moved: `Position: 20 px right, 10 px up` |
 | | Move left / Move right / Move up / Move down | 10 px a press, held inside the HUD; kept for the next start; greyed as Smaller and Larger |
 | | Centre | puts it back in the middle; enabled while it is moved |
 | **General** | Cluster map | `Cluster map: <state>`, the map the shared render draws for either phone: `Off` unless CarPlay's or Android Auto's patch is in effect (on disk with nothing pending, as the last status outside a change said; a running or failed change keeps it), `Starting…`, `Showing Waze map — 16 frames/s`, `Waiting for the phone`, `Waiting for the phone's map`, `Stream lost`, `Frozen`, `Error`, `Unavailable` (the map service is down, or refuses the head unit) |
-| | Hide BMW's turn box | a checkbox: ticked, BMW's turn-by-turn box on the cluster stays hidden while the map shows (the default); unticked, it shows. A press changes it at once and the map service keeps it. Greyed and unticked until the map service reports it and while the cluster renderer keeps the box shown |
+| | Show on cluster | a checkbox, ticked by default: unticked, no map on the cluster, which shows BMW's own content. A press changes it at once and it is kept for the next start. Greyed until the map service reports it |
+| | Hide BMW's turn box | a checkbox: ticked, BMW's turn-by-turn box on the cluster stays hidden while the map shows (the default); unticked, it shows. A press changes it at once and the map service keeps it. Greyed and unticked until the map service reports it and while the cluster renderer keeps the box shown; greyed while the map is not on the cluster |
 | | Logs | opens the Logs page |
 | | Restart head unit | the Node State Manager's normal head-unit restart; shown while a written change, CarPlay's or Android Auto's, waits for the next head-unit start; enabled while nothing runs and the restart limit (one every 10 minutes) allows it |
 | | Restart | shown while it has something to say: `Restart: In progress`, `Restart: Failed, not accepted` (NSM did not take it), `Restart: Failed, the head unit stayed on`, `Restart: Failed, command failed`, each with `— possible in 8 min` while the limit holds, `Restart: Possible in 8 min` |

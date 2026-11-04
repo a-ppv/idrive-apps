@@ -302,7 +302,7 @@ test('the turn card checkbox: the asked card until its change ends; the one on d
     c.close();
 });
 
-test('the HUD: off by default, the size and place greyed; Render in HUD turns it on through the render, patchd saves it', async (render, patch) => {
+test('the HUD: off by default, the size and place greyed; Show on HUD turns it on through the render, patchd saves it', async (render, patch) => {
     const c = control();
     c.open();
     await until('connected', () => c.connectedRender() && c.connectedPatch());
@@ -326,6 +326,29 @@ test('the HUD: off by default, the size and place greyed; Render in HUD turns it
     c.close();
     assert(!c.canToggleHud(), 'no change while the render is not connected');
     assert.strictEqual(c.hudText(), 'HUD map: Unavailable');
+});
+
+test('where the map shows: the cluster on by default; Show on cluster turns it off and on through the render, patchd saves it; Cluster map Off while off', async (render, patch) => {
+    const c = control();
+    c.open();
+    await until('connected', () => c.connectedRender() && c.connectedPatch());
+    patch.res = SIZE;
+    patch.safe = SAFE;
+    patch.announce('patched', 'high', null);
+    render.stream(true);
+    await until('showing', () => c.clusterOn() === true && /^Cluster map: Showing/.test(c.mapText()));
+    c.toggleCluster();
+    assert.strictEqual(c.clusterOn(), false, 'unticked at once');
+    await until('off', () => render.cluster === 0 && c.renderStatus.cluster === 0 && c.mapText() === 'Cluster map: Off');
+    c.toggleHud();
+    await until('the HUD alone', () => render.hud === 1 && c.hudText() === 'HUD map: Showing' && c.clusterOn() === false);
+    c.toggleHud();
+    await until('neither', () => render.hud === 0 && c.hudText() === 'HUD map: Off' && c.mapText() === 'Cluster map: Off');
+    c.toggleCluster();
+    await until('the cluster again', () => render.cluster === 1 && /^Cluster map: Showing/.test(c.mapText()));
+    assert.deepStrictEqual(patch.received.filter((m) => m.cmd === 'cluster').map((m) => m.on), [0, 1]);
+    c.close();
+    assert(!c.canToggleCluster(), 'no change while the render is not connected');
 });
 
 test('the HUD disabled by the cluster renderer: Disabled after errors, the size and place greyed, the checkbox kept', async (render, patch) => {
@@ -617,16 +640,17 @@ test('a head unit that refuses the tool: not supported in both sections, also pa
     assert.deepStrictEqual([c.statusText(), c.aaStatusText()], ['Status: Not supported on this car', 'Status: Not supported on this car']);
     patch.pending = null;
     assert.strictEqual(c.hudText(), 'HUD map: Unavailable');
-    assert.deepStrictEqual([c.canToggleHud(), c.canChangeHudSize(), c.canHudLarger(), c.canHudSmaller(), c.canCentreHud()],
-        [false, false, false, false, false], 'the HUD rows greyed');
+    assert.deepStrictEqual([c.canToggleCluster(), c.canToggleHud(), c.canChangeHudSize(), c.canHudLarger(), c.canHudSmaller(), c.canCentreHud()],
+        [false, false, false, false, false, false], 'the cluster and HUD rows greyed');
     c.enableMap();
     c.toggleGuidance();
+    c.toggleCluster();
     c.toggleHud();
     c.stepHudSize(1);
     c.moveHud('left');
     await sleep(50);
     assert.strictEqual(patch.count('apply'), 0);
-    assert.strictEqual(patch.count('hud') + patch.count('hud-size') + patch.count('hud-pos'), 0, 'nothing of the HUD saved');
+    assert.strictEqual(patch.count('cluster') + patch.count('hud') + patch.count('hud-size') + patch.count('hud-pos'), 0, 'nothing saved');
     assert.deepStrictEqual(render.received, []);
     c.close();
 });

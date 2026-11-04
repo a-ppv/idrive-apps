@@ -295,15 +295,26 @@ the render decodes through a lost packet:
   since 12:40:50`) and in `probe.txt`. A status line whose only change is
   the stream's reason is logged at most once every 10 s.
 
-**The HUD (experimental)** (contributed by [eroobeeroo](https://github.com/eroobeeroo)
-and [wesleyredhat](https://github.com/wesleyredhat)). The map is always on the
-cluster. With `hud = 1` (the app's **Render in HUD (experimental)**
-checkbox, off by default) a small copy of it goes to the HUD too:
-cluster-render's `hud` target, slot 0x323 (`src/map_feeds.*`).
+**Where the map shows** (the HUD contributed by
+[eroobeeroo](https://github.com/eroobeeroo), the choice of both or one after
+[wesleyredhat](https://github.com/wesleyredhat)'s #53). `cluster` (the app's
+**Show on cluster**, on by default) and `hud` (**Show on HUD
+(experimental)**, off by default) choose (`src/map_feeds.*`); each change
+takes effect at once:
+
+| | |
+|---|---|
+| Cluster only (the default) | the map on the cluster as always |
+| HUD only | no map scene on the cluster, so the KOMBI shows its own content and the guide hold is not asked for; the HUD takes each frame itself, with the whole upload budget, at most `hud_fps` a second |
+| Both | the cluster first; the HUD gets a copy, and up to half the budget, only what it spends (cluster-render README.md "Upload budget") |
+| Neither | no feed and no connection to the renderer; every frame is still decoded, since the phone sends keyframes only when its stream starts, but none gets a picture: no VPP, readback, rounding, copy or hand-off. Turned on again, the map shows with the next frame, without waiting for a keyframe |
+
+cluster-render's `hud` target is slot 0x323 (its README.md "The HUD").
 
 - **Off costs nothing.** With the HUD off there is no HUD connection to the
   renderer, no layer, no worker thread and no copy, so nothing HUD-related
-  is asked of the KOMBI.
+  is asked of the KOMBI. On a head unit that refuses the tool, nothing of
+  either runs.
 - **The cluster first.** The cluster's frame goes to the renderer first,
   without a copy; once it is handed to the socket, the HUD's feed gets a
   copy of it (`cr::Client::frame`). A worker thread at a lower
@@ -314,11 +325,10 @@ cluster-render's `hud` target, slot 0x323 (`src/map_feeds.*`).
   hands over, so the
   cluster's frames never wait for the HUD's. The copy goes no further than
   the cluster's map: one decode, one capture. cluster-render writes the
-  HUD's frames, in changed tiles and never packed (a frame the budget
-  cannot cover waits for the next), only from the upload budget the cluster's
-  map leaves unused (its README.md "The HUD"): a map moving at the cap
-  leaves the HUD nothing, and the cluster's map writes byte for byte as with
-  the HUD off.
+  HUD's frames, in changed tiles and never packed (a frame goes while the
+  budget has any allowance left, into debt, and waits while it is in debt),
+  from the HUD's share: up to half the
+  budget, what it does not spend going back to the cluster at once.
 - **Size** (`hud_width_pct`): Standard (0, the fitted box, about 57 % of the
   HUD's width, 453x200), or 30 % to 85 % (680x300, the widest: wider is cut
   off at the HUD's edges, and a larger saved size is held to it), the

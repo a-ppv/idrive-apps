@@ -171,9 +171,9 @@ static Rect R(int x, int y, uint32_t w, uint32_t h)
     return r;
 }
 
-/* The map writes the same with a spare HUD as without one: the HUD's video
- * (452x200 at 10 fps) gets only the budget the map leaves. hud: with the HUD
- * layer; still: the map's picture stops changing after its first frame.
+/* 20 s of a map at 30 fps on a 5500 KB/s budget, and the HUD's video
+ * (452x200 at 10 fps) on its share. hud: with the HUD layer; still: the
+ * map's picture stops changing after its first frame.
  * Returns the map's flushes' bytes, one entry a flush, and the HUD's bytes. */
 struct ShareRun {
     std::vector<uint64_t> map_flushes;
