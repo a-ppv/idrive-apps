@@ -196,6 +196,11 @@ public:
      * undefined. False, and *atlas untouched, while not connected or for a
      * wrong size. */
     bool frame(uint32_t ref, std::vector<uint8_t> *atlas, uint64_t id);
+    /* The same, and once the frame is handed to the socket (written as far as
+     * it takes it now), a copy of it in *copy, empty if the connection went:
+     * a second consumer of the frame (the HUD's) gets it without holding
+     * this one back. */
+    bool frame(uint32_t ref, std::vector<uint8_t> *atlas, uint64_t id, std::vector<uint8_t> *copy);
     /* An image or asset update: rects of rows packed one rect after
      * another, or no rects and the whole image. False when a rect is
      * outside the image or n does not match. */

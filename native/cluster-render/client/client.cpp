@@ -686,15 +686,28 @@ bool Client::frame(uint32_t ref, const uint8_t *atlas, size_t n, uint64_t id)
 
 bool Client::frame(uint32_t ref, std::vector<uint8_t> *atlas, uint64_t id)
 {
+    return frame(ref, atlas, id, nullptr);
+}
+
+bool Client::frame(uint32_t ref, std::vector<uint8_t> *atlas, uint64_t id, std::vector<uint8_t> *copy)
+{
     if (!atlas || !video_frame_ok(ref, atlas->size()))
         return false;
     const size_t n = atlas->size();
     Frame &f = frames_[ref];
     f.head = frame_head(ref, id, {}, n);
     f.px.swap(*atlas);
+    /* Moved between the queue, the send and the spares, the buffer keeps its
+     * storage and nothing writes it until it is taken as a spare again; a
+     * write that fails drops it with the connection. */
+    const uint8_t *px = f.px.data();
     if (atlas->size() != n)
         take_spare(atlas, n);   /* else it is the unsent frame this one replaces */
     write_out();
+    if (copy && connected())
+        copy->assign(px, px + n);
+    else if (copy)
+        copy->clear();
     return true;
 }
 
