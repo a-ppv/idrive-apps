@@ -136,7 +136,7 @@ bool hud_rules(TargetSpec *t, std::string *why)
         *why = b;
         return false;
     }
-    t->spare = true;
+    t->share = true;
     t->strike_limit = 2;
     return true;
 }

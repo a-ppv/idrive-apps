@@ -2023,7 +2023,7 @@ struct HudRig {
         mp.name = "map"; mp.slot = kMapSlot; mp.scene_id = kMapScene; mp.width = 1088; mp.height = 480; mp.linger_ms = 0;
         pn.name = "panel"; pn.slot = kPanelSlot; pn.scene_id = kPanelScene; pn.width = 1920; pn.height = 720;
         h.name = "hud"; h.slot = kHudSlot; h.scene_id = kPanelScene; h.width = 800; h.height = 480;
-        h.spare = true; h.strike_limit = 2;   /* as cluster-render's main sets the iDrive 7 HUD */
+        h.share = true; h.strike_limit = 2;   /* as cluster-render's main sets the iDrive 7 HUD */
         m.add(mp);
         m.add(pn);
         m.add(h);

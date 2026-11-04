@@ -84,13 +84,13 @@ int main()
     {
         TargetSpec h;
         h.name = "hud"; h.slot = 0x323; h.scene_id = 0x01000400;
-        ok("hud: slot 0x323 taken, spare, struck out at 2", hud_rules(&h, &err) && h.spare && h.strike_limit == 2);
+        ok("hud: slot 0x323 taken, with the HUD's share, struck out at 2", hud_rules(&h, &err) && h.share && h.strike_limit == 2);
         TargetSpec scene;
         scene.name = "hud"; scene.slot = 0x323; scene.scene_id = 0x010004f0;
-        ok("hud: another scene id (the map's) refused", !hud_rules(&scene, &err) && !scene.spare);
+        ok("hud: another scene id (the map's) refused", !hud_rules(&scene, &err) && !scene.share);
         TargetSpec other;
         other.name = "hud"; other.slot = 0x330; other.scene_id = 0x01000400;
-        ok("hud: any other slot refused, nothing set", !hud_rules(&other, &err) && !other.spare && other.strike_limit == 0 &&
+        ok("hud: any other slot refused, nothing set", !hud_rules(&other, &err) && !other.share && other.strike_limit == 0 &&
                                                         err.find("hud_slot 0x330") != std::string::npos);
         TargetSpec taking;
         taking.name = "hud"; taking.slot = 0x323; taking.scene_id = 0x01000400; taking.take_over_stock = true;

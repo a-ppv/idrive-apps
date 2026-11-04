@@ -80,7 +80,7 @@ Compositor::Compositor(Gpu *gpu, SlotManager *slots, const GovernorConfig &budge
     : gpu_(gpu), slots_(slots), limits_(limits), governor_(budget), pacer_(budget.max_bps, upload_burst_ms),
       clock_us_(steady_us)
 {
-    spare_.feed_from(&pacer_);
+    share_.share_of(&pacer_);
 }
 
 Compositor::~Compositor()
@@ -622,6 +622,15 @@ void Compositor::fade(int ti, Target &t, int64_t now_ms)
 void Compositor::render(int64_t now_ms)
 {
     now_ms_ = now_ms;
+    /* The HUD's share of the budget, while a target that writes from it is
+     * asked for and has a layer: up to kSharePct of each refill, what it does
+     * not spend going back at once. */
+    bool sharing = false;
+    for (const auto &kv : layers_) {
+        const int ti = kv.second.layer->target();
+        sharing = sharing || (slots_->targets()[ti].share && slots_->requested(ti));
+    }
+    pacer_.set_share(sharing ? kSharePct : 0);
     for (size_t ti = 0; ti < targets_.size(); ti++) {
         Target &t = targets_[ti];
         /* Released: nothing of it is asked for. Parked: nothing of it is
@@ -670,7 +679,7 @@ void Compositor::render(int64_t now_ms)
         for (const Asset *a : staged_assets)
             bytes += a->staged_bytes();
         const TargetSpec &spec = slots_->targets()[ti];
-        if (!spec.spare)
+        if (!spec.share)
             load(bytes, now_ms);
         bool ok = false;
         if (failed)
@@ -705,13 +714,13 @@ void Compositor::render(int64_t now_ms)
 
 crk::UploadPacer &Compositor::pacer_for(int target)
 {
-    return target >= 0 && target < (int)slots_->targets().size() && slots_->targets()[target].spare ? spare_ : pacer_;
+    return target >= 0 && target < (int)slots_->targets().size() && slots_->targets()[target].share ? share_ : pacer_;
 }
 
 void Compositor::evidence(const TargetSpec &t, Evidence e, int64_t now_ms, const std::string &detail)
 {
-    if (t.spare)
-        log_info("target %s: %s (a spare target's: the upload cap stays)", t.name.c_str(), detail.c_str());
+    if (t.share)
+        log_info("target %s: %s (the HUD share's: the upload cap stays)", t.name.c_str(), detail.c_str());
     else
         governor_.evidence(e, now_ms, detail);
 }
@@ -744,7 +753,7 @@ void Compositor::resent(const TargetSpec &spec, int64_t now_ms)
     crk::UploadPacer &pacer = pacer_for(ti);
     pacer.ready(now_ms);
     pacer.spend(bytes);
-    if (!spec.spare)
+    if (!spec.share)
         load(bytes, now_ms);
     log_info("target %s: its scene goes whole to the renderer again: %llu KB charged to the upload budget",
              spec.name.c_str(), (unsigned long long)(bytes / 1024));

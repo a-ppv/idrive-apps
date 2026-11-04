@@ -42,9 +42,9 @@ const uint64_t kHudSlot = 0x323, kHudScene = 0x01000400;
 
 /* The iDrive 7 HUD's rules for t, the hud target: only slot kHudSlot with
  * scene kHudScene, never
- * taking a slot from the stock HMI; then its layers write only from the
- * spare budget and the guard disables it after two strikes. False, with
- * *why, for any other slot or a take-over: the HUD is left out. */
+ * taking a slot from the stock HMI; then its layers write from the HUD's
+ * share of the budget and the guard disables it after two strikes. False,
+ * with *why, for any other slot or a take-over: the HUD is left out. */
 bool hud_rules(TargetSpec *t, std::string *why);
 
 }  // namespace crs

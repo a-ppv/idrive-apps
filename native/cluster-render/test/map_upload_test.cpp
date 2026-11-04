@@ -564,84 +564,174 @@ static void test_pacer()
     }
 }
 
-/* The spare budget (the HUD's): only what the source's cap clips off. */
-static void test_spare_pacer()
+/* The HUD's share: up to half of each refill, the rest back to the source. */
+static void test_share_pacer()
 {
     const uint64_t rate = 5500 * 1024;
-    /* The source's spenders decide exactly as without a spare, whatever the
-     * spare spends: a map writing 0.5 to 1.2 MB a frame at 30 fps, some
-     * frames unchanged, with and without a spare taking 136 KB whenever it
-     * may at 10 fps. */
-    for (int greedy = 0; greedy < 2; greedy++) {
-        UploadPacer alone(rate, 250), shared(rate, 250), spare;
-        spare.feed_from(&shared);
+    char name[160];
+    /* With the share off, the source's spenders decide exactly as alone,
+     * whatever the share pacer spends: a map writing 0.5 to 1.2 MB a frame
+     * at 30 fps, some frames unchanged. */
+    {
+        UploadPacer alone(rate, 250), shared(rate, 250), hud;
+        hud.share_of(&shared);
         uint32_t seed = 7;
-        int same = 0, frames = 0;
-        uint64_t map_bytes = 0, spare_bytes = 0;
+        int same = 0, ticks = 0;
         for (int64_t t = 0; t < 60000; t += 33) {
             seed = seed * 1664525u + 1013904223u;
             const uint64_t want = (seed >> 28) < 4 ? 0 : 500000 + (seed >> 8) % 700000;
             const bool a = alone.ready(t), b = shared.ready(t);
             same += a == b && alone.allowance() == shared.allowance();
-            frames++;
+            ticks++;
             if (want && a)
                 alone.spend(want);
-            if (want && b) {
+            if (want && b)
                 shared.spend(want);
-                map_bytes += want;
+            if (t % 99 == 0 && hud.ready(t))
+                hud.spend(136000);
+        }
+        std::snprintf(name, sizeof name, "share pacer, off: the source decides as alone (%d of %d ticks)", same, ticks);
+        ok(name, same == ticks);
+    }
+    /* On, both greedy for 60 s: the HUD at most half, the source at least
+     * half; together within the rate. */
+    {
+        UploadPacer map(rate, 250), hud;
+        hud.share_of(&map);
+        map.set_share(50);
+        uint64_t mb = 0, hb = 0;
+        for (int64_t t = 0; t < 60000; t += 10) {
+            while (map.ready(t) && map.allowance() > 0) {
+                map.spend(783360);
+                mb += 783360;
             }
-            if (greedy && t % 99 == 0 && spare.ready(t)) {
-                spare.spend(136000);
-                spare_bytes += 136000;
+            while (hud.ready(t) && hud.allowance() > 0) {
+                hud.spend(136000);
+                hb += 136000;
             }
         }
-        char name[128];
-        std::snprintf(name, sizeof name, "spare pacer: the source decides as alone, with the spare %s (%d of %d ticks)",
-                      greedy ? "spending" : "idle", same, frames);
-        ok(name, same == frames);
-        if (greedy) {
-            const bool within = map_bytes + spare_bytes <= rate * 60 + 2 * rate / 4 + 1200000 + 136000;
-            std::snprintf(name, sizeof name, "spare pacer: map %llu KB + spare %llu KB in 60 s, within the rate",
-                          (unsigned long long)(map_bytes / 1024), (unsigned long long)(spare_bytes / 1024));
-            ok(name, within);
+        std::snprintf(name, sizeof name, "share pacer, both greedy: map %llu KB, HUD %llu KB in 60 s", (unsigned long long)(mb / 1024),
+                      (unsigned long long)(hb / 1024));
+        ok(name, hb <= rate * 30 + rate / 8 + 136000 && mb >= rate * 30 - 783360 && mb + hb <= rate * 60 + rate / 2 + 783360 + 136000);
+    }
+    /* On, a HUD that writes a 136 KB frame ten times a second (1.3 MB/s):
+     * the rest of its half flows back, the map gets the remainder. */
+    {
+        UploadPacer map(rate, 250), hud;
+        hud.share_of(&map);
+        map.set_share(50);
+        uint64_t mb = 0, hb = 0;
+        for (int64_t t = 0; t < 60000; t += 10) {
+            while (map.ready(t) && map.allowance() > 0) {
+                map.spend(783360);
+                mb += 783360;
+            }
+            if (t % 100 == 0 && hud.ready(t)) {
+                hud.spend(136000);
+                hb += 136000;
+            }
         }
+        std::snprintf(name, sizeof name, "share pacer, a HUD at 10 a second: it gets %llu KB, the map the rest, %llu KB",
+                      (unsigned long long)(hb / 1024), (unsigned long long)(mb / 1024));
+        ok(name, hb >= 590 * 136000 && mb + hb >= rate * 60 - 783360 && mb >= rate * 60 - hb - 783360);
+    }
+    /* On, a HUD that writes nothing: after its half burst fills, the map has
+     * the whole rate. */
+    {
+        UploadPacer alone(rate, 250), map(rate, 250), hud;
+        hud.share_of(&map);
+        map.set_share(50);
+        uint64_t ab = 0, mb = 0;
+        for (int64_t t = 0; t < 60000; t += 10) {
+            while (alone.ready(t) && alone.allowance() > 0) {
+                alone.spend(783360);
+                ab += 783360;
+            }
+            while (map.ready(t) && map.allowance() > 0) {
+                map.spend(783360);
+                mb += 783360;
+            }
+        }
+        std::snprintf(name, sizeof name, "share pacer, an idle HUD: the map loses at most the HUD's half burst (%llu of %llu KB)",
+                      (unsigned long long)(mb / 1024), (unsigned long long)(ab / 1024));
+        ok(name, mb + rate / 8 + 783360 >= ab && hud.ready(60000) && hud.allowance() <= (int64_t)(rate / 8));
+    }
+    /* On, both still for 10 s, then both greedy for 10 s: the two together
+     * never hold more than one burst, so in any window t they send at most
+     * the burst and t of the rate, plus the frame each that goes into debt. */
+    {
+        const int64_t cap = rate / 4;
+        UploadPacer map(rate, 250), hud;
+        hud.share_of(&map);
+        map.set_share(50);
+        bool held = true;
+        std::vector<uint64_t> sent;   /* per 10 ms tick, once moving */
+        for (int64_t t = 0; t < 20000; t += 10) {
+            map.ready(t);
+            hud.ready(t);
+            held = held && std::max<int64_t>(map.allowance(), 0) + std::max<int64_t>(hud.allowance(), 0) <= cap;
+            if (t < 10000)
+                continue;
+            uint64_t b = 0;
+            for (; map.ready(t); b += 783360)
+                map.spend(783360);
+            for (; hud.ready(t); b += 136000)
+                hud.spend(136000);
+            sent.push_back(b);
+        }
+        bool within = true;
+        for (size_t i = 0; i < sent.size(); i++) {
+            uint64_t sum = 0;
+            for (size_t j = i; j < sent.size(); j++) {
+                sum += sent[j];
+                within = within && sum <= cap + rate * (j - i + 1) / 100 + 783360 + 136000;
+            }
+        }
+        uint64_t first = 0;
+        for (size_t i = 0; i < 100; i++)
+            first += sent[i];
+        std::snprintf(name, sizeof name,
+                      "share pacer, both still then both greedy: at most one burst held, %llu KB in the first second "
+                      "(burst and rate %llu KB)",
+                      (unsigned long long)(first / 1024), (unsigned long long)((cap + rate) / 1024));
+        ok(name, held && within);
     }
 
-    /* A source spending all its rate leaves the spare nothing. */
+    /* A source writing at its rate, the share off, leaves its share pacer
+     * nothing; an idle source, the share on, gives it the whole rate, up to
+     * a burst. */
     UploadPacer busy(rate, 250), starved;
-    starved.feed_from(&busy);
-    int spare_writes = 0;
+    starved.share_of(&busy);
+    int share_writes = 0;
     for (int64_t t = 0; t < 20000; t += 33) {
         if (busy.ready(t))
             busy.spend(783360);
-        spare_writes += starved.ready(t);
+        share_writes += starved.ready(t);
     }
-    ok("spare pacer: a source writing whole frames at its rate leaves the spare nothing", spare_writes == 0);
-
-    /* An idle source gives the spare its whole rate, up to one burst. */
+    ok("share pacer, off: a source writing at its rate leaves it nothing", share_writes == 0);
     UploadPacer quiet(rate, 250), fed;
-    fed.feed_from(&quiet);
+    fed.share_of(&quiet);
+    quiet.set_share(50);
     quiet.ready(0);
-    ok("spare pacer: nothing at first, the source holds its starting burst", !fed.ready(0));
-    ok("spare pacer: the source's clipped refill, up to a burst", fed.ready(10000) && fed.allowance() == (int64_t)(rate / 4));
+    ok("share pacer: nothing at first, the source holds its starting burst", !fed.ready(0));
+    ok("share pacer: a full source's refill, up to a burst", fed.ready(10000) && fed.allowance() == (int64_t)(rate / 4));
     uint64_t got = 0;
     for (int64_t t = 10000; t < 30000; t += 100)
         while (fed.ready(t)) {
             fed.spend(136000);
             got += 136000;
         }
-    ok("spare pacer: an idle source's rate goes to the spare", got >= rate * 19 && got <= rate * 20 + rate / 4 + 136000);
-    ok("spare pacer: and the source's own allowance stays whole", quiet.ready(30000) && quiet.allowance() == (int64_t)(rate / 4));
-
-    UploadPacer unlimited, free_spare;
-    free_spare.feed_from(&unlimited);
-    ok("spare pacer: an unlimited source's spare is unlimited", free_spare.ready(0) && free_spare.allowance() == INT64_MAX);
+    ok("share pacer: an idle source's rate goes to it", got >= rate * 19 && got <= rate * 20 + rate / 4 + 136000);
+    UploadPacer unlimited, free_share;
+    free_share.share_of(&unlimited);
+    ok("share pacer: an unlimited source's is unlimited", free_share.ready(0) && free_share.allowance() == INT64_MAX);
     UploadPacer lowered(rate, 250), clipped;
-    clipped.feed_from(&lowered);
+    clipped.share_of(&lowered);
+    lowered.set_share(50);
     lowered.ready(0);
     clipped.ready(5000);
     lowered.set_rate(2000 * 1024);
-    ok("spare pacer: a lower rate clips the spare to its burst too", clipped.allowance() == (int64_t)(2000 * 1024 / 4));
+    ok("share pacer: a lower rate clips it to its burst too", clipped.allowance() == (int64_t)(2000 * 1024 / 4));
 }
 
 int main()
@@ -655,7 +745,7 @@ int main()
     test_r8_atlas_writes();
     test_write_rects();
     test_pacer();
-    test_spare_pacer();
+    test_share_pacer();
     if (failures) {
         std::printf("%d FAILED\n", failures);
         return 1;

@@ -133,9 +133,9 @@ cluster is offered, and what differs is in "iDrive 8".
     to the HUD's pop-ups (below).
   - Its scene id is `panel`'s: the two are never asked for at once
     ("Scene ids").
-  - It is a spare target ("Upload budget"): its layers write only from the
-    budget the other targets leave unused, and nothing it shows the
-    governor lowers the cap.
+  - It has the HUD's share of the budget ("Upload budget"): up to half of
+    it, only as much as it writes, and nothing it shows the governor moves
+    the cap.
   - The mapping guard disables it after two strikes, and only it.
 - **Take-over.** A target with `<target>_take_over_stock` (the map's
   default) takes the slot from the stock HMI, as long as a wanting layer
@@ -451,17 +451,25 @@ evidence at other times is logged, not counted:
   for 10 min before any step up: on the car the KOMBI dropped the map again
   within a minute of the cap going back up.
 
-**The spare budget** (`kit/upload_pacer.h`, the HUD's). A spare target's
-layers and assets write only from what the cap's burst clips off the
-budget's refill, so only bytes the other targets left unused: the other
-targets' writes go exactly as they would with no spare target, byte for
-byte and tick for tick (`compositor_test`), and the two together stay
-within the cap. A map writing at the cap leaves the HUD nothing; a still
-map leaves it the whole cap. A spare target's resend is charged to the
-spare budget too, evidence from it (a flush, a refusal, a scene removed)
-is logged, never counted, and its writes are not the link's load the
-governor counts evidence and healthy time by: a HUD the KOMBI drops never
-lowers the cluster's cap, and the HUD alone writing never raises it.
+**The HUD's share** (`kit/upload_pacer.h` share_of, `TargetSpec::share`).
+While the HUD is asked for and has a layer, its layers and assets write from
+a budget of their own: up to half of each refill of the budget, but only as
+much as they spend; what the HUD leaves goes back to the other targets in
+the same refill, so a still or small HUD costs the cluster almost nothing
+(its share holds at most half a burst). The cluster never gets less than
+half while the HUD writes, and everything when it does not. While the
+cluster's budget sits full, nothing written since a refill filled it (a
+still cluster map, or the HUD alone), the HUD gets the whole refill: then
+the whole cap. The two together never hold more than one burst (what the
+HUD holds comes off what the cluster may hold), so together they send at
+most the burst and the cap's rate over any time, as the cluster alone; the
+ceiling is unchanged. With no HUD layer, the cluster's writes go exactly as
+they would without a HUD, byte for byte and tick for tick
+(`compositor_test`). The HUD's resend is charged to its share too, evidence
+from it (a flush, a refusal, a scene removed) is logged, never counted, and
+its writes are not the link's load the governor counts evidence and healthy
+time by: a HUD the KOMBI drops never lowers the cluster's cap, and the HUD
+alone writing never raises it.
 
 Down is quick and up is slow, so the cap does not oscillate. Within the cap,
 the top layers write first, and in a video layer a
@@ -832,13 +840,16 @@ The host tests:
   prints (subscriptions, unsubscriptions, a renderer gone, resource
   requests), which lines are kept raw, and the raw lines' rate limit;
 - `governor_test`: the budget's steps, cooldown, recovery and probation;
-- `map_upload_test` (the kit's): the spare budget: its source deciding
-  exactly as alone whatever the spare spends, nothing for the spare while the
-  source writes at the rate, an idle source's whole rate for it, within a
-  burst;
-- `compositor_test`: with a spare HUD, the map's flushes byte for byte as
-  without one, moving and still, and the HUD's video at most its 10 a
-  second, from what the map leaves;
+- `map_upload_test` (the kit's): the HUD's share: its source deciding
+  exactly as alone with the share off, never more than half for a greedy
+  share and never less than half for the source, an unspent share going
+  back, an idle source's whole rate for it, within a burst, and the two
+  together never holding more than one burst (both still, then both
+  greedy);
+- `compositor_test`: the map's flushes byte for byte as without a HUD
+  while the HUD has no layer; with a HUD layer and the map moving at the
+  cap, at least half the bytes for the map and at most half for the HUD at
+  its 10 a second; the HUD alone at its rate, within the cap;
 - `compositor_test`: layers on a fake renderer that keeps pending and
   flushed state apart. It covers dirty, packed and exact writes, failure
   parking, the stack and the closed budget loop: slow flushes lower the cap
@@ -859,7 +870,7 @@ The host tests:
   is accepted, a request while it is not, refusals, two targets;
 - `generation_test`: telling iDrive 7 from iDrive 8 by MainApp's folders and
   the running HMI;
-- `holds_test`: the HUD's rules (0x323 and spare, any other slot or a
+- `holds_test`: the HUD's rules (0x323 and its share, any other slot or a
   take-over refused); the guide hold's settings, on as shipped, `guide_hold`
   other than 0 or 1 taken as 1 with a warning, and every other malformed
   value refused with no hold added (a slot that is not whole hex from 0x1

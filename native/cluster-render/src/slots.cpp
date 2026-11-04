@@ -840,8 +840,8 @@ bool SlotManager::lock_holds(int i, int64_t now_ms)
 
 void SlotManager::removal_evidence(int i, const std::string &why, int64_t ms)
 {
-    if (specs_[i].spare)
-        log_info("target %s: %s (a spare target's: the upload cap stays)", specs_[i].name.c_str(), why.c_str());
+    if (specs_[i].share)
+        log_info("target %s: %s (the HUD share's: the upload cap stays)", specs_[i].name.c_str(), why.c_str());
     else if (on_evidence)
         on_evidence(Evidence::Removal, specs_[i].name + ": " + why, ms);
 }

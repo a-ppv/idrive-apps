@@ -41,12 +41,16 @@
  * the tiles that differ from it, not the whole frame. That resend is
  * charged to the byte budget when the display takes the scene (resent()).
  *
- * A spare target's assets and layers (TargetSpec::spare, the HUD) write
- * only from the spare budget: what the other targets' budget clips off its
- * refill, unused by them (upload_pacer.h). The other targets' writes go
- * exactly as they would without it; evidence from a spare target is logged,
- * never counted towards the cap, and its bytes are not the link's load for
- * the governor, so it never moves the cap. */
+ * The layers and assets of a target with the HUD's share (TargetSpec::share)
+ * write from a budget of their own (upload_pacer.h share_of): while one of
+ * them is asked for and has a layer, up to kSharePct of each refill of the
+ * budget, only as much as they spend, what they leave going back to the
+ * other targets at once, and the whole refill while the other targets'
+ * budget sits full. The two together never hold more than one burst. The
+ * other targets never get less than the rest, and with no such layer they
+ * go exactly as they would without it. Evidence from such a target is
+ * logged, never counted towards the cap, and its bytes are not the link's
+ * load for the governor, so it never moves the cap. */
 #ifndef CRS_COMPOSITOR_H
 #define CRS_COMPOSITOR_H
 
@@ -140,6 +144,8 @@ public:
     /* How long a fade in or out takes; 0: none. */
     void set_fade_ms(int ms) { fade_ms_ = ms; }
     static const int64_t kFadeStepMs = 50;
+    /* The most of each refill the HUD's share takes (upload_pacer.h). */
+    static const unsigned kSharePct = 50;
     /* The clock flushes are timed with, in microseconds (tests set it). */
     void set_clock(int64_t (*clock_us)()) { clock_us_ = clock_us; }
     /* Layers by id, for status reports. */
@@ -186,10 +192,10 @@ private:
     };
 
     uint32_t admit(uint64_t owner, int target, size_t pixel_bytes, std::string *err);
-    /* The budget the target's writes spend: the spare one for a spare
+    /* The budget the target's writes spend: the HUD's share for a share
      * target. */
     crk::UploadPacer &pacer_for(int target);
-    /* The governor's evidence, but a spare target's only logged. */
+    /* The governor's evidence, but a share target's only logged. */
     void evidence(const TargetSpec &t, Evidence e, int64_t now_ms, const std::string &detail);
     /* Bytes written now_ms, flushed or not, for the governor's load. */
     void load(uint64_t bytes, int64_t now_ms);
@@ -211,7 +217,7 @@ private:
     CompositorLimits limits_;
     Governor governor_;
     crk::UploadPacer pacer_;
-    crk::UploadPacer spare_;
+    crk::UploadPacer share_;
     int64_t slow_flush_us_ = 150000;
     int fade_ms_ = 0;
     /* Bytes written this second, flushed or not: the link counts as
