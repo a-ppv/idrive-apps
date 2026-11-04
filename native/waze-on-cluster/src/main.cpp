@@ -122,7 +122,6 @@ public:
                 else
                     log_warn("hud: on must be 0 or 1, not %s", on->second.c_str());
             }
-            /* the HUD map's size: 0 (the default box) or 20-100 % of its width */
             if (pct != msg.end()) {
                 const long v = std::strtol(pct->second.c_str(), nullptr, 10);
                 if (v == 0 || (v >= 20 && v <= 100)) {

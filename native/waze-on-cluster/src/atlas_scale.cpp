@@ -142,9 +142,9 @@ void AtlasScaler::scale(const uint8_t *src, std::vector<uint8_t> *dst)
  *
  * Green is never keyed: parks (Waze's and Google Maps' night greens are about
  * as dark as the grey-blue field) stay, and green pixels don't count towards
- * the background, so a park filling the frame can't become it (seen on a car:
- * parks going black now and then). Green in YUV: V well below neutral and U
- * not above it - the field's blue has U above. */
+ * the background, so a park filling the frame can't become it. Green in
+ * YUV: V well below neutral and U not above it - the field's blue has U
+ * above. */
 static inline bool is_green(int u, int v)
 {
     return v - 128 <= -6 && u - 128 <= 2;
