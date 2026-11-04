@@ -2,6 +2,8 @@
  * Copyright (C) 2026 Robert Nisipeanu */
 #include "video_layer.h"
 
+#include <algorithm>
+
 #include <cstdio>
 
 #include "block_pack.h"
@@ -230,6 +232,7 @@ Stage VideoLayer::stage_exact(int64_t now_ms, bool fresh)
     const std::vector<PixelRect> all{PixelRect{0, 0, p_.w, atlas_h_}};
     staged_.kind = Kind::Exact;
     staged_.fresh = fresh;
+    staged_.offered_ms = front_ms_;
     staged_.whole = whole;
     staged_.refine = refine;
     staged_.raw = raw;
@@ -259,6 +262,7 @@ Stage VideoLayer::stage_blocks(int64_t, bool fresh)
     crk::pack_blocks(front_.data(), p_.w, p_.h, packed_.data(), kPackThreads);
     staged_.kind = Kind::Blocks;
     staged_.fresh = fresh;
+    staged_.offered_ms = front_ms_;
     staged_.next_bank = 1 - block_bank_;
     staged_.was_shown = blocks_shown_;
     staged_.was_parked = parked_;
@@ -317,8 +321,10 @@ void VideoLayer::committed(bool ok, int64_t now_ms)
         }
         return;
     }
-    if (s.fresh)
+    if (s.fresh) {
         sent_++;
+        age_ms_ += (uint64_t)std::max<int64_t>(0, now_ms - s.offered_ms);
+    }
     bytes_ += s.raw;
     pacer_.spend(s.raw);
     if (s.kind == Kind::Blocks) {
@@ -363,6 +369,7 @@ WriteStats VideoLayer::write_stats() const
 {
     WriteStats w;
     w.frames = sent_;
+    w.age_ms = age_ms_;
     w.bytes = bytes_;
     w.failed = failed_;
     w.holds = held_budget_;

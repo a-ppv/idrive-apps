@@ -822,6 +822,7 @@ WriteStats Compositor::write_stats(int target) const
             continue;
         const WriteStats w = kv.second.layer->write_stats();
         sum.frames += w.frames;
+        sum.age_ms += w.age_ms;
         sum.bytes += w.bytes;
         sum.failed += w.failed;
         sum.holds += w.holds;

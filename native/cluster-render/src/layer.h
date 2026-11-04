@@ -53,6 +53,7 @@ enum class Stage { Idle, Wrote, Failed };
  * held back by the byte budget. */
 struct WriteStats {
     uint64_t frames = 0, bytes = 0, failed = 0, holds = 0;
+    uint64_t age_ms = 0;   /* a video's frames' ages at their flush (offer to flush), summed */
 };
 
 /* The uniforms a client sets on one quad or part, kept so a new scene gets

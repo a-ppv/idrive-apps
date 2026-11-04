@@ -93,6 +93,7 @@ private:
         bool fresh = false, whole = false, refine = false, was_shown = false, was_parked = false;
         int next_bank = 0;
         size_t raw = 0, accepted = 0;
+        int64_t offered_ms = 0;   /* when its frame was offered */
         std::vector<crk::PixelRect> rects;
     };
 
@@ -129,6 +130,7 @@ private:
     int64_t refine_due_ms_ = -1;
     Staged staged_;
 
+    uint64_t age_ms_ = 0;   /* the sent frames' ages at their flush, summed */
     uint64_t sent_ = 0, same_ = 0, quiet_ = 0, superseded_ = 0, settled_ = 0, failed_ = 0, refused_ = 0,
              bytes_ = 0, whole_writes_ = 0, partial_writes_ = 0, rects_ = 0, packed_writes_ = 0, refines_ = 0,
              held_budget_ = 0;

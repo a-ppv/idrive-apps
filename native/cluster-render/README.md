@@ -474,7 +474,8 @@ The cap and why it is what it is are in the status
 scene removed`). Every client also gets a `budget` event when it changes.
 Once a minute, each shown target logs what its layers wrote since its last
 such line, and whether it is rendered: `target map: in the last 60 s its
-layers wrote 1800 frames, 52000 KB, 0 failed, 12 budget holds; rendered:
+layers wrote 1800 frames (18 ms from offer to flush on average), 52000 KB, 0
+failed, 12 budget holds; rendered:
 renderer 00000000-0000-0000-0000-000000000001 subscribed for 412 s`.
 
 ## Layers

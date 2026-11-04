@@ -177,6 +177,7 @@ static Rect R(int x, int y, uint32_t w, uint32_t h)
  * Returns the map's flushes' bytes, one entry a flush, and the HUD's bytes. */
 struct SpareRun {
     std::vector<uint64_t> map_flushes;
+    uint64_t map_age_ms = 0, map_frames = 0;
     uint64_t hud_bytes = 0;
     int hud_flushes = 0;
 };
@@ -224,6 +225,8 @@ static SpareRun spare_run(bool hud, bool still)
     }
     out.hud_bytes = hud_seen;
     out.hud_flushes = hud_seen_flushes;
+    out.map_age_ms = r.comp->write_stats(r.map).age_ms;
+    out.map_frames = r.comp->write_stats(r.map).frames;
     return out;
 }
 
@@ -237,6 +240,9 @@ static void spare_hud()
     std::snprintf(name, sizeof name, "spare HUD, moving map: the map writes the same %zu flushes, %llu KB, with the HUD as without",
                   alone.map_flushes.size(), (unsigned long long)(map_bytes / 1024));
     ok(name, alone.map_flushes == with.map_flushes);
+    std::snprintf(name, sizeof name, "spare HUD, moving map: the map's frames as old at their flush with the HUD as without "
+                  "(%llu ms on average)", (unsigned long long)(alone.map_frames ? alone.map_age_ms / alone.map_frames : 0));
+    ok(name, alone.map_frames == with.map_frames && alone.map_age_ms == with.map_age_ms && alone.map_frames > 0);
     std::snprintf(name, sizeof name, "spare HUD, moving map at the budget: the HUD gets only its first frame (%llu KB in %d flushes)",
                   (unsigned long long)(with.hud_bytes / 1024), with.hud_flushes);
     ok(name, with.hud_bytes <= (uint64_t)452 * 300 + 4096);
