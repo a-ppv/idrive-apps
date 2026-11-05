@@ -131,9 +131,11 @@ supported, HIGH F included.
 | CarPlay | ![](docs/main-carplay.png) |
 | Android Auto | ![](docs/main-aa-on.png) |
 | General | ![](docs/main-general.png) |
-| Map on the cluster only (the default) | ![](docs/main-cluster-only.png) |
-| Map on the HUD only | ![](docs/main-hud-only.png) |
-| Map on both | ![](docs/main-both.png) |
+| Show on: Cluster (the default) | ![](docs/main-show-on-cluster.png) |
+| Show on, open | ![](docs/main-show-on-open.png) |
+| Show on: HUD (experimental) | ![](docs/main-show-on-hud.png) |
+| Show on: Cluster and HUD (experimental) | ![](docs/main-show-on-both.png) |
+| The HUD map's size, the slider turned | ![](docs/main-hud-size.png) |
 | HUD disabled after errors | ![](docs/main-hud-disabled.png) |
 | Android Auto alone patched, the cluster map showing | ![](docs/main-aa-only.png) ![](docs/main-aa-only-map.png) |
 | Android Auto not supported | ![](docs/main-aa-unsupported.png) |
