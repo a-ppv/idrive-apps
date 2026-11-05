@@ -13,9 +13,9 @@ Tools and apps for the iDrive 7 head unit (MGU) of a BMW, installed from the
 
 ## The map on the HUD
 
-The map shows on the instrument cluster (**Show on cluster**, on by default), on the head-up display (**Show on
-HUD (experimental)**, off by default), on both, or on neither. With both, the HUD gets up to half the upload
-bandwidth, only what it uses, so both stay smooth. HUD support was contributed by
+The app's **Show on** chooses where the map shows: the instrument cluster (**Cluster**, the default), the head-up
+display (**HUD (experimental)**) or both (**Cluster and HUD (experimental)**). With both, the HUD gets up to half the
+upload bandwidth, only what it uses, so both stay smooth. HUD support was contributed by
 [eroobeeroo](https://github.com/eroobeeroo) and [wesleyredhat](https://github.com/wesleyredhat). Photos from a 2021 X5
 xDrive45e (G05); street names blurred.
 
@@ -28,8 +28,8 @@ bottom right, battery power and temperatures, is a separate app.)*
 |---|---|
 | ![Before](docs/hud/hud-before-black-background.jpg) | ![After](docs/hud/hud-night.jpg) |
 
-- **Size** - **Smaller** and **Larger** in 5 % steps from 30 % to 85 % of the HUD's width, the picture's shape
-  kept. Standard is the fitted box, about 57 %.
+- **Size** - a slider in 5 % steps from 30 % to 85 % of the HUD's width, the picture's shape kept. Standard is the
+  fitted box, about 57 %.
 - **Position** - **Move left / right / up / down**, 10 px a press, and **Centre**. The map moves at once and is held
   inside the HUD.
 - **Made for a HUD** - the frames are scaled on the head unit to the size shown, at most 10 a second, the corners are

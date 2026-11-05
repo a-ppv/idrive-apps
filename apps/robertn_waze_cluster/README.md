@@ -61,9 +61,9 @@ the same `{n}`, and every HMI language its text file.
 
 ## Where the map shows
 
-**Show on cluster** (on by default) and **Show on HUD (experimental)** (off
-by default) choose: the cluster only, the HUD only, both, or neither. HUD
-support was contributed by [eroobeeroo](https://github.com/eroobeeroo), and
+**Show on** in General chooses: **Cluster** (the default), **HUD
+(experimental)** or **Cluster and HUD (experimental)**; Remove patch turns
+the map off. HUD support was contributed by [eroobeeroo](https://github.com/eroobeeroo), and
 the choice of both or one follows [wesleyredhat](https://github.com/wesleyredhat)'s.
 With both, the HUD gets up to half the upload bandwidth, only what it uses;
 alone, all of it. On the HUD the frames are scaled on the head unit to the
@@ -80,7 +80,10 @@ One `LT_State_Wide` list in four sections, each under a header row
 (`LT_Label_Header_1Row`). CarPlay and Android Auto have the same rows with
 the same words; no row repeats the header's name. Every info row reads
 `Name: Value`, the value starting with a capital (`Zoom: —` while there
-is none), and every on/off setting is a checkbox. Every row
+is none), every on/off setting is a checkbox, the choice of where the map
+shows a drop-down (`LT_DropDownMenu_1Row_2Col3070`, as the stock apps'
+settings) and the HUD map's size a slider (`LT_Slider_LeftJustified_Fill_Steps`,
+as the stock seat heating's level). Every row
 stays where it is: one that cannot act now is greyed, and while `patchd`
 runs any operation (`busy`), every operation in both sections is. A greyed
 row pressed sends nothing; a greyed checkbox keeps its label. The
@@ -112,14 +115,12 @@ supported, HIGH F included.
 | | Zoom out / Zoom in | 10 dpi a press (150-400): out shows more map; enabled while patched, nothing is pending and the 10 s between changes has passed |
 | | Hide phone's turn card | a checkbox, ticked while the turn card on disk is hidden, or as asked while its change runs: the phone's own turn card cropped off the map; `(after restart)` as for the zoom; enabled as Zoom out and Zoom in |
 | **HUD** | HUD map | `HUD map: <state>`, the map on the HUD: `Off`, `Starting…`, `Showing`, `Waiting for the phone`, `Frozen`, `Error`, `Disabled after errors` (the cluster renderer turned it off after the cluster restarted right after it showed, twice), `Unavailable` (the map service is down) |
-| | Show on HUD (experimental) | a checkbox, unticked by default: ticked, the map shows on the HUD, beside the cluster's or alone. A press changes it at once and it is kept for the next start. Greyed until the map service reports it |
-| | Size | `Size: Standard` (the fitted box, about 57 % of the HUD's width) or `Size: 70 %` |
-| | Smaller / Larger | 5 % a press, from 30 % to 85 % of the HUD's width, the picture's shape kept; kept for the next start; greyed while the HUD is off or disabled |
+| | Size | a slider, `Size: Standard` (the fitted box, about 57 % of the HUD's width, at the 55 % step) or `Size: 70 %`: 5 % a step, from 30 % to 85 % of the HUD's width, the picture's shape kept; kept for the next start; greyed while the HUD is off or disabled |
 | | Position | `Position: Centre`, or how far the HUD map is moved: `Position: 20 px right, 10 px up` |
-| | Move left / Move right / Move up / Move down | 10 px a press, held inside the HUD; kept for the next start; greyed as Smaller and Larger |
+| | Move left / Move right / Move up / Move down | 10 px a press, held inside the HUD; kept for the next start; greyed as the Size slider |
 | | Centre | puts it back in the middle; enabled while it is moved |
-| **General** | Cluster map | `Cluster map: <state>`, the map the shared render draws for either phone: `Off` unless CarPlay's or Android Auto's patch is in effect (on disk with nothing pending, as the last status outside a change said; a running or failed change keeps it), `Starting…`, `Showing Waze map — 16 frames/s`, `Waiting for the phone`, `Waiting for the phone's map`, `Stream lost`, `Frozen`, `Error`, `Unavailable` (the map service is down, or refuses the head unit) |
-| | Show on cluster | a checkbox, ticked by default: unticked, no map on the cluster, which shows BMW's own content. A press changes it at once and it is kept for the next start. Greyed until the map service reports it |
+| **General** | Show on | a drop-down: `Cluster` (the default), `HUD (experimental)` or `Cluster and HUD (experimental)`; with the HUD alone the cluster shows BMW's own content. A choice takes effect at once and is kept for the next start. Greyed until the map service reports it; `—` while it shows the map on neither (its own configuration) |
+| | Cluster map | `Cluster map: <state>`, the map the shared render draws for either phone: `Off` unless CarPlay's or Android Auto's patch is in effect (on disk with nothing pending, as the last status outside a change said; a running or failed change keeps it), `Starting…`, `Showing Waze map — 16 frames/s`, `Waiting for the phone`, `Waiting for the phone's map`, `Stream lost`, `Frozen`, `Error`, `Unavailable` (the map service is down, or refuses the head unit) |
 | | Hide BMW's turn box | a checkbox: ticked, BMW's turn-by-turn box on the cluster stays hidden while the map shows (the default); unticked, it shows. A press changes it at once and the map service keeps it. Greyed and unticked until the map service reports it and while the cluster renderer keeps the box shown; greyed while the map is not on the cluster |
 | | Logs | opens the Logs page |
 | | Restart head unit | the Node State Manager's normal head-unit restart; shown while a written change, CarPlay's or Android Auto's, waits for the next head-unit start; enabled while nothing runs and the restart limit (one every 10 minutes) allows it |

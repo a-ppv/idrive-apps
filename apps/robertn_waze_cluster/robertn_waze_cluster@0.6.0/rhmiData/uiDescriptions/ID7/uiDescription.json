@@ -335,34 +335,8 @@
             }
           ]
         },
-        "51": {
-          "type": "checkBox",
-          "name": "wocHudOn",
-          "properties": {
-            "Visible": {
-              "value": 1,
-              "type": "UInt"
-            },
-            "Focusable": {
-              "value": 3,
-              "type": "UInt"
-            }
-          },
-          "rows": [
-            {
-              "Text": {
-                "value": "Show on HUD (experimental)",
-                "type": "Text"
-              },
-              "eParam_RowSelected": {
-                "value": false,
-                "type": "Bool"
-              }
-            }
-          ]
-        },
         "52": {
-          "type": "label",
+          "type": "slider",
           "name": "wocHudSize",
           "properties": {
             "Visible": {
@@ -370,59 +344,35 @@
               "type": "UInt"
             },
             "Focusable": {
-              "value": 0,
+              "value": 3,
               "type": "UInt"
             }
           },
           "rows": [
             {
-              "Text": {
+              "TextDescription": {
                 "value": "Size: \u2014",
                 "type": "Text"
-              }
-            }
-          ]
-        },
-        "53": {
-          "type": "button",
-          "name": "wocHudSmaller",
-          "properties": {
-            "Visible": {
-              "value": 1,
-              "type": "UInt"
-            },
-            "Focusable": {
-              "value": 3,
-              "type": "UInt"
-            }
-          },
-          "rows": [
-            {
-              "Text": {
-                "value": "Smaller",
-                "type": "Text"
-              }
-            }
-          ]
-        },
-        "54": {
-          "type": "button",
-          "name": "wocHudLarger",
-          "properties": {
-            "Visible": {
-              "value": 1,
-              "type": "UInt"
-            },
-            "Focusable": {
-              "value": 3,
-              "type": "UInt"
-            }
-          },
-          "rows": [
-            {
-              "Text": {
-                "value": "Larger",
-                "type": "Text"
+              },
+              "TextDescriptionVisible": {
+                "value": true,
+                "type": "Bool"
+              },
+              "MiddleIndicatorVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "MinValue": {
+                "value": 0,
+                "type": "SInt"
+              },
+              "MaxValue": {
+                "value": 11,
+                "type": "SInt"
+              },
+              "NumberOfSteps": {
+                "value": 11,
+                "type": "SInt"
               }
             }
           ]
@@ -673,32 +623,6 @@
             }
           ]
         },
-        "61": {
-          "type": "checkBox",
-          "name": "wocClusterOn",
-          "properties": {
-            "Visible": {
-              "value": 1,
-              "type": "UInt"
-            },
-            "Focusable": {
-              "value": 3,
-              "type": "UInt"
-            }
-          },
-          "rows": [
-            {
-              "Text": {
-                "value": "Show on cluster",
-                "type": "Text"
-              },
-              "eParam_RowSelected": {
-                "value": false,
-                "type": "Bool"
-              }
-            }
-          ]
-        },
         "36": {
           "type": "label",
           "name": "wocRestartStatus",
@@ -716,6 +640,50 @@
             {
               "Text": {
                 "value": "",
+                "type": "Text"
+              }
+            }
+          ]
+        },
+        "62": {
+          "type": "dropDownMenu",
+          "name": "wocShowOn",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "cells": {
+            "HeaderText": {
+              "value": "Show on",
+              "type": "Text"
+            },
+            "SelectedItem": {
+              "value": 0,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "ItemText": {
+                "value": "Cluster",
+                "type": "Text"
+              }
+            },
+            {
+              "ItemText": {
+                "value": "HUD (experimental)",
+                "type": "Text"
+              }
+            },
+            {
+              "ItemText": {
+                "value": "Cluster and HUD (experimental)",
                 "type": "Text"
               }
             }

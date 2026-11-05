@@ -297,17 +297,17 @@ the render decodes through a lost packet:
 
 **Where the map shows** (the HUD contributed by
 [eroobeeroo](https://github.com/eroobeeroo), the choice of both or one after
-[wesleyredhat](https://github.com/wesleyredhat)'s #53). `cluster` (the app's
-**Show on cluster**, on by default) and `hud` (**Show on HUD
-(experimental)**, off by default) choose (`src/map_feeds.*`); each change
-takes effect at once:
+[wesleyredhat](https://github.com/wesleyredhat)'s #53). `cluster` (on by
+default) and `hud` (off by default) choose (`src/map_feeds.*`); the app's
+**Show on** sets them to the cluster, the HUD or both, and each change takes
+effect at once:
 
 | | |
 |---|---|
 | Cluster only (the default) | the map on the cluster as always |
 | HUD only | no map scene on the cluster, so the KOMBI shows its own content and the guide hold is not asked for; the HUD takes each frame itself, with the whole upload budget, at most `hud_fps` a second |
 | Both | the cluster first; the HUD gets a copy, and up to half the budget, only what it spends (cluster-render README.md "Upload budget") |
-| Neither | no feed and no connection to the renderer; every frame is still decoded, since the phone sends keyframes only when its stream starts, but none gets a picture: no VPP, readback, rounding, copy or hand-off. Turned on again, the map shows with the next frame, without waiting for a keyframe |
+| Neither (the configuration's alone; the app does not offer it) | no feed and no connection to the renderer; every frame is still decoded, since the phone sends keyframes only when its stream starts, but none gets a picture: no VPP, readback, rounding, copy or hand-off. Turned on again, the map shows with the next frame, without waiting for a keyframe |
 
 cluster-render's `hud` target is slot 0x323 (its README.md "The HUD").
 
@@ -332,7 +332,7 @@ cluster-render's `hud` target is slot 0x323 (its README.md "The HUD").
 - **Size** (`hud_width_pct`): Standard (0, the fitted box, about 57 % of the
   HUD's width, 453x200), or 30 % to 85 % (680x300, the widest: wider is cut
   off at the HUD's edges, and a larger saved size is held to it), the
-  picture's shape kept; the app's **Smaller** and **Larger** step it by 5 %.
+  picture's shape kept; the app's **Size** slider steps it by 5 %.
   A new size is a new layer at that size.
 - **Position** (`hud_offset_x`, `hud_offset_y`): pixels of the HUD's scene
   moved from the centre (+x right, +y down), held so the map stays whole
@@ -355,7 +355,7 @@ cluster-render's `hud` target is slot 0x323 (its README.md "The HUD").
   off after two cluster restarts within 10 s of its mapping; the status
   says `hud_state` `disabled`, the app shows `HUD map: Disabled after
   errors`, and its frames are no longer copied or scaled. The cluster's map
-  is not affected. Turning the checkbox off and on does not undo it; as
+  is not affected. Choosing Cluster and then the HUD again does not undo it; as
   root, `cluster-render guard-reset` does.
 - Not with `target = panel`, which shares the HUD's scene id.
 - The settings are saved by `patchd` in `waze-on-cluster.local.conf` for the

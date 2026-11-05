@@ -2,19 +2,18 @@
 
 ## 0.6.0
 
-Where the map shows: Show on cluster (General, on by default) and a HUD
-section after Android Auto, contributed by eroobeeroo and wesleyredhat:
-`HUD map: …`, the Show on HUD (experimental) checkbox (off by default),
-`Size: …` with Smaller and Larger, and `Position: …` with Move left, Move
-right, Move up, Move down and Centre. The map shows on the cluster, the HUD,
-both or neither; with both the HUD uses up to half the upload bandwidth,
-only what it needs. With the map not on the cluster, `Cluster map: Off` and
-the Hide BMW's turn box checkbox is greyed. The size and position
-buttons are greyed while the HUD is off, and while the cluster renderer keeps
-it off after errors (`HUD map: Disabled after errors`). The settings take
-effect at once and are kept for the next start. These rows are in the
-head unit's display language, as is the rest of the page. Requires
-waze-on-cluster 0.9.0.
+The map on the HUD, contributed by eroobeeroo and wesleyredhat. Show on, a
+drop-down in General, chooses where the map shows: Cluster (the default),
+HUD (experimental) or Cluster and HUD (experimental); with both the HUD uses
+up to half the upload bandwidth, only what it needs. With the map not on
+the cluster, `Cluster map: Off` and the Hide BMW's turn box checkbox is
+greyed. A HUD section after Android Auto: `HUD map: …`, the Size slider (5 %
+a step from 30 % to 85 %) and `Position: …` with Move left, Move right, Move
+up, Move down and Centre, greyed while the HUD is off, and while the
+cluster renderer keeps it off after errors (`HUD map: Disabled after
+errors`). The settings take effect at once and are kept for the next
+start. These rows are in the head unit's display language, as is the rest
+of the page. Requires waze-on-cluster 0.9.0.
 
 ## 0.5.6
 

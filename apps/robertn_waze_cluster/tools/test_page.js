@@ -19,11 +19,14 @@
  * Zoom and the Hide phone's turn card checkbox; info rows as Name: Value;
  * the Cluster map row in General; Hide BMW's turn box ticked as the render
  * reports, each press one guide command to the render, greyed and unticked,
- * its label kept, while the cluster renderer holds the box shown; the HUD
- * off by default, its size and position buttons greyed, Show on HUD (experimental)
- * ticked as the render reports, each press one hud command to the render
- * and one to patchd, Disabled after errors with the size and position
- * buttons greyed; no label greyed (the HMI's labels have no setEnabled);
+ * its label kept, while the cluster renderer holds the box shown; Show on,
+ * a drop-down of Cluster, HUD and both in General, Cluster by default, each
+ * pick through the render and patchd, the display turned on first, — for a
+ * render on neither; the HUD off by default, its size slider and position
+ * buttons greyed (a greyed slider turned goes back), the slider a 5 % step
+ * a turn, Disabled after errors with the slider and position buttons
+ * greyed; no label greyed (the HMI's labels have no setEnabled, its
+ * drop-downs and sliders only the property);
  * hiding the page closes both sockets; a page opened again reads the
  * render's current state; a pending patch, from the daemon and, before the
  * daemon runs, from its marker; a failed restart on the restart's own line,
@@ -45,7 +48,7 @@ const fs = require('fs');
 const net = require('net');
 const path = require('path');
 const { FakeRender, FakePatch, FakeLogs, RENDER_PAGE, RENDER_FPS } = require('./fakes.js');
-const { RENDER_PATH, PATCH_PATH, PENDING_PATH, SIZE, SAFE } = require('../src/waze_cluster_control.js');
+const { RENDER_PATH, PATCH_PATH, PENDING_PATH, SIZE, SAFE, HUD_SIZE_STEPS } = require('../src/waze_cluster_control.js');
 const { LOGS_PATH } = require('../src/logs_control.js');
 
 const STAGED = fs.readdirSync(path.join(__dirname, '..'))
@@ -90,23 +93,59 @@ class FakeComponent extends EventEmitter {
         this.id = Number(id);
         this.desc = desc;
         this.text = null;
+        this.cells = {};
         this.enabled = null;
         this.visible = (desc && desc.properties && desc.properties.Visible) ? desc.properties.Visible.value === 1 : null;
         this.enabledSeen = new Set();
         this.ticks = [];
-        if (desc && desc.type === 'label') {
+        const type = desc && desc.type;
+        if (type === 'label') {
             this.setEnabled = undefined;   /* the HMI greys no label */
+        }
+        /* the oap-sdk's DropDown and Slider: no setEnabled or setVisible, only
+         * setProperty; the HMI moves their value itself, the SDK writing it */
+        if (type === 'dropDownMenu' || type === 'slider') {
+            this.setEnabled = this.setVisible = undefined;
+        }
+        if (type === 'dropDownMenu') {
+            this.on('action', ({ row }) => { this.cells.SelectedItem = row; });
+        }
+        if (type === 'slider') {
+            this._step = 0;
+            this.on('action', ({ subType }) => this.setStepValue(this.cells['0:Value'] + (subType === 4 ? 1 : -1)));
         }
     }
     getId() { return this.id; }
-    setValue(row, cell, value) {
+    setValue(...args) {
+        const [row, cell, value] = args.length === 3 ? [null, ...args] : args;
+        this.cells[row == null ? cell : `${row}:${cell}`] = value;
         if (cell === 'eParam_RowSelected') {
             this.selected = value;
             this.ticks.push(value);
-        } else {
+        } else if (this.desc.type !== 'dropDownMenu' && (this.desc.type !== 'slider' || cell === 'TextDescription')) {
             this.text = value;
         }
         return Promise.resolve();
+    }
+    /* the SDK's Slider: held between its ends, 'changed' when it moves */
+    setStepValue(v) {
+        const row = this.desc.rows[0];
+        const value = Math.max(row.MinValue.value, Math.min(row.MaxValue.value, v));
+        if (value !== this._step) {
+            this._step = value;
+            this.emit('changed', value);
+        }
+        return this.setValue(0, 'Value', value, 'SInt');
+    }
+    setProperty(name, value) {
+        assert.strictEqual(name, 'Enabled');
+        this.enabled = value === 1;
+        this.enabledSeen.add(this.enabled);
+        return Promise.resolve();
+    }
+    /* A drop-down as it shows: its header and its chosen item. */
+    shown() {
+        return `${this.cells.HeaderText}: ${this.cells[`${this.cells.SelectedItem}:ItemText`]}`;
     }
     /* A press, as the HMI makes it: a checkbox ticks or unticks itself first. */
     press() {
@@ -116,6 +155,9 @@ class FakeComponent extends EventEmitter {
         }
         this.emit('action');
     }
+    /* An item of the drop-down picked; the slider turned a step (Increase 4, Decrease 5). */
+    pick(row) { this.emit('action', { row }); }
+    turn(dir) { this.emit('action', { row: 0, subType: dir > 0 ? 4 : 5 }); }
     setEnabled(enabled) { this.enabled = enabled; this.enabledSeen.add(enabled); return Promise.resolve(); }
     setVisible(visible) { this.visible = visible; shownOrHidden.add(this.desc.name); return Promise.resolve(); }
     updateResources() { return Promise.resolve(); }
@@ -219,16 +261,18 @@ async function main() {
     const xmlIds = (cid) => [...XML.split('<container id="').find((c) => c.startsWith(`${cid}"`))
         .matchAll(/<component id="(\d+)" type="(\w+)"(?: widget="(\w+)")?/g)].map((m) => [m[1], m[2], m[3]]);
     /* application.xml orders the rows; uiDescription holds them by id */
-    const main = xmlIds('1').map(([id]) => [id, components[id].type, components[id].name, components[id].rows[0].Text.value]);
+    const shipped = (d) => (d.type === 'dropDownMenu' ? `${d.cells.HeaderText.value}: ${d.rows[d.cells.SelectedItem.value].ItemText.value}`
+        : d.type === 'slider' ? d.rows[0].TextDescription.value : d.rows[0].Text.value);
+    const main = xmlIds('1').map(([id]) => [id, components[id].type, components[id].name, shipped(components[id])]);
     assert.deepStrictEqual(main.map(([id, type, name, text]) => (type === 'title' ? name : `${name} ${text}`)), [
         'wocTitle',
         'wocHeadCarPlay CarPlay', 'wocStatus Status: Connecting…', 'wocEnable Patch', 'wocDisable Remove patch',
         'wocHeadAa Android Auto', 'wocAaStatus Status: Connecting…', 'wocAaEnable Patch', 'wocAaDisable Remove patch',
         'wocAaZoom Zoom: —', 'wocAaZoomOut Zoom out', 'wocAaZoomIn Zoom in', "wocAaCard Hide phone's turn card",
-        'wocHeadHud HUD', 'wocHud HUD map: \u2014', 'wocHudOn Show on HUD (experimental)', 'wocHudSize Size: \u2014',
-        'wocHudSmaller Smaller', 'wocHudLarger Larger', 'wocHudPos Position: \u2014', 'wocHudLeft Move left', 'wocHudRight Move right',
-        'wocHudUp Move up', 'wocHudDown Move down', 'wocHudCentre Centre',
-        'wocHeadGeneral General', 'wocMap Cluster map: Off', 'wocClusterOn Show on cluster', "wocGuide Hide BMW's turn box", 'wocLogs Logs', 'wocRestart Restart head unit',
+        'wocHeadHud HUD', 'wocHud HUD map: \u2014', 'wocHudSize Size: \u2014', 'wocHudPos Position: \u2014', 'wocHudLeft Move left',
+        'wocHudRight Move right', 'wocHudUp Move up', 'wocHudDown Move down', 'wocHudCentre Centre',
+        'wocHeadGeneral General', 'wocShowOn Show on: Cluster', 'wocMap Cluster map: Off', "wocGuide Hide BMW's turn box", 'wocLogs Logs',
+        'wocRestart Restart head unit',
         'wocRestartStatus '],
         'the main page: four sections, in order');
     assert.deepStrictEqual(xmlIds('1').map(([id, type]) => `${id} ${type}`).sort(),
@@ -238,8 +282,13 @@ async function main() {
     assert.deepStrictEqual(['wocHeadCarPlay', 'wocHeadAa', 'wocHeadHud', 'wocHeadGeneral'].map((n) => widgets[n]), Array(4).fill('LT_Label_Header_1Row'),
         'the section headers are header rows');
     assert(!main.some(([, , name]) => /^wocRow|^wocSetup|^wocCapture/.test(name)), 'no log rows, setup line or capture on the main page');
-    assert.deepStrictEqual(['wocAaCard', 'wocHudOn', 'wocClusterOn', 'wocGuide'].map((n) => widgets[n]), Array(4).fill('LT_CheckBox_1Row'),
+    assert.deepStrictEqual(['wocAaCard', 'wocGuide'].map((n) => widgets[n]), Array(2).fill('LT_CheckBox_1Row'),
         'the on/off settings are checkboxes');
+    assert.deepStrictEqual([widgets.wocShowOn, widgets.wocHudSize], ['LT_DropDownMenu_1Row_2Col3070', 'LT_Slider_LeftJustified_Fill_Steps'],
+        'where the map shows: a drop-down of three; the HUD\'s size: a slider');
+    assert.deepStrictEqual(components['62'].rows.map((r) => r.ItemText.value), ['Cluster', 'HUD (experimental)', 'Cluster and HUD (experimental)']);
+    assert.deepStrictEqual(['MinValue', 'MaxValue', 'NumberOfSteps'].map((k) => components['52'].rows[0][k].value), [0, HUD_SIZE_STEPS, HUD_SIZE_STEPS],
+        'the slider: one step for each 5 %');
     /* every info row reads "Name: Value" */
     assert(main.filter(([, type, name]) => type === 'label' && !/^wocHead|^wocRestartStatus$/.test(name))
         .every(([, , , text]) => /^[A-Z][A-Za-z ]+: [A-Z\u2014]/.test(text)), 'info rows as Name: Value');
@@ -278,9 +327,8 @@ async function main() {
         await until('page shows the map', () => byName.wocMap.text === `Cluster map: Showing ${RENDER_PAGE} — ${RENDER_FPS}` && status.text === 'Status: Patched');
         assert(!logs.some((l) => /^error/.test(l)), logs.filter((l) => /^error/.test(l)).join('\n'));
         const bound = logs.filter((l) => l.startsWith('info: BIND OK: ')).map((l) => l.split(' ')[3]).sort();
-        assert.deepStrictEqual(bound, ['wocAaCard', 'wocAaDisable', 'wocAaEnable', 'wocAaZoomIn', 'wocAaZoomOut', 'wocCapture', 'wocClusterOn', 'wocDisable', 'wocEnable',
-            'wocGuide', 'wocHudCentre', 'wocHudDown', 'wocHudLarger', 'wocHudLeft', 'wocHudOn', 'wocHudRight', 'wocHudSmaller', 'wocHudUp', 'wocLogs', 'wocLogsSave',
-            'wocRestart'],
+        assert.deepStrictEqual(bound, ['wocAaCard', 'wocAaDisable', 'wocAaEnable', 'wocAaZoomIn', 'wocAaZoomOut', 'wocCapture', 'wocDisable', 'wocEnable',
+            'wocGuide', 'wocHudCentre', 'wocHudDown', 'wocHudLeft', 'wocHudRight', 'wocHudUp', 'wocLogs', 'wocLogsSave', 'wocRestart'],
             'bound buttons and checkbox');
         assert.strictEqual(byName.wocRestart.visible, false, 'restart button hidden while the map shows');
         console.log('ok   a page opened while the map is up shows it');
@@ -357,47 +405,62 @@ async function main() {
             guide.text === "Hide BMW's turn box");
         console.log('ok   held off by the cluster renderer: greyed and unticked, its label kept, presses send nothing');
 
-        /* ---- the HUD ---- */
-        const hudOn = byName.wocHudOn;
-        const hudRows = () => ['wocHudSmaller', 'wocHudLarger', 'wocHudLeft', 'wocHudRight', 'wocHudUp', 'wocHudDown']
-            .map((n) => byName[n].enabled);
-        await until('the HUD off', () => byName.wocHud.text === 'HUD map: Off' && hudOn.enabled === true && hudOn.selected === false &&
-            hudOn.text === 'Show on HUD (experimental)' && byName.wocHudSize.text === 'Size: Standard' &&
+        /* ---- where the map shows, and the HUD ---- */
+        const showOn = byName.wocShowOn;
+        const size = byName.wocHudSize;
+        const hudRows = () => ['wocHudSize', 'wocHudLeft', 'wocHudRight', 'wocHudUp', 'wocHudDown'].map((n) => byName[n].enabled);
+        await until('the cluster, the HUD off', () => showOn.shown() === 'Show on: Cluster' && showOn.enabled === true &&
+            byName.wocHud.text === 'HUD map: Off' && size.text === 'Size: Standard' && size.cells['0:Value'] === 5 &&
             byName.wocHudPos.text === 'Position: Centre');
         assert(hudRows().every((e) => e === false) && byName.wocHudCentre.enabled === false, 'the size and position greyed while off');
         render.received.length = 0;
-        hudOn.press();
-        await until('the HUD on', () => render.hud === 1 && hudOn.selected === true && byName.wocHud.text === 'HUD map: Showing');
+        size.turn(1);
+        await until('a greyed slider turned: back where it was', () => size.cells['0:Value'] === 5);
+        assert.deepStrictEqual(render.received, [], 'nothing sent');
+        showOn.pick(1);
+        await until('the HUD alone', () => render.hud === 1 && render.cluster === 0 && showOn.shown() === 'Show on: HUD (experimental)' &&
+            byName.wocHud.text === 'HUD map: Showing' && byName.wocMap.text === 'Cluster map: Off' && byName.wocGuide.enabled === false);
         await until('the size and position enabled', () => hudRows().every((e) => e === true));
-        assert.deepStrictEqual(render.received, [{ cmd: 'hud', on: '1' }], 'one hud command to the render');
-        await until('saved', () => patch.count('hud') === 1);
-        byName.wocHudLarger.emit('action');
-        await until('larger', () => byName.wocHudSize.text === 'Size: 60 %');
+        assert.deepStrictEqual(render.received, [{ cmd: 'hud', on: '1' }, { cmd: 'cluster', on: '0' }], 'the HUD on, then the cluster off');
+        await until('saved', () => patch.count('hud') === 1 && patch.count('cluster') === 1);
+        size.turn(1);
+        await until('larger', () => size.text === 'Size: 60 %' && render.hudWidth === 60 && size.cells['0:Value'] === 6);
+        await until('saved', () => patch.received.some((m) => m.cmd === 'hud-size' && m.hud_width_pct === 60));
+        size.turn(-1);
+        size.turn(-1);
+        await until('smaller', () => size.text === 'Size: 50 %' && render.hudWidth === 50);
         byName.wocHudLeft.emit('action');
         await until('moved', () => byName.wocHudPos.text === 'Position: 10 px left' && byName.wocHudCentre.enabled === true);
+        await sleep(450);
+        showOn.pick(2);
+        await until('both', () => render.cluster === 1 && showOn.shown() === 'Show on: Cluster and HUD (experimental)' &&
+            byName.wocGuide.enabled === true);
         render.hudState = 'disabled';
         render.announce(render.state, render.reason);
-        await until('disabled after errors', () => byName.wocHud.text === 'HUD map: Disabled after errors' && hudOn.selected === true &&
-            hudRows().every((e) => e === false) && byName.wocHudCentre.enabled === false);
+        await until('disabled after errors', () => byName.wocHud.text === 'HUD map: Disabled after errors' &&
+            showOn.shown() === 'Show on: Cluster and HUD (experimental)' && hudRows().every((e) => e === false) && byName.wocHudCentre.enabled === false);
         render.hudState = null;
         await sleep(450);
-        hudOn.press();
-        await until('the HUD off again', () => render.hud === 0 && hudOn.selected === false && byName.wocHud.text === 'HUD map: Off');
-        /* the cluster off and on: Cluster map Off, the turn box greyed, both through the render and patchd */
-        const clusterOn = byName.wocClusterOn;
-        await until('the cluster on', () => clusterOn.selected === true && clusterOn.enabled === true && clusterOn.text === 'Show on cluster');
         render.received.length = 0;
-        clusterOn.press();
-        await until('the cluster off', () => render.cluster === 0 && clusterOn.selected === false &&
-            byName.wocMap.text === 'Cluster map: Off' && byName.wocGuide.enabled === false);
-        assert.deepStrictEqual(render.received, [{ cmd: 'cluster', on: '0' }]);
-        await until('saved', () => patch.count('cluster') === 1);
+        showOn.pick(2);
+        await sleep(100);
+        assert.deepStrictEqual(render.received, [], 'the choice it has: nothing sent');
         await sleep(450);
-        clusterOn.press();
-        await until('the cluster on again', () => render.cluster === 1 && clusterOn.selected === true && byName.wocGuide.enabled === true);
+        showOn.pick(0);
+        await until('the cluster again', () => render.hud === 0 && showOn.shown() === 'Show on: Cluster' && byName.wocHud.text === 'HUD map: Off');
         render.received.length = 0;
-        console.log('ok   the HUD: off by default with its size and position greyed; Show on HUD (experimental) turns it on through the render ' +
-            'and patchd; Size and Position change it; Disabled after errors greys them');
+        /* the render on neither (its own configuration): no choice shown, one to make */
+        render.cluster = 0;
+        render.announce(render.state, render.reason);
+        await until('neither', () => showOn.shown() === 'Show on: —' && showOn.enabled === true &&
+            showOn.cells['1:ItemText'] === 'HUD (experimental)');
+        await sleep(450);
+        showOn.pick(0);
+        await until('the cluster', () => render.cluster === 1 && showOn.shown() === 'Show on: Cluster');
+        render.received.length = 0;
+        console.log('ok   where the map shows: a drop-down, Cluster by default, each choice through the render and patchd, the HUD on first, ' +
+            '— for neither; the HUD: off by default with its size and position greyed; the size slider and Position change it; ' +
+            'Disabled after errors greys them');
 
         byName.ST_OnlineApps_WazeCluster.emit('visible', { visible: false });
         await until('sockets closed', () => render._clients.size === 0 && patch._clients.size === 0);
@@ -459,7 +522,7 @@ async function main() {
         assert.deepStrictEqual([...shownOrHidden].sort(), ['wocRestart', 'wocRestartStatus'], 'only the restart\'s rows are shown and hidden');
         Object.values(components).filter((d) => !/^wocRestart/.test(d.name) && d.type !== 'title')
             .forEach((d) => assert.strictEqual(byName[d.name].visible, true, `${d.name} stays on the page`));
-        ['wocEnable', 'wocDisable', 'wocAaEnable', 'wocAaDisable', 'wocAaZoomOut', 'wocAaZoomIn', 'wocAaCard', 'wocGuide', 'wocHudSmaller', 'wocHudLarger',
+        ['wocEnable', 'wocDisable', 'wocAaEnable', 'wocAaDisable', 'wocAaZoomOut', 'wocAaZoomIn', 'wocAaCard', 'wocGuide', 'wocShowOn', 'wocHudSize',
             'wocHudLeft', 'wocHudCentre']
             .forEach((n) => assert.deepStrictEqual([...byName[n].enabledSeen].sort(), [false, true], `${n} greyed and enabled in place`));
         const valueRow = /^[A-Z][A-Za-z ]+: [A-Z0-9\u2014]/;
@@ -555,14 +618,15 @@ async function main() {
         const deWords = de.words;
         de.words = { Patch: 'Patchen', 'Remove patch': 'Patch entfernen', General: 'Allgemein', 'Save logs': 'Logs speichern',
             'Status: {0}': 'Zustand: {0}', 'Saved logs: {0}': 'Gespeicherte Logs: {0}', "Hide BMW's turn box": 'BMW-Abbiegebox ausblenden',
-            'HUD map: {0}': 'Karte im HUD: {0}', 'Show on HUD (experimental)': 'Im HUD anzeigen (experimentell)', 'Move left': 'Nach links' };
+            'HUD map: {0}': 'Karte im HUD: {0}', 'Show on': 'Anzeigen auf', 'HUD (experimental)': 'HUD (experimentell)', 'Move left': 'Nach links' };
         const before = ['wocStatus', 'wocAaStatus', 'wocMap', 'wocLogsStatus', 'wocHud'].map((n) => byName[n].text);
         displayLanguage('DEUTSCH');
         await until('German', () => byName.wocEnable.text === 'Patchen' && byName.wocAaDisable.text === 'Patch entfernen' &&
             byName.wocHeadGeneral.text === 'Allgemein' && byName.wocLogsSave.text === 'Logs speichern' &&
             byName.wocGuide.text === 'BMW-Abbiegebox ausblenden' && byName.wocStatus.text === before[0].replace(/^Status:/, 'Zustand:') &&
             byName.wocAaStatus.text === before[1].replace(/^Status:/, 'Zustand:') && byName.wocLogsStatus.text.startsWith('Gespeicherte Logs: ') &&
-            byName.wocHud.text === before[4].replace(/^HUD map:/, 'Karte im HUD:') && byName.wocHudOn.text === 'Im HUD anzeigen (experimentell)' &&
+            byName.wocHud.text === before[4].replace(/^HUD map:/, 'Karte im HUD:') && byName.wocShowOn.cells.HeaderText === 'Anzeigen auf' &&
+            byName.wocShowOn.cells['1:ItemText'] === 'HUD (experimentell)' && byName.wocShowOn.cells['0:ItemText'] === 'Cluster' &&
             byName.wocHudLeft.text === 'Nach links');
         assert.strictEqual(byName.wocMap.text, before[2], 'a word German lacks: its English');
         assert.strictEqual(byName.wocAaZoomIn.text, 'Zoom in', 'a word German lacks: its English');

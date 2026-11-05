@@ -95,9 +95,12 @@ const SIZE = '1088x480';
 /* The safe area CarPlay's Patch button writes: where the phone keeps its guidance UI,
  * inside the part of the map the gauges leave visible. */
 const SAFE = '504x368+286+72';
-/* The HUD map size scaler: larger / smaller in HUD_STEP_PCT steps from HUD_MIN_PCT to HUD_MAX_PCT (85 %, the
- * widest the HUD shows whole). Standard (0) counts as HUD_STANDARD_PCT, about what the fitted box is. */
+/* The HUD map's size: HUD_STEP_PCT steps from HUD_MIN_PCT to HUD_MAX_PCT (85 %, the widest the HUD shows
+ * whole), HUD_SIZE_STEPS of them. Standard (0) counts as HUD_STANDARD_PCT, about what the fitted box is. */
 const HUD_MIN_PCT = 30, HUD_MAX_PCT = 85, HUD_STEP_PCT = 5, HUD_STANDARD_PCT = 57;
+const HUD_SIZE_STEPS = (HUD_MAX_PCT - HUD_MIN_PCT) / HUD_STEP_PCT;
+/* Where the map can show, the choices in their order on the page. */
+const SHOWN_ON = ['cluster', 'hud', 'both'];
 /* The HUD map moved from its centre, HUD_MOVE_PX a press, within +-HUD_MOVE_MAX; the render holds it inside the
  * HUD and reports the offset as far as it went, shown once HUD_ASKED_MS has passed. */
 const HUD_MOVE_PX = 10, HUD_MOVE_MAX = 400, HUD_ASKED_MS = 300;
@@ -243,6 +246,12 @@ function conflictText(conflict) {
         : t('Changed by another tool');
 }
 
+/* Where a render status shows the map: 'cluster', 'hud', 'both' or null. */
+function shownOnOf(rs) {
+    const cluster = rs.cluster === 1, hud = rs.hud === 1;
+    return cluster && hud ? 'both' : cluster ? 'cluster' : hud ? 'hud' : null;
+}
+
 /* After a zoom or turn-card value that waits for the next head-unit start. */
 function afterRestart(waits) {
     return waits ? ` ${t('(after restart)')}` : '';
@@ -282,7 +291,7 @@ class WazeClusterControl extends EventEmitter {
         /* a new connection's status decides: an asked change it never answered is dropped */
         const reset = () => {
             this.renderStatus = null;
-            this._askedClusterOn = this._askedHudOn = null;
+            this._askedShownOn = null;
             this.emit('change');
         };
         this.render.on('connect', reset);
@@ -341,66 +350,58 @@ class WazeClusterControl extends EventEmitter {
         }
     }
 
-    /* ---- where the map shows: the cluster ---- */
-    /* Whether the map shows on the cluster: as just asked for until the
-     * render reports it, else as the render last said; null while it has not. */
+    /* ---- where the map shows: the cluster, the HUD (experimental) or both ---- */
+    /* 'cluster', 'hud' or 'both': as just asked for until the render reports
+     * it, else as the render last said; null while it has not, or when it
+     * shows the map on neither. */
+    shownOn() {
+        return this._askedShownOn || (this.renderStatus && shownOnOf(this.renderStatus));
+    }
+
+    /* Whether the map shows on the cluster / the HUD; null while the render has not said. */
     clusterOn() {
-        if (this._askedClusterOn != null) {
-            return this._askedClusterOn;
-        }
+        return this._shows('cluster');
+    }
+
+    hudOn() {
+        return this._shows('hud');
+    }
+
+    _shows(display) {
         const rs = this.renderStatus;
-        return rs && (rs.cluster === 0 || rs.cluster === 1) ? rs.cluster === 1 : null;
+        if (!this._askedShownOn && !(rs && (rs[display] === 0 || rs[display] === 1))) {
+            return null;
+        }
+        const on = this.shownOn();
+        return on === 'both' || on === display;
     }
 
-    /* A change goes to the render and is saved by patchd: both connected. */
-    canToggleCluster() {
-        return this.render.connected() && this.connectedPatch() && this.clusterOn() !== null;
+    /* A choice goes to the render and is saved by patchd: both connected. */
+    canChooseShownOn() {
+        return this.render.connected() && this.connectedPatch() && this.clusterOn() !== null && this.hudOn() !== null;
     }
 
-    /* Turns the map on the cluster on or off: the render at once, patchd saves it. */
-    toggleCluster() {
-        if (!this.canToggleCluster()) {
+    /* Shows the map on the cluster, the HUD or both: the render at once,
+     * patchd saves it. A display turned on goes first, so the map is never
+     * on neither. */
+    showOn(choice) {
+        if (!SHOWN_ON.includes(choice) || !this.canChooseShownOn() || choice === this.shownOn()) {
             return;
         }
-        const on = !this.clusterOn();
-        this._askedClusterOn = on;
-        this.render.send({ cmd: 'cluster', on: on ? '1' : '0' });
-        this.patch.send({ cmd: 'cluster', on: on ? 1 : 0 });
+        const want = { cluster: choice !== 'hud', hud: choice !== 'cluster' };
+        const changes = ['cluster', 'hud'].filter((d) => this._shows(d) !== want[d]).sort((a, b) => want[b] - want[a]);
+        this._askedShownOn = choice;
+        changes.forEach((d) => {
+            this.render.send({ cmd: d, on: want[d] ? '1' : '0' });
+            this.patch.send({ cmd: d, on: want[d] ? 1 : 0 });
+        });
         this.emit('change');
-    }
-
-    /* ---- where the map shows: the HUD (experimental) ---- */
-    /* Whether the HUD is on: as just asked for until the render reports it,
-     * else as the render last said; null while it has not. */
-    hudOn() {
-        if (this._askedHudOn != null) {
-            return this._askedHudOn;
-        }
-        const rs = this.renderStatus;
-        return rs && (rs.hud === 0 || rs.hud === 1) ? rs.hud === 1 : null;
     }
 
     /* True while cluster-render's mapping guard keeps the HUD off. */
     hudDisabled() {
         const rs = this.renderStatus;
         return !!(rs && rs.hud_state === 'disabled');
-    }
-
-    /* A change goes to the render and is saved by patchd: both connected. */
-    canToggleHud() {
-        return this.render.connected() && this.connectedPatch() && this.hudOn() !== null;
-    }
-
-    /* Turns the HUD on or off: the render at once, patchd saves it. */
-    toggleHud() {
-        if (!this.canToggleHud()) {
-            return;
-        }
-        const on = !this.hudOn();
-        this._askedHudOn = on;
-        this.render.send({ cmd: 'hud', on: on ? '1' : '0' });
-        this.patch.send({ cmd: 'hud', on: on ? 1 : 0 });
-        this.emit('change');
     }
 
     hudText() {
@@ -450,27 +451,32 @@ class WazeClusterControl extends EventEmitter {
 
     /* The size and place change only while the HUD is on and not disabled. */
     canChangeHudSize() {
-        return this.canToggleHud() && this.hudOn() === true && !this.hudDisabled();
+        return this.canChooseShownOn() && this.hudOn() === true && !this.hudDisabled();
     }
 
-    /* The HUD map larger (dir +1) or smaller (-1) by a step: from Standard, the step next to its ~57 %. */
-    stepHudSize(dir) {
-        if (!this.canChangeHudSize()) {
+    /* The size as a slider position, 0 (HUD_MIN_PCT) to HUD_SIZE_STEPS
+     * (HUD_MAX_PCT); Standard sits at the step at or below its ~57 %. Null
+     * while the render has not said. */
+    hudSizeStep() {
+        const w = this.hudWidth();
+        if (w == null) {
+            return null;
+        }
+        const pct = Math.max(HUD_MIN_PCT, Math.min(HUD_MAX_PCT, w || HUD_STANDARD_PCT));
+        return Math.floor((pct - HUD_MIN_PCT) / HUD_STEP_PCT);
+    }
+
+    /* The HUD map at a slider position: the render at once, patchd saves it. */
+    setHudSizeStep(step) {
+        if (!Number.isInteger(step) || step < 0 || step > HUD_SIZE_STEPS || !this.canChangeHudSize() || step === this.hudSizeStep()) {
             return;
         }
-        const cur = this.hudWidth() || HUD_STANDARD_PCT;
-        let next = dir > 0 ? Math.floor(cur / HUD_STEP_PCT) * HUD_STEP_PCT + HUD_STEP_PCT : Math.ceil(cur / HUD_STEP_PCT) * HUD_STEP_PCT - HUD_STEP_PCT;
-        next = Math.max(HUD_MIN_PCT, Math.min(HUD_MAX_PCT, next));
-        if (next === this.hudWidth()) {
-            return;
-        }
-        this._askedHud = next;
-        this.render.send({ cmd: 'hud', hud_width_pct: String(next) });
-        this.patch.send({ cmd: 'hud-size', hud_width_pct: next });
+        const pct = HUD_MIN_PCT + step * HUD_STEP_PCT;
+        this._askedHud = pct;
+        this.render.send({ cmd: 'hud', hud_width_pct: String(pct) });
+        this.patch.send({ cmd: 'hud-size', hud_width_pct: pct });
         this.emit('change');
     }
-    canHudLarger() { return this.canChangeHudSize() && (this.hudWidth() || HUD_STANDARD_PCT) < HUD_MAX_PCT; }
-    canHudSmaller() { return this.canChangeHudSize() && (this.hudWidth() || HUD_STANDARD_PCT) > HUD_MIN_PCT; }
 
     /* ---- where the HUD map is: moved from its centre, in HUD pixels ---- */
     hudOffset() {
@@ -947,11 +953,8 @@ class WazeClusterControl extends EventEmitter {
     _onRender(msg) {
         if (msg.ev === 'status') {
             this.renderStatus = msg;
-            if (this._askedClusterOn != null && msg.cluster === (this._askedClusterOn ? 1 : 0)) {
-                this._askedClusterOn = null;
-            }
-            if (this._askedHudOn != null && msg.hud === (this._askedHudOn ? 1 : 0)) {
-                this._askedHudOn = null;
+            if (this._askedShownOn && this._askedShownOn === shownOnOf(msg)) {
+                this._askedShownOn = null;
             }
             if (this._askedHud != null && msg.hud_width_pct === this._askedHud) {
                 this._askedHud = null;
@@ -1001,5 +1004,5 @@ class WazeClusterControl extends EventEmitter {
 module.exports = {
     WazeClusterControl, LineSocket,
     RENDER_PATH, PATCH_PATH, PENDING_PATH, AA_PENDING_PATH, BOOT_ID_PATH,
-    SIZE, SAFE, ZOOM_STEP, RESTART_FAILED
+    SIZE, SAFE, ZOOM_STEP, RESTART_FAILED, SHOWN_ON, HUD_SIZE_STEPS
 };
