@@ -12,7 +12,8 @@ a step from 30 % to 85 %) and `Position: …` with Move left, Move right, Move
 up, Move down and Centre, greyed while the HUD is off, and while the
 cluster renderer keeps it off after errors (`HUD map: Disabled after
 errors`). The settings take effect at once and are kept for the next
-start. These rows are in the head unit's display language, as is the rest
+start, in a file of their own that waze-on-cluster 0.8 does not read, so
+going back to it keeps working. These rows are in the head unit's display language, as is the rest
 of the page. Requires waze-on-cluster 0.9.0.
 
 ## 0.5.6

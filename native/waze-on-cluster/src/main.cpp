@@ -46,6 +46,7 @@
 #include "map_feed.h"
 #include "map_feeds.h"
 #include "map_geometry.h"
+#include "map_state.h"
 #include "refused.h"
 #include "video_producer.h"
 #include "yuv_atlas.h"
@@ -177,10 +178,11 @@ private:
     std::string last_;
 };
 
-int serve(const Config &cfg)
+int serve(Config cfg)
 {
     if (cfg.has("log_file"))
         log_to_file(cfg.str("log_file"), log_file_cap(cfg.num("log_file_kb")), "waze-on-cluster", WOC_VERSION);
+    load_map_state(&cfg, cfg.str("map_state_file"));
     VideoConfig vc;
     vc.fifo_path = cfg.str("fifo_path");
     vc.carplay_group = cfg.str("carplay_group");
@@ -484,6 +486,7 @@ void define_keys(Config *cfg)
     cfg->define("target", "map");
     cfg->define("hide_bmw_guidance", "1");
     cfg->define("state_file", "/var/opt/waze-on-cluster/state/waze-on-cluster.state.conf");
+    cfg->define("map_state_file", "/var/opt/waze-on-cluster/map.state.conf");
     cfg->define("cluster", "1");
     cfg->define("hud", "0");
     cfg->define("hud_fps", "10");

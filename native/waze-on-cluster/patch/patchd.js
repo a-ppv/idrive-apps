@@ -47,9 +47,9 @@
  *                                   (0: the default box) and where it is moved from
  *                                   the centre (HUD pixels), saved for the render's
  *                                   next start as "cluster", "hud", "hud_width_pct",
- *                                   "hud_offset_x" and "hud_offset_y" in
- *                                   waze-on-cluster.local.conf (the app changes the
- *                                   running render itself). The reply (cluster-reply, hud-reply,
+ *                                   "hud_offset_x" and "hud_offset_y" in MAP_STATE
+ *                                   (the app changes the running render itself).
+ *                                   The reply (cluster-reply, hud-reply,
  *                                   hud-size-reply, hud-pos-reply) carries ok, the
  *                                   values saved and reason.
  *                  {"cmd":"capture-start"|"capture-stop"|"capture-status"}
@@ -200,25 +200,67 @@ var REBOOT_CMD = (process.env.WOC_REBOOT_CMD || '/usr/bin/nsm_control --requestR
 var REBOOT_CMD_TIMEOUT_MS = 30000;
 /* A restart NSM took that has not taken the unit down by then failed. */
 var REBOOT_WAIT_MS = parseInt(process.env.WOC_REBOOT_WAIT_MS, 10) || 180000;
-/* The unit's own render settings, which updates keep: the HUD's settings
- * are saved there. */
+/* The unit's own render settings, which updates keep. */
 var LOCAL_CONF = process.env.WOC_LOCAL_CONF || '/var/opt/waze-on-cluster/waze-on-cluster.local.conf';
+/* Where the map shows and the HUD map's size and place, as the app chose
+ * them: the render reads this file (its map_state_file) over its
+ * configuration. Not in LOCAL_CONF, which waze-on-cluster 0.8 refuses to
+ * start with any of MAP_KEYS in. */
+var MAP_STATE = path.join(STATE_DIR, 'map.state.conf');
+var MAP_KEYS = ['cluster', 'hud', 'hud_width_pct', 'hud_offset_x', 'hud_offset_y'];
 
-/* Writes each key = value of settings into the local conf, replacing any
- * line of those keys; the other lines stay as they are. Atomic: a temporary
- * file renamed over it. */
-function saveSettings(settings, done) {
+/* A key = value file's settings; none when it cannot be read. */
+function readConf(file) {
+    var conf = {};
+    try {
+        fs.readFileSync(file, 'utf8').split('\n').forEach(function (l) {
+            var m = /^\s*(\w+)\s*=\s*(.*?)\s*$/.exec(l);
+            if (m) conf[m[1]] = m[2];
+        });
+    } catch (e) {}
+    return conf;
+}
+
+/* Rewrites a key = value file: each key of set replaced or added, each key
+ * of drop removed, the other lines kept as they are. Atomic (saveFile). */
+function rewriteConf(file, set, drop) {
     var lines = [];
-    try { lines = fs.readFileSync(LOCAL_CONF, 'utf8').split('\n'); } catch (e) { if (e.code !== 'ENOENT') { done(e); return; } }
-    var keys = Object.keys(settings);
+    try { lines = fs.readFileSync(file, 'utf8').split('\n'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    var keys = Object.keys(set).concat(drop);
     lines = lines.filter(function (l) { return !keys.some(function (k) { return new RegExp('^\\s*' + k + '\\s*=').test(l); }); });
     while (lines.length && lines[lines.length - 1] === '') lines.pop();
-    keys.forEach(function (k) { lines.push(k + ' = ' + settings[k]); });
-    var tmp = LOCAL_CONF + '.tmp';
+    Object.keys(set).forEach(function (k) { lines.push(k + ' = ' + set[k]); });
+    saveFile(file, lines.length ? lines.join('\n') + '\n' : '');
+}
+
+/* A map setting's value as a file holds it: a whole number in the key's
+ * range (the commands' below). */
+function mapValueOk(k, v) {
+    var n = Number(v);
+    return /^-?\d+$/.test(v) && (k === 'hud_width_pct' ? n === 0 || (n >= 20 && n <= 100)
+        : /^hud_offset_/.test(k) ? n >= -800 && n <= 800 : n === 0 || n === 1);
+}
+
+/* Moves the map settings an earlier 0.9.0 build saved in LOCAL_CONF into
+ * MAP_STATE, a value already there kept and one out of range dropped, then
+ * removes them from LOCAL_CONF, its other lines kept. */
+function moveMapSettings() {
+    var local = readConf(LOCAL_CONF), state = readConf(MAP_STATE), move = {};
+    var found = MAP_KEYS.filter(function (k) { return k in local; });
+    if (!found.length) return;
+    found.forEach(function (k) { if (!(k in state) && mapValueOk(k, local[k])) move[k] = local[k]; });
     try {
-        fs.writeFileSync(tmp, lines.join('\n') + '\n', { mode: 420 });
-        fs.renameSync(tmp, LOCAL_CONF);
-    } catch (e) { done(e); return; }
+        if (Object.keys(move).length) rewriteConf(MAP_STATE, move, []);
+        rewriteConf(LOCAL_CONF, {}, MAP_KEYS);
+        log('map settings moved from ' + LOCAL_CONF + ' to ' + MAP_STATE + ': ' + found.map(function (k) {
+            return k + (k in move ? ' ' + move[k] : ' dropped');
+        }).join(', '));
+    } catch (e) { log('moving the map settings out of ' + LOCAL_CONF + ' failed: ' + e.message); }
+}
+
+/* Writes each key = value of settings into MAP_STATE. */
+function saveSettings(settings, done) {
+    try { rewriteConf(MAP_STATE, settings, []); } catch (e) { done(e); return; }
     done(null);
 }
 /* A HUD offset: a whole number in -800..800. */
@@ -1567,6 +1609,7 @@ function oneShot(which) {
         });
     }
     if (which === 'deactivate') markBy = 'removal';
+    else moveMapSettings();
     highfInstall = which === 'activate' && headUnit.variant() === 'HIGHF';
     try { ensureDir(path.dirname(SOCK)); } catch (e) { result.status = e.message; finish(1); return; }
     lock.acquire(20000, function (got) {
@@ -1603,6 +1646,7 @@ function oneShot(which) {
 function main() {
     var dir = path.dirname(SOCK);
     ensureDir(dir);
+    moveMapSettings();
     try { if (fs.lstatSync(SOCK)) fs.unlinkSync(SOCK); } catch (e) {}
 
     var server = net.createServer(accept);

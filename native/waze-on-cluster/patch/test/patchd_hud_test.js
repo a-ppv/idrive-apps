@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Robert Nisipeanu
-/* patchd's HUD settings ({"cmd":"hud"}, "hud-size", "hud-pos"): each saved
- * in waze-on-cluster.local.conf for the render's next start, replacing an
- * earlier value and keeping the other lines; a bad value is refused and
- * nothing written. */
+/* patchd's map settings ({"cmd":"cluster"}, "hud", "hud-size", "hud-pos"):
+ * each saved in map.state.conf for the render's next start, replacing an
+ * earlier value and keeping the other lines, waze-on-cluster.local.conf
+ * untouched; a bad value is refused and nothing written. At its start
+ * patchd moves the ones an earlier 0.9.0 build saved in the local conf
+ * into the state file (one there already kept, one out of range dropped),
+ * the local conf's other lines kept, once: it is then one waze-on-cluster
+ * 0.8.5 starts with. */
 'use strict';
 var assert = require('assert');
 var cp = require('child_process');
@@ -17,13 +21,30 @@ var PATCHD = path.join(__dirname, '..', 'patchd.js');
 var dir = fs.mkdtempSync(path.join(os.tmpdir(), 'woc-hud-'));
 var SOCK = path.join(dir, 'sock', 'patch.sock');
 var CONF = path.join(dir, 'waze-on-cluster.local.conf');
-fs.writeFileSync(CONF, 'upload_kb_per_s = 3000\nhud = 0\ntarget_fps = 15\n');
+var STATE = path.join(dir, 'map.state.conf');
+fs.writeFileSync(CONF, 'upload_kb_per_s = 3000\nhud = 1\n# the HUD\nhud_width_pct = 70\ntarget_fps = 15\ncluster = 2\n');
+fs.writeFileSync(STATE, 'hud_width_pct = 50\n');
 
-var p = cp.spawn(process.execPath, [PATCHD], {
-    env: Object.assign({}, process.env, {
+/* The keys waze-on-cluster 0.8.5 starts with in its local conf (any other is
+ * an error): its define_keys and the shared Config's, at origin/main 7925214. */
+var KEYS_085 = ['local_conf', 'socket_path', 'socket_mode', 'socket_group', 'start_timeout_ms', 'ramses_user', 'hud_scene_id',
+    'sail_scene_id', 'showcase_step', 'fps', 'page_ms', 'video_size', 'dcsm_client_handle', 'dcsm_heartbeat_replies', 'hud_slot',
+    'hud_content_class', 'hud_size', 'sail_slot', 'sail_content_class', 'sail_size', 'verbose',
+    'fifo_path', 'carplay_group', 'udp_port', 'avb_stream', 'drm_device', 'tex_size', 'src_crop', 'map_rect', 'dirty_threshold',
+    'dirty_settle_ms', 'stall_ms', 'idle_ms', 'freeze_ms', 'freeze_min_fps', 'blank_ms', 'alt_screen_port', 'alt_screen_uid',
+    'target_fps', 'pan_blocks', 'tex_level_bits', 'target', 'hide_bmw_guidance', 'state_file', 'render_socket', 'log_file',
+    'log_file_kb', 'tex_format', 'upload', 'dirty_tiles', 'max_frame_textures', 'resource_linger_ms', 'resource_fetch_log',
+    'texture_replay', 'texture_replay_frames', 'mutable_r8', 'upload_kb_per_s', 'upload_burst_ms'];
+function keys(file) {
+    return fs.readFileSync(file, 'utf8').split('\n').map(function (l) { return l.replace(/#.*/, '').trim(); })
+        .filter(Boolean).map(function (l) { return l.split('=')[0].trim(); });
+}
+
+var ENV = Object.assign({}, process.env, {
         WOC_PATCH_SOCK: SOCK,
         WOC_PATCH_GROUP: '',
         WOC_LOCAL_CONF: CONF,
+        WOC_STATE_DIR: dir,
         WOC_CARPLAY: path.join(dir, 'no-carplay'),
         WOC_STREAM_STATE: path.join(dir, 'no-stream.json'),
         WOC_RESYNC_FILE: path.join(dir, 'resync.json'),
@@ -37,12 +58,15 @@ var p = cp.spawn(process.execPath, [PATCHD], {
         WOC_DLT_RECEIVE: path.join(dir, 'no-dlt-receive'),
         WOC_DLT_RETRY_MS: '600000',
         WOC_REMOUNT_LOCK: path.join(dir, 'remount.lock'),
-    }),
-    stdio: ['ignore', 'pipe', 'pipe'],
 });
 var out = '';
-p.stdout.on('data', function (d) { out += d; });
-p.stderr.on('data', function (d) { out += d; });
+function start() {
+    var c = cp.spawn(process.execPath, [PATCHD], { env: ENV, stdio: ['ignore', 'pipe', 'pipe'] });
+    c.stdout.on('data', function (d) { out += d; });
+    c.stderr.on('data', function (d) { out += d; });
+    return c;
+}
+var p = start();
 
 function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
@@ -74,37 +98,49 @@ function ok(name, cond) {
 
 (async function () {
     for (var t = 0; t < 5000 && !fs.existsSync(SOCK); t += 50) await sleep(50);
-    var r = await ask({ cmd: 'hud', on: 1 });
+    ok('at the start: the local conf\'s map settings moved, one already saved kept, one out of range dropped',
+       fs.readFileSync(STATE, 'utf8') === 'hud_width_pct = 50\nhud = 1\n');
+    ok('the local conf\'s other lines kept', fs.readFileSync(CONF, 'utf8') === 'upload_kb_per_s = 3000\n# the HUD\ntarget_fps = 15\n');
+    ok('the local conf: only keys waze-on-cluster 0.8.5 starts with', keys(CONF).every(function (k) { return KEYS_085.indexOf(k) >= 0; }));
     var conf = fs.readFileSync(CONF, 'utf8');
-    ok('the HUD on is saved, replacing the earlier value, the other lines kept',
-       r.ok && r.hud === 1 && conf === 'upload_kb_per_s = 3000\ntarget_fps = 15\nhud = 1\n');
+    var r = await ask({ cmd: 'hud', on: 0 });
+    ok('the HUD off is saved in the state file, replacing the earlier value, the other lines kept',
+       r.ok && r.hud === 0 && fs.readFileSync(STATE, 'utf8') === 'hud_width_pct = 50\nhud = 0\n');
     r = await ask({ cmd: 'cluster', on: 0 });
-    conf = fs.readFileSync(CONF, 'utf8');
-    ok('the cluster off is saved next to it', r.ok && r.cluster === 0 && /hud = 1\ncluster = 0\n$/.test(conf));
+    var state = fs.readFileSync(STATE, 'utf8');
+    ok('the cluster off is saved next to it', r.ok && r.cluster === 0 && /hud = 0\ncluster = 0\n$/.test(state));
     r = await ask({ cmd: 'cluster', on: 2 });
-    ok('a cluster on that is not 0 or 1 is refused and nothing written', !r.ok && fs.readFileSync(CONF, 'utf8') === conf);
+    ok('a cluster on that is not 0 or 1 is refused and nothing written', !r.ok && fs.readFileSync(STATE, 'utf8') === state);
     r = await ask({ cmd: 'hud', on: 'yes' });
-    ok('an on that is not 0 or 1 is refused and nothing written', !r.ok && fs.readFileSync(CONF, 'utf8') === conf);
-    fs.unlinkSync(CONF);
-    r = await ask({ cmd: 'hud', on: 0 });
-    ok('no local conf yet: it is created with the setting', r.ok && fs.readFileSync(CONF, 'utf8') === 'hud = 0\n');
+    ok('an on that is not 0 or 1 is refused and nothing written', !r.ok && fs.readFileSync(STATE, 'utf8') === state);
+    fs.unlinkSync(STATE);
+    r = await ask({ cmd: 'hud', on: 1 });
+    ok('no state file yet: it is created with the setting', r.ok && fs.readFileSync(STATE, 'utf8') === 'hud = 1\n');
     r = await ask({ cmd: 'hud-size', hud_width_pct: 70 });
-    ok('the HUD size is saved next to it', r.ok && fs.readFileSync(CONF, 'utf8') === 'hud = 0\nhud_width_pct = 70\n');
+    ok('the HUD size is saved next to it', r.ok && fs.readFileSync(STATE, 'utf8') === 'hud = 1\nhud_width_pct = 70\n');
     r = await ask({ cmd: 'hud-size', hud_width_pct: 85 });
-    ok('a new size replaces it', r.ok && fs.readFileSync(CONF, 'utf8') === 'hud = 0\nhud_width_pct = 85\n');
+    ok('a new size replaces it', r.ok && fs.readFileSync(STATE, 'utf8') === 'hud = 1\nhud_width_pct = 85\n');
     r = await ask({ cmd: 'hud-size', hud_width_pct: 100 });
-    ok('100 % is saved as the widest, 85 %', r.ok && r.hud_width_pct === 85 && fs.readFileSync(CONF, 'utf8') === 'hud = 0\nhud_width_pct = 85\n');
+    ok('100 % is saved as the widest, 85 %', r.ok && r.hud_width_pct === 85 && fs.readFileSync(STATE, 'utf8') === 'hud = 1\nhud_width_pct = 85\n');
     r = await ask({ cmd: 'hud-size', hud_width_pct: 10 });
-    ok('an out-of-range size is refused, nothing written', !r.ok && /hud_width_pct = 85\n$/.test(fs.readFileSync(CONF, 'utf8')));
+    ok('an out-of-range size is refused, nothing written', !r.ok && /hud_width_pct = 85\n$/.test(fs.readFileSync(STATE, 'utf8')));
     r = await ask({ cmd: 'hud-pos', hud_x: 40, hud_y: -20 });
     ok('the HUD position is saved next to the size, in one write', r.ok && r.hud_offset_x === 40 && r.hud_offset_y === -20 &&
-        fs.readFileSync(CONF, 'utf8') === 'hud = 0\nhud_width_pct = 85\nhud_offset_x = 40\nhud_offset_y = -20\n');
+        fs.readFileSync(STATE, 'utf8') === 'hud = 1\nhud_width_pct = 85\nhud_offset_x = 40\nhud_offset_y = -20\n');
     r = await ask({ cmd: 'hud-pos', hud_x: 0, hud_y: 0 });
-    ok('centred again: both replaced', r.ok && /hud_offset_x = 0\nhud_offset_y = 0\n$/.test(fs.readFileSync(CONF, 'utf8')));
+    ok('centred again: both replaced', r.ok && /hud_offset_x = 0\nhud_offset_y = 0\n$/.test(fs.readFileSync(STATE, 'utf8')));
     r = await ask({ cmd: 'hud-pos', hud_x: 900, hud_y: 0 });
-    ok('an out-of-range position is refused, nothing written', !r.ok && /hud_offset_x = 0\n/.test(fs.readFileSync(CONF, 'utf8')));
+    ok('an out-of-range position is refused, nothing written', !r.ok && /hud_offset_x = 0\n/.test(fs.readFileSync(STATE, 'utf8')));
     r = await ask({ cmd: 'hud-pos', hud_x: 1.5, hud_y: 0 });
     ok('a position that is not whole pixels is refused', !r.ok);
+    ok('the local conf untouched by every setting', fs.readFileSync(CONF, 'utf8') === conf);
+    state = fs.readFileSync(STATE, 'utf8');
+    p.kill();
+    await new Promise(function (resolve) { p.on('exit', resolve); });
+    p = start();
+    for (t = 0; t < 5000 && out.split('patchd listening').length < 3; t += 50) await sleep(50);
+    ok('started again: nothing to move, both files as they were',
+       fs.readFileSync(CONF, 'utf8') === conf && fs.readFileSync(STATE, 'utf8') === state);
 })().catch(function (e) {
     ok('no error: ' + e.message, false);
 }).then(function () {

@@ -358,8 +358,13 @@ cluster-render's `hud` target is slot 0x323 (its README.md "The HUD").
   is not affected. Choosing Cluster and then the HUD again does not undo it; as
   root, `cluster-render guard-reset` does.
 - Not with `target = panel`, which shares the HUD's scene id.
-- The settings are saved by `patchd` in `waze-on-cluster.local.conf` for the
-  next start, and the app changes the running render at once. Control:
+- The settings (`cluster`, `hud`, `hud_width_pct`, `hud_offset_x`,
+  `hud_offset_y`) are saved by `patchd` in
+  `/var/opt/waze-on-cluster/map.state.conf` (`map_state_file`), which this
+  tool reads over its configuration at each start, and the app changes the
+  running render at once. They stay out of `waze-on-cluster.local.conf`,
+  which waze-on-cluster 0.8 refuses to start with: `patchd` moves any it
+  finds there into the state file at its start and at an install. Control:
   `{"cmd":"hud","on":"1"}`, `{"cmd":"hud","hud_width_pct":"70"}`,
   `{"cmd":"hud","hud_x":"40","hud_y":"-20"}` (strings; an axis left out
   stays).
@@ -538,7 +543,8 @@ the link to the cluster, so an upload that outruns it can drop other contents
 too. Details: the cluster-render README.
 
 Settings are in `waze-on-cluster.conf` (documented inline). Overrides go in
-`/var/opt/waze-on-cluster/waze-on-cluster.local.conf`, which updates keep.
+`/var/opt/waze-on-cluster/waze-on-cluster.local.conf`, which updates keep;
+the app's map settings in `/var/opt/waze-on-cluster/map.state.conf`.
 
 ## The patch
 
