@@ -20,9 +20,11 @@
  * colour the sources' own quads would give. Where the top source is opaque
  * or covers alone, the canvas is a plain copy of its frame. The canvas is
  * composed from the layers' own opacity (params.opacity) and the quads
- * apply the target's fade, so the colours match except in two places: where
- * translucent videos overlap while the target fades in or out, and where
- * another layer is drawn between two overlapping translucent videos.
+ * apply the target's fade, so during a target's fade in or out overlapping
+ * videos, opaque or not, are drawn as one picture faded together rather
+ * than each faded on its own. Outside fades they look as drawn separately,
+ * unless another layer is drawn between two overlapping translucent
+ * videos.
  *
  * A source moved or shown again keeps its quads where they were (hidden,
  * when shown again) until the canvas holding it at its new place is
@@ -125,7 +127,6 @@ public:
     void arrange(bool drawn, int32_t order) override;
     std::string stats() const override;
 
-    /* Tiles composed since made. */
     uint64_t composed_tiles() const { return tiles_composed_; }
 
 protected:
@@ -166,7 +167,6 @@ private:
     crk::PixelRect in_canvas(const Rect &r) const;
     void mark(const Rect &r);
     bool make_quad(Graph *g, Source &s, bool blocks, int bank);
-    /* The quads to s.placed and s.showing. */
     void place_quads(Source &s);
     /* Moves and shows whose canvas this tick's write carries (or the
      * display's buffer holds already) go to the quads; whether any did. */

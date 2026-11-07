@@ -14,6 +14,10 @@
  *   published again, and composited, its refusal goes with its objects;
  * - a video sliding every tick for 10 s remakes the composite at most once
  *   a second, never past two video buffers, and it shrinks once that holds;
+ * - a video stepped 1 px a set (odd and even x) starts or stops being
+ *   composited at most once a second, a bounded number of buffers made;
+ * - a video arriving while a composite waits to shrink is priced against
+ *   the composite held;
  * - a moved or shown video's quads go to its new place only in the flush
  *   whose write puts it there on the canvas, never before, refused flushes
  *   included;
@@ -1009,6 +1013,82 @@ static void moves_with_canvas()
     ok("and it ends where it was sent, the canvas holding it there", there);
 }
 
+/* Three videos on the map, one stepped a pixel a set, so its x is odd and
+ * even by turns, for 10 s: it starts or stops being composited at most once
+ * a second, so the display's video buffers are made a bounded number of
+ * times; held composited at an odd x it is drawn at the even one. */
+static void odd_steps()
+{
+    Rig r(5500 * 1024);
+    std::string err;
+    const std::vector<uint8_t> map = frame(W, H, 1), cam = frame(320, 240, 5);
+    VideoLayer *m = r.video(1, r.map, R(0, 0, W, H), W, H, &err);
+    VideoLayer *a = r.video(2, r.map, R(704, 64, 320, 240), 320, 240, &err, 1.0f, 1);
+    VideoLayer *pip = r.video(3, r.map, R(64, 200, 320, 240), 320, 240, &err, 1.0f, 2);
+    for (VideoLayer *v : {m, a, pip})
+        v->offer(v == m ? map.data() : cam.data(), r.now);
+    r.show("map");
+    r.run(1200, 10);
+    CountingGraph *g = static_cast<CountingGraph *>(r.g("map"));
+    const int made0 = g->made;
+    bool rounded = true;
+    int odd_composited = 0;
+    for (int t = 0; t < 1000; t++) {
+        if (t % 3 == 0)
+            for (VideoLayer *v : {m, a, pip})
+                v->repeat(r.now);
+        pip->params.rect.x = 64 + t % 400;
+        r.comp->changed(pip);
+        r.step(10);
+        if (pip->source() && (pip->params.rect.x & 1)) {
+            odd_composited++;
+            for (const auto &kv : g->pending.quads)
+                if (kv.second.r.w == 320 && kv.second.r.y == 200 && kv.second.uniforms.count("u_view") &&
+                    (kv.second.r.x & 1))
+                    rounded = false;
+        }
+    }
+    char name[220];
+    std::snprintf(name, sizeof name,
+                  "a video stepped 1 px a set for 10 s, odd and even by turns: %d atlases made (at most 12), never "
+                  "past two buffers (%d)", g->made - made0, r.gpu.atlases.max);
+    ok(name, g->made - made0 <= 12 && r.gpu.atlases.max <= 2);
+    ok("kept composited at an odd x, drawn at the even x left of it", odd_composited > 0 && rounded);
+}
+
+/* While a composite waits to shrink, a new video is priced against the
+ * composite held, not the smaller one planned. */
+static void shrink_memory()
+{
+    CompositorLimits lim;
+    lim.pixel_bytes = 9300000;
+    Rig r(0, lim);
+    std::string err;
+    const std::vector<uint8_t> map = frame(W, H, 1), cam = frame(320, 240, 5);
+    VideoLayer *m = r.video(1, r.panel, R(416, 120, W, H), W, H, &err);
+    VideoLayer *a = r.video(2, r.panel, R(600, 200, 320, 240), 320, 240, &err, 1.0f, 1);
+    VideoLayer *pip = r.video(3, r.panel, R(480, 300, 320, 240), 320, 240, &err, 1.0f, 2);
+    for (VideoLayer *v : {m, a, pip})
+        v->offer(v == m ? map.data() : cam.data(), r.now);
+    r.show("panel");
+    r.run(1100, 10);
+    pip->params.rect.x = 0;
+    r.comp->changed(pip);
+    r.run(100, 10);
+    const uint32_t grown = r.comp->composite(r.panel) ? r.comp->composite(r.panel)->video().w : 0;
+    pip->params.rect.x = 480;
+    r.comp->changed(pip);
+    r.run(100, 10);
+    VideoLayer *h = r.video(4, r.hud, R(0, 0, 320, 240), 320, 240, &err);
+    ok("a composite grown to 1504 and waiting to shrink to 1088: a video that fits only beside the smaller one "
+       "is refused",
+       grown == 1504 && r.comp->composite(r.panel)->video().w == 1504 && !h &&
+           err == "the service's pixel memory is full");
+    r.run(3500, 10);
+    h = r.video(4, r.hud, R(0, 0, 320, 240), 320, 240, &err);
+    ok("once it has shrunk, taken", r.comp->composite(r.panel)->video().w == W && h);
+}
+
 static void limits()
 {
     {
@@ -1051,6 +1131,7 @@ static void limits()
         VideoLayer *b = r.video(2, r.map, R(64, 64, 320, 240), 320, 240, &err, 1.0f, 1);
         VideoLayer *p = r.video(3, r.panel, R(0, 0, 320, 240), 320, 240, &err);
         ok("two composited on the map and one on the panel: two buffers", a && b && p && r.comp->composite(r.map));
+        r.run(1100);   /* past kRemakeMs from the map's videos being composited */
         LayerParams turned = b->params;
         turned.rotate = 90;
         ok("turning one of the map's would need three: refused before it is set",
@@ -1243,6 +1324,8 @@ int main()
     refused_attach();
     sliding();
     moves_with_canvas();
+    odd_steps();
+    shrink_memory();
     limits();
     two_buffers();
     budget();

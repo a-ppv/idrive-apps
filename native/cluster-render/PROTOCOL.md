@@ -63,9 +63,11 @@ always takes one of its own. A `layer` or a `set` that would need a third
 is refused with `too many video buffers on the display`, and one whose
 target's videos would have to share across more than 1920x720 with `the
 target's videos together span more than 1920x720`. Videos that share keep
-their place in the stack, rect and opacity, and show as drawn on their own
-except where translucent videos overlap while their target fades in or
-out, or with another layer between them in the stack. They are written as
+their place in the stack, rect and opacity. During their target's fade in
+or out, overlapping videos are drawn as one picture faded together, not
+each faded on its own; outside fades they look as drawn on their own,
+unless another layer is between two overlapping translucent ones in the
+stack. They are written as
 one video: while any of them moves faster than the upload budget covers,
 all of them go as packed 4x4 blocks. A shared video moved or shown again
 appears at its new place with the write that puts its pixels there, never
@@ -73,7 +75,11 @@ before.
 A target's videos starting or stopping sharing rewrites its video whole, as
 does the shared video being made again: at most once a second for the
 videos' rectangle growing past it (till then what lies outside is cut),
-and smaller once their rectangle has stayed smaller for 3 s.
+and smaller once their rectangle has stayed smaller for 3 s. A `set` that
+makes a video start or stop sharing (an odd `x`, a turn) takes effect at
+most once a second on its target; till then a sharing video is drawn
+unturned, at its frame's size and at the even `x` and `y` at or left of and
+above its own.
 
 Layer fields (all optional):
 

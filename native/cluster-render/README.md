@@ -514,7 +514,10 @@ Beside the layers:
   at most once a second (over the old rectangle and the new together; till
   then what lies outside is cut), and smaller once a smaller rectangle has
   held for 3 s, so a sliding video does not churn the display's buffers.
-  A video moved or shown again keeps its quads where they were until the
+  A `set` that makes a video start or stop being composited (an odd x, a
+  turn) takes effect at most once a second on its target; till then a
+  composited one is drawn unturned, at its frame's size and at even x and
+  y. A video moved or shown again keeps its quads where they were until the
   flush whose write puts it there on the composite, so they never show a
   place that does not hold it yet. Only the 64x64 tiles a video changed
   are composed again, copied where the top video is opaque or alone and
@@ -935,7 +938,9 @@ The host tests:
   gone once it is composited; a video sliding every tick for 10 s remaking
   the composite at most once a second and shrinking it after; a video moved
   faster than the budget writes, hidden, shown and with flushes refused,
-  its quads never over a place that does not hold it; the
+  its quads never over a place that does not hold it; a video stepped 1 px
+  a set for 10 s making a bounded number of buffers; a video arriving
+  while a composite waits to shrink priced against the one held; the
   blend and cells, SSE2 and
   scalar equal, against a float reference; an opaque video drawn through
   the composite exactly as alone (the shaders' CPU twins); two, three and

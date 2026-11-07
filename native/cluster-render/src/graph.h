@@ -28,6 +28,8 @@ struct Rect {
     int32_t x = 0, y = 0;
     uint32_t w = 0, h = 0;
 };
+inline bool operator==(const Rect &a, const Rect &b) { return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h; }
+inline bool operator!=(const Rect &a, const Rect &b) { return !(a == b); }
 
 enum class TexFormat { R8, RGBA8 };
 enum class Sampling { Nearest, Bilinear };

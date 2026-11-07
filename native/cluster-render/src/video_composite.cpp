@@ -223,7 +223,6 @@ bool intersect(const PixelRect &a, const PixelRect &b, PixelRect *out)
     return true;
 }
 
-bool same(const Rect &a, const Rect &b) { return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h; }
 
 }  // namespace
 
@@ -311,22 +310,27 @@ void CompositeVideo::arrange_source(uint32_t id, bool drawn, int32_t order)
     if (!s)
         return;
     const LayerParams &lp = s->layer->params;
+    /* Its frame unturned at its size and at even x and y: what a composable
+     * video's rect is, and how one kept here a while after it stopped being
+     * composable (compositor.h) is drawn. */
+    const int32_t fx = lp.rect.x & ~1, fy = lp.rect.y & ~1;
+    const int32_t fw = (int32_t)s->layer->video().w, fh = (int32_t)s->layer->video().h;
     Rect r;
-    const int32_t x0 = std::max(lp.rect.x, clip_.x), y0 = std::max(lp.rect.y, clip_.y);
-    const int32_t x1 = std::min(lp.rect.x + (int32_t)lp.rect.w, clip_.x + (int32_t)clip_.w);
-    const int32_t y1 = std::min(lp.rect.y + (int32_t)lp.rect.h, clip_.y + (int32_t)clip_.h);
+    const int32_t x0 = std::max(fx, clip_.x), y0 = std::max(fy, clip_.y);
+    const int32_t x1 = std::min(fx + fw, clip_.x + (int32_t)clip_.w);
+    const int32_t y1 = std::min(fy + fh, clip_.y + (int32_t)clip_.h);
     if (x0 < x1 && y0 < y1) {
         r.x = x0, r.y = y0;
         r.w = (uint32_t)(x1 - x0), r.h = (uint32_t)(y1 - y0);
     }
-    const bool moved = !same(r, s->rect), shown = drawn != s->drawn, faded = lp.opacity != s->opacity;
+    const bool moved = r != s->rect, shown = drawn != s->drawn, faded = lp.opacity != s->opacity;
     if (s->drawn && (moved || shown || faded))
         mark(s->rect);   /* what it covered is composed again, without it or with its new look */
     if (moved || shown || faded)
         s->full = true;
     s->rect = r;
-    s->fx = lp.rect.x - x_;
-    s->fy = lp.rect.y - y_;
+    s->fx = fx - x_;
+    s->fy = fy - y_;
     s->opacity = lp.opacity;
     s->drawn = drawn;
     const bool reorder = order != s->order;
@@ -335,7 +339,7 @@ void CompositeVideo::arrange_source(uint32_t id, bool drawn, int32_t order)
         return;
     if (!drawn) {
         /* Hidden at once; its place follows, nothing of it showing. */
-        if (s->showing || !same(s->placed, r)) {
+        if (s->showing || s->placed != r) {
             s->placed = r;
             s->showing = false;
             place_quads(*s);

@@ -67,7 +67,11 @@
  * again, start their scene objects again: their first frame goes whole. A
  * composite is made again for its videos' rectangle growing past it at most
  * every kRemakeMs (till then what lies outside is cut), and smaller only
- * once the smaller rectangle has held for kShrinkMs. Old objects go before new ones are
+ * once the smaller rectangle has held for kShrinkMs. A video starts or stops
+ * being composited by a change of its params (an odd x, a turn) at most
+ * kRemakeMs after its target's last such change; till then it keeps its
+ * mode, a composited one drawn unturned at its frame's size and at even x
+ * and y. Old objects go before new ones are
  * made, so the display never holds more video buffers than the limit. */
 #ifndef CRS_COMPOSITOR_H
 #define CRS_COMPOSITOR_H
@@ -212,6 +216,7 @@ private:
         int32_t order = -1;
         bool composited = false;   /* a video drawn by its target's composite */
         bool placed = false;       /* a video the plans have placed (reconcile) */
+        bool composable = false;   /* a video's composability, as the last plan took it */
         std::map<std::pair<uint32_t, std::string>, uint32_t> binds;   /* (part, sampler) -> asset */
     };
     struct AssetEntry {
@@ -242,12 +247,17 @@ private:
          * composite is due to be made again (-1: none is). */
         int64_t composite_made_ms = 0, smaller_since_ms = -1, remake_ms = -1;
         Rect smaller;
+        /* When a video last started or stopped being composited; when a
+         * held change of a video's composability is due (-1: none is). */
+        int64_t members_ms = INT64_MIN / 4, hold_ms = -1;
     };
     struct VideoSpec {
         uint32_t id = 0;
         int target = 0;
         LayerParams params;
         VideoParams vp;
+        /* Composable as the plan takes it; held: its change waits. */
+        bool composable = false, held = false;
     };
     /* How a target's videos are drawn: those its composite draws (none, or
      * two or more), its canvas and place, and the video buffers they take
@@ -264,6 +274,13 @@ private:
 
     uint32_t admit(uint64_t owner, int target, int64_t pixel_bytes, std::string *err);
     std::vector<VideoSpec> video_specs() const;
+    /* A placed video's composability changing with its params waits
+     * kRemakeMs from its target's last membership change: the plan takes
+     * the old one meanwhile (*held). */
+    bool composable_now(const Entry &e, const LayerParams &p, const VideoParams &vp, bool *held) const;
+    /* The plans' composites' pixel bytes at the most each target's holds
+     * while they take effect: its plan's or its composite's, kept. */
+    uint64_t composites_cost(const std::vector<VideoPlan> &plans) const;
     /* The target's videos composed: its plan when it composes (none for
      * fewer than two composable videos). */
     VideoPlan compose_plan(int ti, const std::vector<VideoSpec> &specs, const Rect *with = nullptr) const;
@@ -273,8 +290,8 @@ private:
      * why they do not fit even so; empty when they do. */
     std::vector<VideoPlan> plan_videos(const std::vector<VideoSpec> &specs, std::string *err) const;
     /* Whether the videos fit the display's video buffers; *bytes: their
-     * composites' pixel bytes. Compiles the composite's effects when one is
-     * needed. */
+     * composites' pixel bytes (composites_cost). Compiles the composite's
+     * effects when one is needed. */
     bool videos_fit(const std::vector<VideoSpec> &specs, uint64_t *bytes, std::string *err);
     bool view_effects(std::string *err);
     /* Brings every target's videos to its plan: which draw themselves and
