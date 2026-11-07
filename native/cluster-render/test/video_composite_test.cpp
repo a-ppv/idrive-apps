@@ -14,6 +14,9 @@
  *   published again, and composited, its refusal goes with its objects;
  * - a video sliding every tick for 10 s remakes the composite at most once
  *   a second, never past two video buffers, and it shrinks once that holds;
+ * - a moved or shown video's quads go to its new place only in the flush
+ *   whose write puts it there on the canvas, never before, refused flushes
+ *   included;
  * - the blend and the cell composition: SSE2 and scalar equal, copies where
  *   the top source is opaque or alone, the coverage blend where translucent
  *   sources overlap, cells nothing covers left alone;
@@ -915,6 +918,97 @@ static void sliding()
            cv->video().h == H && r.gpu.atlases.max <= 2);
 }
 
+/* Whether the shown canvas holds frame f (w x h, exact) where quad q
+ * samples it (u_view). */
+static bool holds(const FakeGraph *g, const FakeQuad &q, const std::vector<uint8_t> &f, uint32_t w, uint32_t h)
+{
+    const FakeBuffer *a = nullptr;
+    for (const auto &kv : g->shown.buffers)
+        if (kv.second.f == TexFormat::R8)
+            a = &kv.second;
+    const std::vector<float> &v = q.uniforms.at("u_view");
+    const uint32_t vx = (uint32_t)v[0], vy = (uint32_t)v[1], vw = (uint32_t)v[2], vh = (uint32_t)v[3];
+    if (!a || vw != w || vh != h)
+        return false;
+    const uint32_t cw = a->w, ch = a->h * 2 / 3;
+    for (uint32_t y = 0; y < h; y++)
+        if (std::memcmp(&a->px[(size_t)(vy + y) * cw + vx], &f[(size_t)y * w], w))
+            return false;
+    for (uint32_t y = 0; y < h / 2; y++)
+        for (uint32_t k = 0; k < 2; k++)
+            if (std::memcmp(&a->px[(size_t)(ch + vy / 2 + y) * cw + k * cw / 2 + vx / 2],
+                            &f[(size_t)(h + y) * w + k * w / 2], w / 2))
+                return false;
+    return true;
+}
+
+/* A camera over the map moved by sets faster than the budget writes the
+ * canvas, hidden and shown, with refused flushes: no flush ever shows its
+ * quads at a place whose canvas does not hold it, and it gets where it is
+ * sent. */
+static void moves_with_canvas()
+{
+    Rig r(1500 * 1024, one_buffer());
+    std::string err;
+    VideoParams exact;
+    exact.level_bits = 0;
+    exact.dirty_threshold = 0;
+    exact.pan_blocks = false;
+    const std::vector<uint8_t> map = frame(W, H, 1), cam = frame(320, 240, 5);
+    VideoLayer *m = r.video(1, r.map, R(0, 0, W, H), W, H, &err, 1.0f, 0, exact);
+    VideoLayer *c = r.video(2, r.map, R(64, 64, 320, 240), 320, 240, &err, 1.0f, 1, exact);
+    m->offer(map.data(), r.now);
+    c->offer(cam.data(), r.now);
+    r.show("map");
+    r.run(500);
+    FakeGraph *g = r.g("map");
+    int stale = 0, flushes = 0, placements = 0, shown_ticks = 0;
+    int32_t last_x = -1;
+    const int xs[] = {64, 128, 704, 320, 512, 66, 768};
+    for (int t = 0; t < 3000; t++) {
+        if (t % 33 == 0) {
+            m->repeat(r.now);
+            c->repeat(r.now);
+        }
+        if (t % 37 == 0 && t < 2600) {
+            c->params.rect.x = xs[(t / 37) % 7];
+            c->params.rect.y = 64 + (t / 37) % 3 * 32;
+            r.comp->changed(c);
+        }
+        if (t == 900 || t == 1500) {
+            c->params.visible = t == 1500;
+            r.comp->changed(c);
+        }
+        g->fail_flush = t >= 1700 && t < 1760;
+        const uint64_t f0 = g->flushes;
+        r.step(1);
+        if (g->flushes == f0)
+            continue;
+        flushes++;
+        for (const auto &kv : g->shown.quads) {
+            const FakeQuad &q = kv.second;
+            if (!q.visible || !q.uniforms.count("u_view") || q.r.w != 320 || q.uniforms.at("u_opacity")[0] == 0)
+                continue;
+            shown_ticks++;
+            if (q.r.x != last_x)
+                placements++, last_x = q.r.x;
+            if (!holds(g, q, cam, 320, 240))
+                stale++;
+        }
+    }
+    r.run(1000);
+    bool there = false;
+    for (const FakeQuad *q : atlas_quads(g))
+        there = there || (q->r.x == c->params.rect.x && q->r.y == c->params.rect.y && holds(g, *q, cam, 320, 240));
+    char name[220];
+    std::snprintf(name, sizeof name,
+                  "a camera moved every 37 ms past what the budget writes, hidden, shown, flushes refused: in %d "
+                  "flushes (%d moves shown) its quads never over a canvas without it (%d)",
+                  flushes, placements, stale);
+    ok(name, stale == 0 && placements > 10 && shown_ticks > 0);
+    ok("and it ends where it was sent, the canvas holding it there", there);
+}
+
 static void limits()
 {
     {
@@ -1148,6 +1242,7 @@ int main()
     cap_rule();
     refused_attach();
     sliding();
+    moves_with_canvas();
     limits();
     two_buffers();
     budget();

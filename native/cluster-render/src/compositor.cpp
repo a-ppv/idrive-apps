@@ -727,6 +727,8 @@ void Compositor::render(int64_t now_ms)
             if (hold && !l->holds_flush())
                 continue;
             const Stage s = l->stage(now_ms);
+            if (l == t.composite.get() && t.composite->placed_now())
+                t.dirty = true;   /* quads moved over a canvas the display holds */
             if (s == Stage::Idle)
                 continue;
             staged.push_back(l);

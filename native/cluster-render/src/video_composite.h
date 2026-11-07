@@ -24,6 +24,12 @@
  * translucent videos overlap while the target fades in or out, and where
  * another layer is drawn between two overlapping translucent videos.
  *
+ * A source moved or shown again keeps its quads where they were (hidden,
+ * when shown again) until the canvas holding it at its new place is
+ * written: the quads move in the flush that carries that write, and go
+ * back if that flush does not go. So a quad never shows a place of the
+ * canvas that does not hold its source yet. Hiding goes at once.
+ *
  * Each source's quads sample only its own part of the canvas: luma at pixel
  * centres and chroma clamped inside the part, as the video shader clamps a
  * whole frame, so an opaque source draws as it would alone.
@@ -110,6 +116,12 @@ public:
 
     void detach(bool drop) override;
     int64_t wake_in_ms(int64_t now_ms) const override;
+    /* stage() also moves and shows the quads of the sources the write
+     * carries; committed() puts them back when the flush does not go. */
+    Stage stage(int64_t now_ms) override;
+    void committed(bool ok, int64_t now_ms) override;
+    /* The last stage() changed quads without a write: the target flushes. */
+    bool placed_now() const { return placed_now_; }
     void arrange(bool drawn, int32_t order) override;
     std::string stats() const override;
 
@@ -135,6 +147,18 @@ private:
         int32_t order = 0;
         bool full = true;          /* compose its whole rect and take its whole frame next */
         int atlas_quad = 0, block_quad = 0;
+        /* Where its quads are and whether they show: rect and drawn once the
+         * canvas written holds it there (moved: a move or a show waits for
+         * that; composed: the canvas holds it, the write is to go). */
+        Rect placed;
+        bool showing = false, moved = false, composed = false;
+    };
+    /* A source's quads as they were before place_composed(), for a flush
+     * that does not go. */
+    struct Placed {
+        uint32_t id;
+        Rect placed;
+        bool showing;
     };
 
     Source *find(uint32_t id);
@@ -142,6 +166,11 @@ private:
     crk::PixelRect in_canvas(const Rect &r) const;
     void mark(const Rect &r);
     bool make_quad(Graph *g, Source &s, bool blocks, int bank);
+    /* The quads to s.placed and s.showing. */
+    void place_quads(Source &s);
+    /* Moves and shows whose canvas this tick's write carries (or the
+     * display's buffer holds already) go to the quads; whether any did. */
+    bool place_composed();
     void view_uniforms(Source &s);
     void source_opacity(Source &s);
     void source_shows(Source &s);
@@ -152,6 +181,8 @@ private:
     std::vector<Source> src_;
     std::vector<uint8_t> dirty_;       /* per canvas tile */
     std::vector<uint32_t> ranking_;    /* drawn sources' ids by draw order, as last composed */
+    std::vector<Placed> placing_;      /* the quads place_composed() moved this tick */
+    bool placed_now_ = false;
     bool scene_changed_ = false;
     uint64_t tiles_composed_ = 0;
 };

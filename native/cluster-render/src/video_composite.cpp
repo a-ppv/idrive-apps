@@ -333,11 +333,18 @@ void CompositeVideo::arrange_source(uint32_t id, bool drawn, int32_t order)
     s->order = order;
     if (!g_)
         return;
-    if (moved) {
-        g_->place(s->atlas_quad, r.w ? r : clip_);
-        if (s->block_quad)
-            g_->place(s->block_quad, r.w ? r : clip_);
-        view_uniforms(*s);
+    if (!drawn) {
+        /* Hidden at once; its place follows, nothing of it showing. */
+        if (s->showing || !same(s->placed, r)) {
+            s->placed = r;
+            s->showing = false;
+            place_quads(*s);
+            scene_changed_ = true;
+        }
+        s->moved = s->composed = false;
+    } else if (moved || shown) {
+        s->moved = true;
+        s->composed = false;
     }
     if (reorder) {
         g_->order(s->atlas_quad, order);
@@ -346,9 +353,62 @@ void CompositeVideo::arrange_source(uint32_t id, bool drawn, int32_t order)
     }
     if (faded)
         source_opacity(*s);
-    if (moved || shown)
-        source_shows(*s);
-    scene_changed_ = scene_changed_ || moved || shown || faded || reorder;
+    scene_changed_ = scene_changed_ || faded || reorder;
+}
+
+void CompositeVideo::place_quads(Source &s)
+{
+    g_->place(s.atlas_quad, s.placed.w ? s.placed : clip_);
+    if (s.block_quad)
+        g_->place(s.block_quad, s.placed.w ? s.placed : clip_);
+    view_uniforms(s);
+    source_shows(s);
+}
+
+bool CompositeVideo::place_composed()
+{
+    bool any = false;
+    for (Source &s : src_) {
+        if (!s.moved || !s.composed)
+            continue;
+        placing_.push_back(Placed{s.id, s.placed, s.showing});
+        s.placed = s.rect;
+        s.showing = true;
+        s.moved = s.composed = false;
+        place_quads(s);
+        any = true;
+    }
+    return any;
+}
+
+Stage CompositeVideo::stage(int64_t now_ms)
+{
+    placing_.clear();
+    const Stage st = VideoLayer::stage(now_ms);
+    /* A write carries the canvas; with none due, the display's buffer
+     * holds it already. */
+    placed_now_ = g_ && (st == Stage::Wrote || (st == Stage::Idle && !waiting())) && place_composed();
+    if (st != Stage::Wrote)
+        placing_.clear();
+    return st;
+}
+
+void CompositeVideo::committed(bool ok, int64_t now_ms)
+{
+    VideoLayer::committed(ok, now_ms);
+    if (!ok && g_)
+        for (const Placed &p : placing_) {
+            Source *s = find(p.id);
+            if (!s)
+                continue;
+            /* Back where the display shows them; the move goes with the
+             * next write, which carries the canvas whole. */
+            s->moved = s->composed = true;
+            s->placed = p.placed;
+            s->showing = p.showing;
+            place_quads(*s);
+        }
+    placing_.clear();
 }
 
 bool CompositeVideo::arranged()
@@ -457,6 +517,9 @@ void CompositeVideo::compose(int64_t now_ms)
             compose_rect(canvas, p_.w, p_.h, tile, cs.data(), cs.size());
             tiles++;
         }
+    for (Source &s : src_)
+        if (s.moved && (!s.full || !s.rect.w))
+            s.composed = true;
     if (tiles) {
         tiles_composed_ += tiles;
         canvas_changed(now_ms);
@@ -482,6 +545,11 @@ bool CompositeVideo::make_quad(Graph *g, Source &s, bool blocks, int bank)
 {
     const float size[2] = {(float)p_.w, (float)p_.h}, zero = 0.0f;
     int &q = blocks ? s.block_quad : s.atlas_quad;
+    /* New quads start at opacity 0 until the canvas is written: placed
+     * where the source is. */
+    s.placed = s.rect;
+    s.showing = s.drawn;
+    s.moved = s.composed = false;
     q = g->quad(blocks ? block_effect_ : atlas_effect_, s.rect.w ? s.rect : clip_);
     if (!q || !g->texture(q, "u_image", blocks ? bank : atlas_buf_) ||
         !g->uniform(q, "u_size", size, 2) || !g->uniform(q, "u_opacity", &zero, 1) || !g->show(q, false) ||
@@ -493,7 +561,7 @@ bool CompositeVideo::make_quad(Graph *g, Source &s, bool blocks, int bank)
 
 void CompositeVideo::view_uniforms(Source &s)
 {
-    const PixelRect c = in_canvas(s.rect.w ? s.rect : clip_);
+    const PixelRect c = in_canvas(s.placed.w ? s.placed : clip_);
     const float view[4] = {(float)c.x, (float)c.y, (float)c.w, (float)c.h};
     if (s.atlas_quad)
         g_->uniform(s.atlas_quad, "u_view", view, 4);
@@ -535,7 +603,7 @@ void CompositeVideo::detach(bool drop)
 
 void CompositeVideo::source_shows(Source &s)
 {
-    const bool on = drawn_ && s.drawn && s.rect.w;
+    const bool on = drawn_ && s.showing && s.placed.w;
     if (s.atlas_quad)
         g_->show(s.atlas_quad, on && !blocks_shown_);
     if (s.block_quad)

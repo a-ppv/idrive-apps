@@ -67,7 +67,9 @@ their place in the stack, rect and opacity, and show as drawn on their own
 except where translucent videos overlap while their target fades in or
 out, or with another layer between them in the stack. They are written as
 one video: while any of them moves faster than the upload budget covers,
-all of them go as packed 4x4 blocks.
+all of them go as packed 4x4 blocks. A shared video moved or shown again
+appears at its new place with the write that puts its pixels there, never
+before.
 A target's videos starting or stopping sharing rewrites its video whole, as
 does the shared video being made again: at most once a second for the
 videos' rectangle growing past it (till then what lies outside is cut),
