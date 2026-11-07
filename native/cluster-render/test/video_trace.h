@@ -427,6 +427,76 @@ inline Trace two_video_trace(int which)
     return r.gpu.trace;
 }
 
+/* The map as above, alone and shown, then a 320x240 camera added at 2 s, on
+ * the map over it (which 0) or on the panel (which 1), between two passes
+ * as a socket message is; sets at 5 s (the
+ * camera moved and at 0.8), 8 s and 9 s (the map hidden and shown) and 12 s
+ * (the map moved by 4 pixels). */
+inline Trace join_trace(int which)
+{
+    TraceRig r;
+    std::string err;
+    LayerParams lp;
+    lp.contend = true;
+    lp.rect.w = 1088;
+    lp.rect.h = 480;
+    VideoParams vp;
+    VideoLayer *v = static_cast<VideoLayer *>(r.comp->layer(1, r.comp->add_video(1, 0, lp, vp, r.now, &err)));
+    VideoLayer *c = nullptr;
+    std::vector<uint8_t> f, cf;
+    for (int k = 0; k < 450; k++) {
+        const int phase = (k / 60) % 4;
+        trace_frame(f, 1088, 480, phase == 3 ? k * 8 : 0, phase == 1 ? k : 0, phase == 2 ? k : 0);
+        if (phase == 0 && k % 2)
+            v->repeat(r.now);
+        else
+            v->offer(f.data(), r.now);
+        if (k == 60) {
+            LayerParams cp;
+            cp.contend = true;
+            cp.z = 1;
+            cp.rect.x = which ? 96 : 704;
+            cp.rect.y = which ? 96 : 64;
+            cp.rect.w = 320;
+            cp.rect.h = 240;
+            VideoParams cvp;
+            cvp.w = 320;
+            cvp.h = 240;
+            /* As from the socket: between two passes. */
+            c = static_cast<VideoLayer *>(
+                r.comp->layer(2, r.comp->add_video(2, which ? 1 : 0, cp, cvp, r.now + 5, &err)));
+        }
+        if (c) {
+            trace_frame(cf, 320, 240, k * 8, k, 0);
+            c->offer(cf.data(), r.now);
+        }
+        if (k == 150) {
+            c->params.rect.x += 64;
+            c->params.opacity = 0.8f;
+            r.comp->changed(c);
+        }
+        if (k == 240 || k == 270) {
+            v->params.visible = k == 270;
+            r.comp->changed(v);
+        }
+        if (k == 360) {
+            v->params.rect.x += 4;
+            r.comp->changed(v);
+        }
+        for (int t = 0; t < 33; t += 11) {
+            r.step(11);
+            if (k == 0 && t == 0)
+                r.slots.on_shown(0x010004f0, r.now);
+            if (which && k == 60 && t == 0)
+                r.slots.on_shown(0x01000400, r.now);
+        }
+    }
+    r.comp->remove_owner(2);
+    r.comp->remove_owner(1);
+    r.step(11);
+    return r.gpu.trace;
+}
+
 }  // namespace crs
 
 #endif

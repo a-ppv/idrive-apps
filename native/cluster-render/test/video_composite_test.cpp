@@ -8,7 +8,12 @@
  *   every pixel and every flush of a 20 s run match the trace recorded from
  *   that build (video_trace.h);
  * - a third video composes, as few targets as it takes, and with one gone
- *   the videos are separate again;
+ *   the videos are separate again; a video joining a kept composite is
+ *   drawn at its opacity at once;
+ * - a video the renderer refused is not tried again until its scene is
+ *   published again, and composited, its refusal goes with its objects;
+ * - a video sliding every tick for 10 s remakes the composite at most once
+ *   a second, never past two video buffers, and it shrinks once that holds;
  * - the blend and the cell composition: SSE2 and scalar equal, copies where
  *   the top source is opaque or alone, the coverage blend where translucent
  *   sources overlap, cells nothing covers left alone;
@@ -27,7 +32,6 @@
  * - the display never holds more than two video buffers, whatever comes and
  *   goes, and the bytes stay within the 5500 KB/s budget;
  * - the cost of composing, per frame and per second (printed). */
-#include <sys/resource.h>
 #include <time.h>
 
 #include <algorithm>
@@ -57,12 +61,13 @@ static void ok(const char *name, bool cond)
 /* ---- the display's video buffers, counted over every scene ------------- */
 
 struct Count {
-    int live = 0, max = 0;
+    int live = 0, max = 0, made = 0;   /* atlases on the display, the most at once, made in all */
 };
 
 class CountingGraph : public FakeGraph {
 public:
     explicit CountingGraph(Count *c) : c_(c) {}
+    int made = 0;   /* atlases made in this scene */
     ~CountingGraph() override
     {
         for (const auto &kv : pending.buffers)
@@ -72,8 +77,11 @@ public:
     int buffer(TexFormat f, uint32_t w, uint32_t h, Sampling s, Wrap wrap) override
     {
         const int b = FakeGraph::buffer(f, w, h, s, wrap);
-        if (f == TexFormat::R8)
+        if (f == TexFormat::R8) {
             c_->max = std::max(c_->max, ++c_->live);
+            c_->made++;
+            made++;
+        }
         return b;
     }
     void drop_buffer(int b) override
@@ -264,6 +272,11 @@ static const uint64_t kMainTrace[2][6] = {
     {0xe0b20733c2a49aeeull, 1208, 31669248, 227, 5, 0},
     {0x772813a8daa32b9aull, 1315, 33012736, 256, 5, 8},
 };
+/* A camera joining a shown map, and sets (video_trace.h join_trace). */
+static const uint64_t kMainJoinTrace[2][6] = {
+    {0x18f19b095ea37fc8ull, 3380, 21038592, 468, 0, 0},
+    {0xdf96bf1d74f5b41bull, 3390, 21038592, 541, 0, 0},
+};
 /* Two videos (video_trace.h two_video_trace), recorded the same way. */
 static const uint64_t kMainTwoTrace[2][6] = {
     {0x5c8593e5bcc02a9eull, 3087, 40754688, 379, 4, 30},
@@ -295,6 +308,18 @@ static void single_video()
         ok(name, t.hash == kMainTwoTrace[which][0] && t.calls == kMainTwoTrace[which][1] &&
                      t.write_bytes == kMainTwoTrace[which][2] && t.flushes == kMainTwoTrace[which][3] &&
                      t.failed_flushes == kMainTwoTrace[which][4] && t.failed_writes == kMainTwoTrace[which][5]);
+    }
+    for (int which = 0; which < 2; which++) {
+        const Trace t = join_trace(which);
+        char name[200];
+        std::snprintf(name, sizeof name,
+                      "a camera added %s a shown map between passes, then sets: as before composites (%llu calls, "
+                      "%llu flushes)",
+                      which ? "on the panel beside" : "over", (unsigned long long)t.calls,
+                      (unsigned long long)t.flushes);
+        ok(name, t.hash == kMainJoinTrace[which][0] && t.calls == kMainJoinTrace[which][1] &&
+                     t.write_bytes == kMainJoinTrace[which][2] && t.flushes == kMainJoinTrace[which][3] &&
+                     t.failed_flushes == kMainJoinTrace[which][4] && t.failed_writes == kMainJoinTrace[which][5]);
     }
     Rig r(5500 * 1024);
     std::string err;
@@ -778,9 +803,20 @@ static void cap_rule()
     VideoLayer *p2 = r.video(5, r.panel, R(320, 0, 320, 240), 320, 240, &err);
     ok("a fourth, on the panel: both targets compose", p2 && r.comp->composite(r.map) && r.comp->composite(r.panel));
     r.comp->remove_owner(5);
-    VideoLayer *m3 = r.video(6, r.map, R(64, 64, 320, 240), 320, 240, &err);
+    p1->offer(cam.data(), r.now);
+    r.run(100);   /* the map's composite written: its quads at their opacity */
+    const int made = static_cast<CountingGraph *>(g)->made;
+    VideoLayer *m3 = r.video(6, r.map, R(64, 64, 320, 240), 320, 240, &err, 0.75f, 3);
+    m3->offer(cam.data(), r.now);
+    r.run(100);
     ok("three on the map and one on the panel: the map alone composes",
        m3 && r.comp->composite(r.map) && r.comp->composite(r.map)->sources() == 3 && !r.comp->composite(r.panel));
+    const FakeQuad *joined = nullptr;
+    for (const FakeQuad *q : atlas_quads(g))
+        if (q->r.x == 64 && q->r.y == 64 && q->r.w == 320)
+            joined = q;
+    ok("a video joining the kept composite is drawn at once at its opacity (0.75)",
+       static_cast<CountingGraph *>(g)->made == made && joined && joined->uniforms.at("u_opacity")[0] == 0.75f);
     r.comp->remove_owner(4);
     r.comp->remove_owner(6);
     r.comp->remove_owner(2);
@@ -788,6 +824,95 @@ static void cap_rule()
     VideoLayer *p = r.video(8, r.panel, R(0, 0, 320, 240), 320, 240, &err);
     ok("a video on each of three targets: the third refused, nothing composes",
        !r.comp->composite(r.map) && h && !p && err.find("too many video buffers on the display") == 0);
+}
+
+/* A video whose objects the renderer refused stays refused until its scene
+ * is published again, whatever else comes and goes; made a source, its own
+ * refusal goes with its objects. */
+static void refused_attach()
+{
+    Rig r(0);
+    std::string err;
+    const std::vector<uint8_t> map = frame(W, H, 1), cam = frame(320, 240, 5);
+    LayerParams fp;
+    fp.klass = Klass::Overlay;
+    fp.rect = R(0, 0, 64, 64);
+    r.comp->add_effect(9, r.map, fp, "", "#version 100\nvoid main() { gl_FragColor = vec4(1.0); }", 0, r.now, &err);
+    r.show("map");
+    CountingGraph *g = static_cast<CountingGraph *>(r.g("map"));
+    g->unknown_uniform = "u_size";   /* the video quads' uniforms refused */
+    VideoLayer *v = r.video(2, r.map, R(0, 0, W, H), W, H, &err);
+    v->offer(map.data(), r.now);
+    r.run(50);
+    std::string why;
+    const int made = g->made;
+    ok("a video the renderer refuses: error", r.comp->state(v->id(), &why) == LayerState::Error && made == 1);
+    VideoLayer *q = r.video(3, r.panel, R(0, 0, 320, 240), 320, 240, &err);
+    q->offer(cam.data(), r.now);
+    v->params.z = 2;
+    r.comp->changed(v);
+    r.comp->remove_owner(3);
+    r.run(50);
+    ok("a video added and removed elsewhere, and a set: not tried again", g->made == made &&
+                                                                          r.comp->state(v->id(), &why) ==
+                                                                              LayerState::Error);
+    g->unknown_uniform.clear();
+    VideoLayer *c = r.video(4, r.map, R(64, 64, 320, 240), 320, 240, &err, 1.0f, 3);
+    VideoLayer *p = r.video(5, r.panel, R(0, 0, 320, 240), 320, 240, &err);   /* a third: the map's compose */
+    c->offer(cam.data(), r.now);
+    p->offer(cam.data(), r.now);
+    r.run(100);
+    ok("composited with a second video on the map: its refusal gone with its own objects, it is shown",
+       r.comp->composite(r.map) && v->source() && r.comp->state(v->id(), &why) == LayerState::Shown &&
+           atlas_quads(g).size() == 2);
+}
+
+/* A picture-in-picture sliding across the panel every tick for 10 s, with
+ * the map and a third video on the panel: the composite is made again at
+ * most once a second, never past two video buffers, and smaller once the
+ * slide stops. */
+static void sliding()
+{
+    Rig r(5500 * 1024);
+    std::string err;
+    const std::vector<uint8_t> map = frame(W, H, 1), cam = frame(320, 240, 5);
+    VideoLayer *m = r.video(1, r.panel, R(416, 120, W, H), W, H, &err);
+    VideoLayer *a = r.video(2, r.panel, R(600, 200, 320, 240), 320, 240, &err, 1.0f, 1);
+    VideoLayer *pip = r.video(3, r.panel, R(416, 120, 320, 240), 320, 240, &err, 1.0f, 2);
+    for (VideoLayer *v : {m, a, pip})
+        v->offer(v == m ? map.data() : cam.data(), r.now);
+    r.show("panel");
+    CountingGraph *g = static_cast<CountingGraph *>(r.g("panel"));
+    int x = 416, dx = 4;
+    for (int t = 0; t < 1000; t++) {
+        if (t % 3 == 0) {
+            m->offer(map.data(), r.now);
+            a->offer(cam.data(), r.now);
+            pip->offer(cam.data(), r.now);
+        }
+        x += dx;
+        if (x < 0 || x > 1600) {
+            dx = -dx;
+            x += 2 * dx;
+        }
+        pip->params.rect.x = x & ~1;
+        r.comp->changed(pip);
+        r.step(10);
+    }
+    const int made = g->made;
+    char name[200];
+    std::snprintf(name, sizeof name,
+                  "a video moved every tick for 10 s: the composite made %d times (at most 11), never past two video "
+                  "buffers (%d)", made, r.gpu.atlases.max);
+    ok(name, made >= 2 && made <= 11 && r.gpu.atlases.max <= 2);
+    const CompositeVideo *cv = r.comp->composite(r.panel);
+    ok("it covers where the video went", cv && cv->x() <= 416 && cv->video().w >= 1440);
+    r.run(5000, 10);
+    cv = r.comp->composite(r.panel);
+    const uint32_t right = (uint32_t)std::max<int>(416 + (int)W, pip->params.rect.x + 320);
+    ok("the slide stopped: made smaller once that held 3 s, over the videos alone",
+       g->made == made + 1 && cv && cv->x() == 416 && cv->y() == 120 && cv->video().w == (right - 416 + 3) / 4 * 4 &&
+           cv->video().h == H && r.gpu.atlases.max <= 2);
 }
 
 static void limits()
@@ -953,13 +1078,6 @@ static void budget()
 
 /* ---- the cost ------------------------------------------------------------------ */
 
-static double cpu_ms()
-{
-    struct rusage u;
-    getrusage(RUSAGE_SELF, &u);
-    return u.ru_utime.tv_sec * 1e3 + u.ru_utime.tv_usec / 1e3 + u.ru_stime.tv_sec * 1e3 + u.ru_stime.tv_usec / 1e3;
-}
-
 static double wall_ms()
 {
     struct timespec ts;
@@ -991,7 +1109,7 @@ static void cost()
         r.run(50);
         CompositeVideo *cv = const_cast<CompositeVideo *>(r.comp->composite(r.map));
         std::vector<uint8_t> part = fc[0];
-        double spent = 0, wall = 0;
+        double wall = 0;
         const uint64_t t0 = cv->composed_tiles();
         for (int k = 1; k <= frames; k++) {
             /* Offered outside the timing: the copy into the layer is the
@@ -1005,20 +1123,21 @@ static void cost()
                 c->offer(fc[k % 2].data(), r.now);
             }
             r.now += 34;   /* the composite's 30 fps clock due again */
-            const double c0 = cpu_ms(), w0 = wall_ms();
+            const double w0 = wall_ms();
             cv->compose(r.now);
-            spent += cpu_ms() - c0;
             wall += wall_ms() - w0;
         }
         char name[260];
         std::snprintf(name, sizeof name, "cost, %s: %.3f ms a frame (%.1f ms a second at 30 fps), %.1f tiles a frame",
                       names[kind], wall / frames, wall / frames * 30, (double)(cv->composed_tiles() - t0) / frames);
-        ok(name, spent >= 0);
+        const double tiles = (double)(cv->composed_tiles() - t0) / frames;
+        ok(name, tiles == (kind == 1 ? 1.0 : 136.0));
     }
 }
 
 int main()
 {
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);   /* each line out as it is decided */
     single_video();
     blend();
     cells();
@@ -1027,6 +1146,8 @@ int main()
     dirty_tiles();
     leaving();
     cap_rule();
+    refused_attach();
+    sliding();
     limits();
     two_buffers();
     budget();

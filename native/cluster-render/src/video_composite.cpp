@@ -279,8 +279,10 @@ void CompositeVideo::add(uint32_t id, VideoLayer *src)
     src_.push_back(s);
     if (g_) {
         Source &n = src_.back();
-        if (make_quad(g_, n, false, 0) && (!p_.pan_blocks || make_quad(g_, n, true, block_buf_[block_bank_])))
+        if (make_quad(g_, n, false, 0) && (!p_.pan_blocks || make_quad(g_, n, true, block_buf_[block_bank_]))) {
+            source_opacity(n);
             source_shows(n);
+        }
         scene_changed_ = true;
     }
 }
@@ -309,7 +311,6 @@ void CompositeVideo::arrange_source(uint32_t id, bool drawn, int32_t order)
     if (!s)
         return;
     const LayerParams &lp = s->layer->params;
-    /* Within clip_ and the canvas. */
     Rect r;
     const int32_t x0 = std::max(lp.rect.x, clip_.x), y0 = std::max(lp.rect.y, clip_.y);
     const int32_t x1 = std::min(lp.rect.x + (int32_t)lp.rect.w, clip_.x + (int32_t)clip_.w);
@@ -458,7 +459,6 @@ void CompositeVideo::compose(int64_t now_ms)
         }
     if (tiles) {
         tiles_composed_ += tiles;
-        composes_++;
         canvas_changed(now_ms);
     } else if (frame) {
         repeat(now_ms);
@@ -579,19 +579,6 @@ void CompositeVideo::arrange(bool drawn, int32_t)
     drawn_ = drawn;
     show_quads(blocks_shown_);
     scene_changed_ = true;
-}
-
-void CompositeVideo::place()
-{
-    if (!g_)
-        return;
-    for (Source &s : src_) {
-        g_->place(s.atlas_quad, s.rect.w ? s.rect : clip_);
-        if (s.block_quad)
-            g_->place(s.block_quad, s.rect.w ? s.rect : clip_);
-        view_uniforms(s);
-    }
-    set_opacity();
 }
 
 std::string CompositeVideo::stats() const

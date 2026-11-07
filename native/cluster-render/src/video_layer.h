@@ -29,8 +29,8 @@
  * A target with several videos draws them through one composite
  * (video_composite.h): each client video is then a source, with no objects
  * in the scene; it keeps its newest frame for the composite to take, and
- * goes back to drawing itself, its newest frame written whole, when it is
- * the target's only video again. */
+ * goes back to drawing itself, its newest frame written whole, once the
+ * display holds every video's buffers separately again (compositor.h). */
 #ifndef CRS_VIDEO_LAYER_H
 #define CRS_VIDEO_LAYER_H
 

@@ -509,7 +509,11 @@ Beside the layers:
   target, unturned, at their frame's size and at even x and y, are composed
   on the head unit's CPU into one video layer, on as few targets as it
   takes: one set of buffers, one video in the budget and the dirty-tile
-  planner (so while one of them moves past the budget, all go packed). Only the 64x64 tiles a video changed
+  planner (so while one of them moves past the budget, all go packed).
+  The composite is made again for its videos' rectangle growing past it
+  at most once a second (over the old rectangle and the new together; till
+  then what lies outside is cut), and smaller once a smaller rectangle has
+  held for 3 s, so a sliding video does not churn the display's buffers. Only the 64x64 tiles a video changed
   are composed again, copied where the top video is opaque or alone and
   blended (SSE2) only where translucent videos overlap; each video is drawn
   by its own quads over its rect, sampling its part, at its place in the
@@ -921,7 +925,12 @@ The host tests:
 - `video_composite_test`: one video, and two on one target or on two,
   draw themselves and drive the renderer call for call and byte for byte
   as recorded from the build before composites (`test/video_trace.h`); a
-  third composing on as few targets as it takes, and separating again; the
+  third composing on as few targets as it takes, and separating again; a
+  camera joining a shown map between passes, and sets, traced the same way;
+  a video joining a kept composite at its opacity at once; a refused video
+  not tried again until its scene is published again, and its refusal
+  gone once it is composited; a video sliding every tick for 10 s remaking
+  the composite at most once a second and shrinking it after; the
   blend and cells, SSE2 and
   scalar equal, against a float reference; an opaque video drawn through
   the composite exactly as alone (the shaders' CPU twins); two, three and

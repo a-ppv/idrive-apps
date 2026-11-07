@@ -17,11 +17,12 @@
  * nothing, without the alpha: the bottom source's frame, then each source
  * above blended in by its share of the coverage. A source's quad drawn at
  * its opacity a over the quads below it then gives each pixel exactly the
- * colour the sources' own quads would give, as long as no other layer is
- * drawn between two overlapping translucent videos. Where the top source
- * is opaque or covers alone, the canvas is a plain copy of its frame.
- * Opacity is composed from the layer's own (params.opacity); the fade is
- * applied by the quads.
+ * colour the sources' own quads would give. Where the top source is opaque
+ * or covers alone, the canvas is a plain copy of its frame. The canvas is
+ * composed from the layers' own opacity (params.opacity) and the quads
+ * apply the target's fade, so the colours match except in two places: where
+ * translucent videos overlap while the target fades in or out, and where
+ * another layer is drawn between two overlapping translucent videos.
  *
  * Each source's quads sample only its own part of the canvas: luma at pixel
  * centres and chroma clamped inside the part, as the video shader clamps a
@@ -110,12 +111,10 @@ public:
     void detach(bool drop) override;
     int64_t wake_in_ms(int64_t now_ms) const override;
     void arrange(bool drawn, int32_t order) override;
-    void place() override;
     std::string stats() const override;
 
-    /* Tiles composed and compose() calls that composed any, since made. */
+    /* Tiles composed since made. */
     uint64_t composed_tiles() const { return tiles_composed_; }
-    uint64_t composes() const { return composes_; }
 
 protected:
     bool make_atlas_quads(Graph *g) override;
@@ -154,7 +153,7 @@ private:
     std::vector<uint8_t> dirty_;       /* per canvas tile */
     std::vector<uint32_t> ranking_;    /* drawn sources' ids by draw order, as last composed */
     bool scene_changed_ = false;
-    uint64_t tiles_composed_ = 0, composes_ = 0;
+    uint64_t tiles_composed_ = 0;
 };
 
 }  // namespace crs

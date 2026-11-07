@@ -63,12 +63,15 @@ always takes one of its own. A `layer` or a `set` that would need a third
 is refused with `too many video buffers on the display`, and one whose
 target's videos would have to share across more than 1920x720 with `the
 target's videos together span more than 1920x720`. Videos that share keep
-their place in the stack, rect and opacity; where translucent videos
-overlap, they show as drawn on their own unless another layer is between
-them in the stack. They are written as one video: while any of them moves
-faster than the upload budget covers, all of them go as packed 4x4 blocks.
-A target's videos starting or stopping sharing, or the rectangle they cover
-together changing, rewrite its video whole.
+their place in the stack, rect and opacity, and show as drawn on their own
+except where translucent videos overlap while their target fades in or
+out, or with another layer between them in the stack. They are written as
+one video: while any of them moves faster than the upload budget covers,
+all of them go as packed 4x4 blocks.
+A target's videos starting or stopping sharing rewrites its video whole, as
+does the shared video being made again: at most once a second for the
+videos' rectangle growing past it (till then what lies outside is cut),
+and smaller once their rectangle has stayed smaller for 3 s.
 
 Layer fields (all optional):
 

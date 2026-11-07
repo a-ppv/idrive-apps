@@ -244,7 +244,6 @@ uint32_t Compositor::add_video(uint64_t owner, int target, const LayerParams &lp
     e.layer->params = lp;
     e.owner = owner;
     e.pixel_bytes = bytes;
-    now_ms_ = std::max(now_ms_, now_ms);
     reconcile();
     return id;
 }
@@ -549,6 +548,11 @@ void Compositor::remove_owner(uint64_t owner)
 void Compositor::arrange(int64_t now_ms)
 {
     now_ms_ = now_ms;
+    for (const Target &t : targets_)
+        if (t.remake_ms >= 0 && now_ms >= t.remake_ms) {
+            reconcile();
+            break;
+        }
     for (size_t ti = 0; ti < targets_.size(); ti++) {
         Target &t = targets_[ti];
         std::vector<StackItem> items;
@@ -841,9 +845,12 @@ int64_t Compositor::wake_in_ms(int64_t now_ms) const
     for (const auto &kv : layers_)
         if (slots_->requested(kv.second.layer->target()))
             at(kv.second.layer->wake_in_ms(now_ms));
-    for (size_t ti = 0; ti < targets_.size(); ti++)
+    for (size_t ti = 0; ti < targets_.size(); ti++) {
         if (targets_[ti].composite && slots_->requested((int)ti))
             at(targets_[ti].composite->wake_in_ms(now_ms));
+        if (targets_[ti].remake_ms >= 0)
+            at(std::max<int64_t>(1, targets_[ti].remake_ms - now_ms));
+    }
     for (const Target &t : targets_)
         if (t.graph && (t.fading_out || (t.fade > 0.0f && t.fade < 1.0f) || t.fade != t.applied))
             at(std::max<int64_t>(1, t.applied_ms + kFadeStepMs - now_ms));
@@ -1028,7 +1035,7 @@ uint32_t up(uint32_t v, uint32_t m) { return (v + m - 1) / m * m; }
 
 }  // namespace
 
-Compositor::VideoPlan Compositor::compose_plan(int ti, const std::vector<VideoSpec> &specs) const
+Compositor::VideoPlan Compositor::compose_plan(int ti, const std::vector<VideoSpec> &specs, const Rect *with) const
 {
     VideoPlan pl;
     std::vector<const VideoSpec *> group;
@@ -1074,6 +1081,12 @@ Compositor::VideoPlan Compositor::compose_plan(int ti, const std::vector<VideoSp
     }
     if (unclocked)
         vp.fps = 0;
+    if (with && with->w && with->h) {
+        x0 = std::min<int64_t>(x0, with->x);
+        y0 = std::min<int64_t>(y0, with->y);
+        x1 = std::max<int64_t>(x1, (int64_t)with->x + with->w);
+        y1 = std::max<int64_t>(y1, (int64_t)with->y + with->h);
+    }
     x0 = std::max<int64_t>(x0, 0);
     y0 = std::max<int64_t>(y0, 0);
     x1 = std::min<int64_t>(x1, spec.width & ~1u);
@@ -1090,6 +1103,9 @@ Compositor::VideoPlan Compositor::compose_plan(int ti, const std::vector<VideoSp
     vp.h = up(std::max<uint32_t>(pl.clip.h, 32), 4);
     if (VideoLayer::size_error(vp.w, vp.h))
         pl.error = "the target's videos together span more than 1920x720";
+    /* Its videos are drawn anywhere on the canvas within the target. */
+    pl.clip.w = (uint32_t)std::min<int64_t>(vp.w, (int64_t)(spec.width & ~1u) - pl.x);
+    pl.clip.h = (uint32_t)std::min<int64_t>(vp.h, (int64_t)(spec.height & ~1u) - pl.y);
     pl.vp = vp;
     pl.bytes = (uint64_t)vp.w * crk::atlas_height(vp.h) * 4 + (vp.pan_blocks ? crk::block_bytes(vp.w, vp.h) : 0);
     return pl;
@@ -1196,7 +1212,7 @@ void Compositor::attach_composite(Target &t)
 void Compositor::reconcile()
 {
     std::string err;
-    const std::vector<VideoPlan> plans = plan_videos(video_specs(), &err);
+    std::vector<VideoPlan> plans = plan_videos(video_specs(), &err);
     /* What goes, on every target first: so the display never holds more
      * video buffers than the plans allow. */
     for (size_t ti = 0; ti < targets_.size(); ti++)
@@ -1210,17 +1226,64 @@ static bool planned(const std::vector<uint32_t> &composited, uint32_t id)
     return std::find(composited.begin(), composited.end(), id) != composited.end();
 }
 
-void Compositor::reconcile_drop(int ti, const VideoPlan &pl)
+static bool same_rect(const Rect &a, const Rect &b) { return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h; }
+
+static bool inside(const Rect &in, const Rect &out)
+{
+    return in.x >= out.x && in.y >= out.y && (int64_t)in.x + in.w <= (int64_t)out.x + out.w &&
+           (int64_t)in.y + in.h <= (int64_t)out.y + out.h;
+}
+
+bool Compositor::keep_composite(int ti, VideoPlan *pl)
+{
+    Target &t = targets_[ti];
+    const CompositeVideo *c = t.composite.get();
+    t.remake_ms = -1;
+    if (!c || pl->composited.empty())
+        return false;
+    const VideoParams &cv = c->video();
+    const bool settings = cv.fps == pl->vp.fps && cv.dirty_threshold == pl->vp.dirty_threshold &&
+                          cv.dirty_settle_ms == pl->vp.dirty_settle_ms && cv.pan_blocks == pl->vp.pan_blocks &&
+                          cv.stall_ms == pl->vp.stall_ms;
+    if (settings && c->x() == pl->x && c->y() == pl->y && same_rect(c->clip(), pl->clip) && cv.w == pl->vp.w &&
+        cv.h == pl->vp.h) {
+        t.smaller_since_ms = -1;
+        return true;
+    }
+    int64_t due;
+    if (settings && inside(pl->clip, c->clip())) {
+        /* Its videos fit in a smaller one: made so once that has held. */
+        if (t.smaller_since_ms < 0 || !same_rect(t.smaller, pl->clip)) {
+            t.smaller_since_ms = now_ms_;
+            t.smaller = pl->clip;
+        }
+        due = std::max(t.smaller_since_ms + kShrinkMs, t.composite_made_ms + kRemakeMs);
+    } else {
+        /* Grown past it, or a joining video's settings: made over the old
+         * rect and the new one, when the memory allows. */
+        t.smaller_since_ms = -1;
+        due = t.composite_made_ms + kRemakeMs;
+        if (now_ms_ >= due) {
+            std::vector<VideoSpec> specs = video_specs();
+            const VideoPlan grown = compose_plan(ti, specs, &c->clip());
+            if (!grown.error && memory() - t.composite_bytes + grown.bytes <= limits_.pixel_bytes) {
+                const uint32_t buffers = pl->buffers;
+                *pl = grown;
+                pl->buffers = buffers;
+            }
+        }
+    }
+    if (now_ms_ >= due)
+        return false;
+    t.remake_ms = due;
+    return true;
+}
+
+void Compositor::reconcile_drop(int ti, VideoPlan &pl)
 {
     Target &t = targets_[ti];
     CompositeVideo *c = t.composite.get();
-    const VideoParams *cv = c ? &c->video() : nullptr;
-    const bool keep = c && !pl.composited.empty() && c->x() == pl.x && c->y() == pl.y && c->clip().w == pl.clip.w &&
-                      c->clip().h == pl.clip.h && cv->w == pl.vp.w && cv->h == pl.vp.h && cv->fps == pl.vp.fps &&
-                      cv->dirty_threshold == pl.vp.dirty_threshold &&
-                      cv->dirty_settle_ms == pl.vp.dirty_settle_ms && cv->pan_blocks == pl.vp.pan_blocks &&
-                      cv->stall_ms == pl.vp.stall_ms;
-    if (c && !keep) {
+    if (c && !keep_composite(ti, &pl)) {
         if (c->attached()) {
             c->detach(true);
             t.dirty = true;
@@ -1231,6 +1294,7 @@ void Compositor::reconcile_drop(int ti, const VideoPlan &pl)
         t.composite.reset();
         t.composite_bytes = 0;
         t.composite_error.clear();
+        t.smaller_since_ms = t.remake_ms = -1;
         c = nullptr;
     }
     for (auto &kv : layers_) {
@@ -1245,6 +1309,8 @@ void Compositor::reconcile_drop(int ti, const VideoPlan &pl)
                     t.dirty = true;
                 }
                 v->to_source();
+                /* Its own objects' refusal goes with them. */
+                e.error.clear();
                 e.drawn = false;
                 e.order = -1;
             }
@@ -1259,17 +1325,22 @@ void Compositor::reconcile_drop(int ti, const VideoPlan &pl)
 void Compositor::reconcile_make(int ti, const VideoPlan &pl)
 {
     Target &t = targets_[ti];
-    /* Videos drawing themselves. */
+    /* A new video, or a source drawing itself again, is attached; a refusal
+     * stands until the scene is published again, as for any layer. */
     for (auto &kv : layers_) {
         Entry &e = kv.second;
         if (e.layer->target() != ti || std::string(e.layer->kind()) != "video" || planned(pl.composited, kv.first))
             continue;
         VideoLayer *v = static_cast<VideoLayer *>(e.layer.get());
+        const bool moved = v->source() || !e.placed;
         if (v->source())
             v->direct();
-        if (t.graph && !v->attached())
+        if (moved && t.graph && !v->attached())
             attach(e, t);
     }
+    for (auto &kv : layers_)
+        if (kv.second.layer->target() == ti)
+            kv.second.placed = true;
     if (pl.composited.empty())
         return;
     CompositeVideo *c = t.composite.get();
@@ -1280,6 +1351,7 @@ void Compositor::reconcile_make(int ti, const VideoPlan &pl)
         t.composite.reset(new CompositeVideo(ti, pacer_for(ti), atlas_view_fx_, block_view_fx_, pl.vp, pl.x, pl.y,
                                              pl.clip, now_ms_));
         t.composite_bytes = pl.bytes;
+        t.composite_made_ms = now_ms_;
         t.composite->set_fade(t.applied);
         c = t.composite.get();
         log_info("target %s: %zu videos composed into one %ux%u at %d,%d", slots_->targets()[ti].name.c_str(),

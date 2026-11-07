@@ -64,8 +64,10 @@
  * most buffers compose, as few as it takes. A video turned, scaled or at an
  * odd x or y keeps buffers of its own. A video joining or leaving a
  * composite, and a composite made
- * again (its sources' rectangles together moved), start their scene objects
- * again: their first frame goes whole. Old objects go before new ones are
+ * again, start their scene objects again: their first frame goes whole. A
+ * composite is made again for its videos' rectangle growing past it at most
+ * every kRemakeMs (till then what lies outside is cut), and smaller only
+ * once the smaller rectangle has held for kShrinkMs. Old objects go before new ones are
  * made, so the display never holds more video buffers than the limit. */
 #ifndef CRS_COMPOSITOR_H
 #define CRS_COMPOSITOR_H
@@ -177,6 +179,12 @@ public:
     /* How long a fade in or out takes; 0: none. */
     void set_fade_ms(int ms) { fade_ms_ = ms; }
     static const int64_t kFadeStepMs = 50;
+    /* A composite is made again for its videos' rect growing past it, or a
+     * joining video's settings, at most this often; it is then made over
+     * its old rect and the new one together. One whose videos fit in a
+     * smaller rect is made again once that has held for kShrinkMs. */
+    static const int64_t kRemakeMs = 1000;
+    static const int64_t kShrinkMs = 3000;
     /* The most of each refill the HUD's share takes (upload_pacer.h). */
     static const unsigned kSharePct = 50;
     /* The clock flushes are timed with, in microseconds (tests set it). */
@@ -203,6 +211,7 @@ private:
         bool drawn = false;
         int32_t order = -1;
         bool composited = false;   /* a video drawn by its target's composite */
+        bool placed = false;       /* a video the plans have placed (reconcile) */
         std::map<std::pair<uint32_t, std::string>, uint32_t> binds;   /* (part, sampler) -> asset */
     };
     struct AssetEntry {
@@ -228,8 +237,12 @@ private:
         std::unique_ptr<CompositeVideo> composite;
         uint64_t composite_bytes = 0;
         std::string composite_error;
+        /* When the composite was made; since when the plan has fitted a
+         * smaller one (-1: it does not), and that one's rect; when a kept
+         * composite is due to be made again (-1: none is). */
+        int64_t composite_made_ms = 0, smaller_since_ms = -1, remake_ms = -1;
+        Rect smaller;
     };
-    /* A video layer as the plan sees it. */
     struct VideoSpec {
         uint32_t id = 0;
         int target = 0;
@@ -253,7 +266,7 @@ private:
     std::vector<VideoSpec> video_specs() const;
     /* The target's videos composed: its plan when it composes (none for
      * fewer than two composable videos). */
-    VideoPlan compose_plan(int ti, const std::vector<VideoSpec> &specs) const;
+    VideoPlan compose_plan(int ti, const std::vector<VideoSpec> &specs, const Rect *with = nullptr) const;
     /* Every target's plan: every video separate while the display holds
      * them all (CompositorLimits::videos); past it, the targets whose
      * composite saves the most buffers compose, as few as it takes. *err:
@@ -268,7 +281,11 @@ private:
      * which its composite draws; what goes, on every target, before what
      * is made. */
     void reconcile();
-    void reconcile_drop(int ti, const VideoPlan &pl);
+    /* Whether the target's composite stays for plan pl (made again at once,
+     * or once allowed: kRemakeMs, kShrinkMs); *pl becomes the plan it is
+     * made with when it does not. */
+    bool keep_composite(int ti, VideoPlan *pl);
+    void reconcile_drop(int ti, VideoPlan &pl);
     void reconcile_make(int ti, const VideoPlan &pl);
     void attach_composite(Target &t);
     /* The layer is drawn in its target's scene: attached, or composited by
