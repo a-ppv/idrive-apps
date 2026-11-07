@@ -91,8 +91,13 @@ Compositor::~Compositor()
     }
     for (auto &kv : assets_)
         kv.second.asset->detach(false);
-    for (Target &t : targets_)
+    for (Target &t : targets_) {
+        if (t.composite)
+            t.composite->detach(false);
         t.graph.reset();
+    }
+    if (atlas_view_fx_) gpu_->drop_effect(atlas_view_fx_);
+    if (block_view_fx_) gpu_->drop_effect(block_view_fx_);
     if (atlas_fx_) gpu_->drop_effect(atlas_fx_);
     if (block_fx_) gpu_->drop_effect(block_fx_);
     if (image_fx_) gpu_->drop_effect(image_fx_);
@@ -109,7 +114,7 @@ bool Compositor::init(std::string *err)
     return image_fx_ != 0;
 }
 
-uint32_t Compositor::admit(uint64_t owner, int target, size_t pixel_bytes, std::string *err)
+uint32_t Compositor::admit(uint64_t owner, int target, int64_t pixel_bytes, std::string *err)
 {
     if (target < 0 || target >= (int)targets_.size()) {
         *err = "unknown target";
@@ -122,7 +127,7 @@ uint32_t Compositor::admit(uint64_t owner, int target, size_t pixel_bytes, std::
         *err = "too many layers";
         return 0;
     }
-    if (memory() + pixel_bytes > limits_.pixel_bytes) {
+    if ((int64_t)memory() + pixel_bytes > (int64_t)limits_.pixel_bytes) {
         *err = "the service's pixel memory is full";
         return 0;
     }
@@ -136,6 +141,8 @@ uint64_t Compositor::memory() const
         bytes += kv.second.pixel_bytes;
     for (const auto &kv : assets_)
         bytes += (uint64_t)kv.second.asset->bytes() * 2;   /* its pixels and a rectangle scratch */
+    for (const Target &t : targets_)
+        bytes += t.composite_bytes;
     return bytes;
 }
 
@@ -204,16 +211,32 @@ uint32_t Compositor::add_video(uint64_t owner, int target, const LayerParams &lp
         *err = e;
         return 0;
     }
+    if (target < 0 || target >= (int)targets_.size()) {
+        *err = "unknown target";
+        return 0;
+    }
     uint32_t videos = 0;
     for (const auto &kv : layers_)
         videos += std::string(kv.second.layer->kind()) == "video";
-    if (videos >= limits_.videos) {
+    if (videos >= limits_.client_videos) {
         *err = "too many video layers";
         return 0;
     }
+    std::vector<VideoSpec> specs = video_specs();
+    VideoSpec mine;
+    mine.target = target;
+    mine.params = lp;
+    mine.vp = vp;
+    specs.push_back(mine);
+    uint64_t composites = 0;
+    if (!videos_fit(specs, &composites, err))
+        return 0;
+    uint64_t now_composites = 0;
+    for (const Target &t : targets_)
+        now_composites += t.composite_bytes;
     const size_t atlas = (size_t)vp.w * crk::atlas_height(vp.h);
     const size_t bytes = atlas * 4 + (vp.pan_blocks ? crk::block_bytes(vp.w, vp.h) : 0);
-    const uint32_t id = admit(owner, target, bytes, err);
+    const uint32_t id = admit(owner, target, (int64_t)bytes + (int64_t)composites - (int64_t)now_composites, err);
     if (!id)
         return 0;
     Entry &e = layers_[id];
@@ -221,8 +244,8 @@ uint32_t Compositor::add_video(uint64_t owner, int target, const LayerParams &lp
     e.layer->params = lp;
     e.owner = owner;
     e.pixel_bytes = bytes;
-    if (targets_[target].graph)
-        attach(e, targets_[target]);
+    now_ms_ = std::max(now_ms_, now_ms);
+    reconcile(target);
     return id;
 }
 
@@ -482,6 +505,8 @@ void Compositor::changed(Layer *l)
     Target &t = targets_[l->target()];
     if (t.graph)
         t.dirty = true;
+    if (std::string(l->kind()) == "video")
+        reconcile(l->target());
 }
 
 void Compositor::remove(uint64_t owner, uint32_t id)
@@ -489,12 +514,18 @@ void Compositor::remove(uint64_t owner, uint32_t id)
     auto it = layers_.find(id);
     if (it == layers_.end() || it->second.owner != owner)
         return;
-    Target &t = targets_[it->second.layer->target()];
+    const int ti = it->second.layer->target();
+    Target &t = targets_[ti];
+    const bool video = std::string(it->second.layer->kind()) == "video";
+    if (it->second.composited && t.composite)
+        t.composite->remove(id);
     it->second.layer->detach(true);
     if (t.graph)
         t.dirty = true;
     drop_effects(it->second);
     layers_.erase(it);
+    if (video)
+        reconcile(ti);
 }
 
 void Compositor::remove_owner(uint64_t owner)
@@ -546,12 +577,19 @@ void Compositor::arrange(int64_t now_ms)
             continue;
         for (size_t pos = 0; pos < t.arr.order.size(); pos++) {
             Entry &e = layers_[t.arr.order[pos]];
-            if (!e.layer->attached())
+            if (!e.composited && !e.layer->attached())
                 continue;
             const bool drawn =
                 std::find(t.arr.drawn.begin(), t.arr.drawn.end(), t.arr.order[pos]) != t.arr.drawn.end() &&
                 assets_clean(e);
             const int32_t order = (int32_t)pos * 4;
+            if (e.composited) {
+                if (t.composite)
+                    t.composite->arrange_source(t.arr.order[pos], drawn, order);
+                e.drawn = drawn;
+                e.order = order;
+                continue;
+            }
             if (drawn != e.drawn || order != e.order) {
                 e.layer->arrange(drawn, order);
                 e.drawn = drawn;
@@ -559,6 +597,8 @@ void Compositor::arrange(int64_t now_ms)
                 t.dirty = true;
             }
         }
+        if (t.composite && t.composite->arranged())
+            t.dirty = true;
     }
 }
 
@@ -583,7 +623,7 @@ void Compositor::fade(int ti, Target &t, int64_t now_ms)
         bool fades = false;
         for (uint32_t id : t.last_drawn) {
             auto it = layers_.find(id);
-            if (it == layers_.end() || !it->second.layer->attached() || it->second.layer->target() != ti)
+            if (it == layers_.end() || !on_scene(it->second) || it->second.layer->target() != ti)
                 continue;
             held.push_back(id);
             fades = fades || it->second.layer->fades();
@@ -615,6 +655,11 @@ void Compositor::fade(int ti, Target &t, int64_t now_ms)
             continue;
         l.set_fade(t.applied);
         if (l.attached() && l.fades())
+            t.dirty = true;
+    }
+    if (t.composite && t.composite->fade() != t.applied) {
+        t.composite->set_fade(t.applied);
+        if (t.composite->attached())
             t.dirty = true;
     }
 }
@@ -658,16 +703,29 @@ void Compositor::render(int64_t now_ms)
             wrote = wrote || s == Stage::Wrote;
             failed = failed || s == Stage::Failed;
         }
+        bool composite = false;
         for (size_t pos = t.arr.order.size(); pos-- > 0;) {
             auto it = layers_.find(t.arr.order[pos]);
-            if (it == layers_.end() || !it->second.layer->attached())
+            if (it == layers_.end())
                 continue;
-            if (hold && !it->second.layer->holds_flush())
+            /* The composite stages at its top source's place: its sources'
+             * new frames composed first. */
+            Layer *l = it->second.layer.get();
+            if (it->second.composited) {
+                if (composite || !t.composite || !t.composite->attached())
+                    continue;
+                composite = true;
+                t.composite->compose(now_ms);
+                l = t.composite.get();
+            } else if (!l->attached()) {
                 continue;
-            const Stage s = it->second.layer->stage(now_ms);
+            }
+            if (hold && !l->holds_flush())
+                continue;
+            const Stage s = l->stage(now_ms);
             if (s == Stage::Idle)
                 continue;
-            staged.push_back(it->second.layer.get());
+            staged.push_back(l);
             wrote = wrote || s == Stage::Wrote;
             failed = failed || s == Stage::Failed;
         }
@@ -748,6 +806,8 @@ void Compositor::resent(const TargetSpec &spec, int64_t now_ms)
     for (const auto &kv : assets_)
         if (kv.second.asset->target() == ti && kv.second.asset->attached())
             bytes += kv.second.asset->bytes();
+    if (targets_[ti].composite)
+        bytes += targets_[ti].composite->buffer_bytes();
     if (!bytes)
         return;
     crk::UploadPacer &pacer = pacer_for(ti);
@@ -761,6 +821,8 @@ void Compositor::resent(const TargetSpec &spec, int64_t now_ms)
 
 bool Compositor::holds(const Target &t) const
 {
+    if (t.composite && t.composite->attached() && t.composite->holds_flush())
+        return true;
     for (uint32_t id : t.arr.order) {
         auto it = layers_.find(id);
         if (it != layers_.end() && it->second.layer->attached() && it->second.layer->holds_flush())
@@ -779,6 +841,9 @@ int64_t Compositor::wake_in_ms(int64_t now_ms) const
     for (const auto &kv : layers_)
         if (slots_->requested(kv.second.layer->target()))
             at(kv.second.layer->wake_in_ms(now_ms));
+    for (size_t ti = 0; ti < targets_.size(); ti++)
+        if (targets_[ti].composite && slots_->requested((int)ti))
+            at(targets_[ti].composite->wake_in_ms(now_ms));
     for (const Target &t : targets_)
         if (t.graph && (t.fading_out || (t.fade > 0.0f && t.fade < 1.0f) || t.fade != t.applied))
             at(std::max<int64_t>(1, t.applied_ms + kFadeStepMs - now_ms));
@@ -795,6 +860,10 @@ LayerState Compositor::state(uint32_t id, std::string *reason) const
     const Layer &l = *e.layer;
     if (!e.error.empty() || !l.refusal().empty()) {
         *reason = e.error.empty() ? l.refusal() : e.error;
+        return LayerState::Error;
+    }
+    if (e.composited && !targets_[l.target()].composite_error.empty()) {
+        *reason = targets_[l.target()].composite_error;
         return LayerState::Error;
     }
     if (!l.params.visible)
@@ -836,6 +905,14 @@ WriteStats Compositor::write_stats(int target) const
         sum.failed += w.failed;
         sum.holds += w.holds;
     }
+    if (target >= 0 && target < (int)targets_.size() && targets_[target].composite) {
+        const WriteStats w = targets_[target].composite->write_stats();
+        sum.frames += w.frames;
+        sum.age_ms += w.age_ms;
+        sum.bytes += w.bytes;
+        sum.failed += w.failed;
+        sum.holds += w.holds;
+    }
     return sum;
 }
 
@@ -860,8 +937,10 @@ bool Compositor::publish(const TargetSpec &spec, std::string *err)
         if (kv.second.asset->target() == ti)
             kv.second.asset->attach(t.graph.get());
     for (auto &kv : layers_)
-        if (kv.second.layer->target() == ti)
+        if (kv.second.layer->target() == ti && !kv.second.composited)
             attach(kv.second, t);
+    if (t.composite)
+        attach_composite(t);
     for (auto &kv : layers_)
         if (kv.second.layer->target() == ti)
             apply_binds(kv.second);
@@ -869,15 +948,20 @@ bool Compositor::publish(const TargetSpec &spec, std::string *err)
      * layers sampling assets once those are written. */
     for (size_t pos = 0; pos < t.arr.order.size(); pos++) {
         Entry &e = layers_[t.arr.order[pos]];
-        if (!e.layer->attached())
+        if (!e.composited && !e.layer->attached())
             continue;
         const bool drawn =
             std::find(t.arr.drawn.begin(), t.arr.drawn.end(), t.arr.order[pos]) != t.arr.drawn.end() &&
             assets_clean(e);
-        e.layer->arrange(drawn, (int32_t)pos * 4);
+        if (e.composited && t.composite)
+            t.composite->arrange_source(t.arr.order[pos], drawn, (int32_t)pos * 4);
+        else
+            e.layer->arrange(drawn, (int32_t)pos * 4);
         e.drawn = drawn;
         e.order = (int32_t)pos * 4;
     }
+    if (t.composite)
+        t.composite->arranged();
     return true;
 }
 
@@ -894,8 +978,272 @@ void Compositor::unpublish(const TargetSpec &spec)
     for (auto &kv : assets_)
         if (kv.second.asset->target() == ti)
             kv.second.asset->detach(false);
+    if (t.composite)
+        t.composite->detach(false);
     t.graph.reset();
     t.dirty = false;
+}
+
+const CompositeVideo *Compositor::composite(int target) const
+{
+    return target >= 0 && target < (int)targets_.size() ? targets_[target].composite.get() : nullptr;
+}
+
+bool Compositor::on_scene(const Entry &e) const
+{
+    if (e.composited) {
+        const Target &t = targets_[e.layer->target()];
+        return t.composite && t.composite->attached();
+    }
+    return e.layer->attached();
+}
+
+std::vector<Compositor::VideoSpec> Compositor::video_specs() const
+{
+    std::vector<VideoSpec> out;
+    for (const auto &kv : layers_) {
+        if (std::string(kv.second.layer->kind()) != "video")
+            continue;
+        VideoSpec s;
+        s.id = kv.first;
+        s.target = kv.second.layer->target();
+        s.params = kv.second.layer->params;
+        s.vp = static_cast<const VideoLayer *>(kv.second.layer.get())->video();
+        out.push_back(s);
+    }
+    return out;
+}
+
+namespace {
+
+/* Drawn by a composite: unturned, at its frame's size, at even x and y, so
+ * its planes line up with the canvas's. */
+bool composable(const LayerParams &p, const VideoParams &vp)
+{
+    return p.rotate == 0 && p.sx == 1 && p.sy == 1 && p.rect.w == vp.w && p.rect.h == vp.h && !(p.rect.x & 1) &&
+           !(p.rect.y & 1);
+}
+
+uint32_t up(uint32_t v, uint32_t m) { return (v + m - 1) / m * m; }
+
+}  // namespace
+
+Compositor::VideoPlan Compositor::plan_videos(int ti, const std::vector<VideoSpec> &specs) const
+{
+    VideoPlan pl;
+    std::vector<const VideoSpec *> group;
+    for (const VideoSpec &s : specs) {
+        if (s.target != ti)
+            continue;
+        if (composable(s.params, s.vp))
+            group.push_back(&s);
+        else
+            pl.buffers++;
+    }
+    if (group.size() < 2) {
+        pl.buffers += (uint32_t)group.size();
+        return pl;
+    }
+    pl.buffers++;
+    /* The canvas: the sources' rectangles together, within the target (to
+     * even pixels), widened to what an atlas and packing take. */
+    const TargetSpec &spec = slots_->targets()[ti];
+    int64_t x0 = INT32_MAX, y0 = INT32_MAX, x1 = INT32_MIN, y1 = INT32_MIN;
+    VideoParams vp;
+    vp.level_bits = 0;
+    vp.dirty_threshold = UINT32_MAX;
+    vp.dirty_settle_ms = 0;
+    vp.fps = 0;
+    vp.pan_blocks = true;
+    vp.stall_ms = 0;
+    bool unclocked = false;
+    for (const VideoSpec *s : group) {
+        const Rect &r = s->params.rect;
+        x0 = std::min<int64_t>(x0, r.x);
+        y0 = std::min<int64_t>(y0, r.y);
+        x1 = std::max<int64_t>(x1, (int64_t)r.x + r.w);
+        y1 = std::max<int64_t>(y1, (int64_t)r.y + r.h);
+        vp.dirty_threshold = std::min(vp.dirty_threshold, s->vp.dirty_threshold);
+        if (s->vp.dirty_settle_ms > 0 && (vp.dirty_settle_ms == 0 || s->vp.dirty_settle_ms < vp.dirty_settle_ms))
+            vp.dirty_settle_ms = s->vp.dirty_settle_ms;
+        unclocked = unclocked || s->vp.fps == 0;
+        vp.fps = std::max(vp.fps, s->vp.fps);
+        vp.pan_blocks = vp.pan_blocks && s->vp.pan_blocks;
+        vp.stall_ms = std::max(vp.stall_ms, s->vp.stall_ms);
+        pl.composited.push_back(s->id);
+    }
+    if (unclocked)
+        vp.fps = 0;
+    x0 = std::max<int64_t>(x0, 0);
+    y0 = std::max<int64_t>(y0, 0);
+    x1 = std::min<int64_t>(x1, spec.width & ~1u);
+    y1 = std::min<int64_t>(y1, spec.height & ~1u);
+    if (x0 >= x1 || y0 >= y1)
+        x0 = y0 = x1 = y1 = 0;   /* nothing of them is on the target */
+    pl.x = (int32_t)x0;
+    pl.y = (int32_t)y0;
+    pl.clip.x = pl.x;
+    pl.clip.y = pl.y;
+    pl.clip.w = (uint32_t)(x1 - x0);
+    pl.clip.h = (uint32_t)(y1 - y0);
+    vp.w = up(std::max<uint32_t>(pl.clip.w, 64), 4);
+    vp.h = up(std::max<uint32_t>(pl.clip.h, 32), 4);
+    if (VideoLayer::size_error(vp.w, vp.h))
+        pl.error = "the target's videos together span more than 1920x720";
+    pl.vp = vp;
+    pl.bytes = (uint64_t)vp.w * crk::atlas_height(vp.h) * 4 + (vp.pan_blocks ? crk::block_bytes(vp.w, vp.h) : 0);
+    return pl;
+}
+
+bool Compositor::videos_fit(const std::vector<VideoSpec> &specs, uint64_t *bytes, std::string *err)
+{
+    uint32_t buffers = 0;
+    bool composite = false;
+    *bytes = 0;
+    for (size_t ti = 0; ti < targets_.size(); ti++) {
+        const VideoPlan pl = plan_videos((int)ti, specs);
+        if (pl.error) {
+            *err = pl.error;
+            return false;
+        }
+        buffers += pl.buffers;
+        *bytes += pl.bytes;
+        composite = composite || !pl.composited.empty();
+    }
+    if (buffers > limits_.videos) {
+        *err = "too many video buffers on the display (at most " + std::to_string(limits_.videos) +
+               "): a target's videos share one, but a video turned, scaled or at an odd x or y needs its own";
+        return false;
+    }
+    return !composite || view_effects(err);
+}
+
+bool Compositor::view_effects(std::string *err)
+{
+    if (!atlas_view_fx_)
+        atlas_view_fx_ = gpu_->effect(kQuadVertexShader, kAtlasViewFragmentShader, err);
+    if (atlas_view_fx_ && !block_view_fx_)
+        block_view_fx_ = gpu_->effect(kQuadVertexShader, kBlockViewFragmentShader, err);
+    return block_view_fx_ != 0;
+}
+
+bool Compositor::check(const Layer *l, const LayerParams &p, std::string *err)
+{
+    if (std::string(l->kind()) != "video")
+        return true;
+    std::vector<VideoSpec> specs = video_specs();
+    for (VideoSpec &s : specs)
+        if (s.id == l->id())
+            s.params = p;
+    uint64_t composites = 0, now_composites = 0;
+    if (!videos_fit(specs, &composites, err))
+        return false;
+    for (const Target &t : targets_)
+        now_composites += t.composite_bytes;
+    if (memory() - now_composites + composites > limits_.pixel_bytes) {
+        *err = "the service's pixel memory is full";
+        return false;
+    }
+    return true;
+}
+
+void Compositor::attach_composite(Target &t)
+{
+    std::string err;
+    if (!t.composite->attach(t.graph.get(), now_ms_, &err)) {
+        t.composite_error = err;
+        log_error("composite on %s: %s", slots_->targets()[t.composite->target()].name.c_str(), err.c_str());
+    } else {
+        t.composite_error.clear();
+    }
+    t.dirty = true;
+}
+
+void Compositor::reconcile(int ti)
+{
+    Target &t = targets_[ti];
+    const VideoPlan pl = plan_videos(ti, video_specs());
+    auto planned = [&](uint32_t id) {
+        return std::find(pl.composited.begin(), pl.composited.end(), id) != pl.composited.end();
+    };
+    CompositeVideo *c = t.composite.get();
+    const VideoParams *cv = c ? &c->video() : nullptr;
+    const bool keep = c && !pl.composited.empty() && c->x() == pl.x && c->y() == pl.y && c->clip().w == pl.clip.w &&
+                      c->clip().h == pl.clip.h && cv->w == pl.vp.w && cv->h == pl.vp.h && cv->fps == pl.vp.fps &&
+                      cv->dirty_threshold == pl.vp.dirty_threshold &&
+                      cv->dirty_settle_ms == pl.vp.dirty_settle_ms && cv->pan_blocks == pl.vp.pan_blocks &&
+                      cv->stall_ms == pl.vp.stall_ms;
+    /* What goes, first: so the display never holds more video buffers
+     * than the plans allow. */
+    if (c && !keep) {
+        if (c->attached()) {
+            c->detach(true);
+            t.dirty = true;
+        }
+        for (auto &kv : layers_)
+            if (kv.second.layer->target() == ti)
+                kv.second.composited = false;
+        t.composite.reset();
+        t.composite_bytes = 0;
+        t.composite_error.clear();
+        c = nullptr;
+    }
+    for (auto &kv : layers_) {
+        Entry &e = kv.second;
+        if (e.layer->target() != ti || std::string(e.layer->kind()) != "video")
+            continue;
+        VideoLayer *v = static_cast<VideoLayer *>(e.layer.get());
+        if (planned(kv.first)) {
+            if (!v->source()) {
+                if (v->attached()) {
+                    v->detach(true);
+                    t.dirty = true;
+                }
+                v->to_source();
+                e.drawn = false;
+                e.order = -1;
+            }
+        } else if (e.composited) {
+            c->remove(kv.first);
+            e.composited = false;
+            t.dirty = true;
+        }
+    }
+    /* Videos drawing themselves. */
+    for (auto &kv : layers_) {
+        Entry &e = kv.second;
+        if (e.layer->target() != ti || std::string(e.layer->kind()) != "video" || planned(kv.first))
+            continue;
+        VideoLayer *v = static_cast<VideoLayer *>(e.layer.get());
+        if (v->source())
+            v->direct();
+        if (t.graph && !v->attached())
+            attach(e, t);
+    }
+    if (pl.composited.empty())
+        return;
+    if (!c) {
+        std::string err;
+        if (!view_effects(&err))
+            log_error("composite on %s: %s", slots_->targets()[ti].name.c_str(), err.c_str());
+        t.composite.reset(new CompositeVideo(ti, pacer_for(ti), atlas_view_fx_, block_view_fx_, pl.vp, pl.x, pl.y,
+                                             pl.clip, now_ms_));
+        t.composite_bytes = pl.bytes;
+        t.composite->set_fade(t.applied);
+        c = t.composite.get();
+        log_info("target %s: %zu videos composed into one %ux%u at %d,%d", slots_->targets()[ti].name.c_str(),
+                 pl.composited.size(), pl.vp.w, pl.vp.h, pl.x, pl.y);
+    }
+    for (uint32_t id : pl.composited) {
+        if (c->has(id))
+            continue;
+        Entry &e = layers_[id];
+        c->add(id, static_cast<VideoLayer *>(e.layer.get()));
+        e.composited = true;
+        t.dirty = t.dirty || c->attached();
+    }
+    if (t.graph && !c->attached())
+        attach_composite(t);
 }
 
 }  // namespace crs

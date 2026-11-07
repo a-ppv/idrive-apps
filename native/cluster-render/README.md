@@ -503,6 +503,17 @@ Beside the layers:
   kept on the CPU, written whole into each new scene and in place as they
   change, before the layers, within the budget. A layer sampling one is
   drawn only while its buffer holds it whole.
+- **Several videos** (`src/video_composite.h`): the display holds the
+  buffers of at most two videos, its memory unmeasured. A video alone on
+  its target draws itself as above. Two or more on one target, unturned,
+  at their frame's size and at even x and y, are composed on the head
+  unit's CPU into one video layer: one set of buffers, one video in the
+  budget and the dirty-tile planner. Only the 64x64 tiles a video changed
+  are composed again, copied where the top video is opaque or alone and
+  blended (SSE2) only where translucent videos overlap; each video is drawn
+  by its own quads over its rect, sampling its part, at its place in the
+  stack and its opacity. A turned, scaled or odd-placed video keeps buffers
+  of its own. Clients have up to 8 video layers together.
 - **Turns**: video, image and effect quads rotate and scale about a pivot
   (a needle), each under two group nodes in the scene.
 - **Animations**: keys the renderer plays by itself (one real-time
@@ -906,6 +917,17 @@ The host tests:
   target staging nothing, and a released target's warm scene; the limits
   (64 layers a client, 96 in all) and 96 small layers changing every tick
   past the 5500 KB/s ceiling, written within it, each an even share;
+- `video_composite_test`: one video per target draws itself and drives the
+  renderer call for call and byte for byte as recorded from the build
+  before composites (`test/video_trace.h`); the blend and cells, SSE2 and
+  scalar equal, against a float reference; an opaque video drawn through
+  the composite exactly as alone (the shaders' CPU twins); two, three and
+  four videos on one target with order, opacity, overlap and none; only
+  changed tiles composed and written; hiding, showing, moving, fading; the
+  limits and refusals (client videos, display buffers, memory, span, a
+  `set`); the last other video leaving and the remaining one drawing itself
+  again; at most two video buffers on the display whatever comes and goes;
+  three moving videos within 5500 KB/s; the composing cost, printed;
 - `dcsm2_port_test`: the Dcsm2 request sequence, parked and promoted
   mappings, take-overs, reply matching and refusal kinds; the undecoded
   notifications' rate limit, subscription answers, the no-answer line and

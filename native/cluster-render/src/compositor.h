@@ -50,7 +50,21 @@
  * other targets never get less than the rest, and with no such layer they
  * go exactly as they would without it. Evidence from such a target is
  * logged, never counted towards the cap, and its bytes are not the link's
- * load for the governor, so it never moves the cap. */
+ * load for the governor, so it never moves the cap.
+ *
+ * Videos: each video layer keeps buffers on the display (video_layer.h),
+ * whose memory nobody has measured, so the display holds at most
+ * CompositorLimits::videos of them, however many video layers the clients
+ * have. A video alone on its target draws itself, exactly as it would with
+ * no other video anywhere. Two or more videos on one target drawn
+ * unturned, at their frame's size and at even x and y are drawn through
+ * the target's composite (video_composite.h): one video layer composed on
+ * the CPU, one set of buffers, one video in the byte budget and the dirty-
+ * tile planner. A video turned, scaled or at an odd x or y keeps buffers of
+ * its own. A video joining or leaving a composite, and a composite made
+ * again (its sources' rectangles together moved), start their scene objects
+ * again: their first frame goes whole. Old objects go before new ones are
+ * made, so the display never holds more video buffers than the limit. */
 #ifndef CRS_COMPOSITOR_H
 #define CRS_COMPOSITOR_H
 
@@ -66,6 +80,7 @@
 #include "mesh_layer.h"
 #include "slots.h"
 #include "stack.h"
+#include "video_composite.h"
 #include "video_layer.h"
 
 namespace crs {
@@ -80,7 +95,13 @@ struct CompositorLimits {
      * reported to restart the KOMBI. */
     uint32_t layers = 96;               /* across all clients */
     uint32_t per_client = 64;
-    uint32_t videos = 2;                /* video layers: four atlases each, plus packing */
+    /* Video buffers on the display, each an atlas and two packed buffers:
+     * a video drawing itself, or a target's composite of its videos. */
+    uint32_t videos = 2;
+    /* Client video layers, across all clients; each also within
+     * pixel_bytes (four atlases and the packing each, and a composite as
+     * much at its own size). */
+    uint32_t client_videos = 8;
     uint64_t pixel_bytes = 16u << 20;   /* CPU copies of all images, videos, assets and meshes */
     uint32_t assets = 32;               /* across all clients */
     uint32_t assets_per_client = 16;
@@ -133,6 +154,12 @@ public:
     void changed(Layer *l);
     void remove(uint64_t owner, uint32_t id);
     void remove_owner(uint64_t owner);
+    /* Whether layer l may take params p (before they are set and
+     * changed()): a video's display buffers and memory stay within the
+     * limits; false with *err. */
+    bool check(const Layer *l, const LayerParams &p, std::string *err);
+    /* The target's composite of its videos; null while it has none. */
+    const CompositeVideo *composite(int target) const;
 
     void arrange(int64_t now_ms);
     void render(int64_t now_ms);
@@ -173,6 +200,7 @@ private:
         std::string error;     /* the renderer refused the layer's objects */
         bool drawn = false;
         int32_t order = -1;
+        bool composited = false;   /* a video drawn by its target's composite */
         std::map<std::pair<uint32_t, std::string>, uint32_t> binds;   /* (part, sampler) -> asset */
     };
     struct AssetEntry {
@@ -193,9 +221,47 @@ private:
         bool fading_out = false;
         std::vector<uint32_t> last_drawn;
         bool last_contend = false, last_guide_hold = true;
+        /* Its videos' composite, its pixel bytes, and why the renderer
+         * refused its objects. */
+        std::unique_ptr<CompositeVideo> composite;
+        uint64_t composite_bytes = 0;
+        std::string composite_error;
+    };
+    /* A video layer as the plan sees it. */
+    struct VideoSpec {
+        uint32_t id = 0;
+        int target = 0;
+        LayerParams params;
+        VideoParams vp;
+    };
+    /* How a target's videos are drawn: those its composite draws (none, or
+     * two or more), its canvas and place, and the video buffers they take
+     * on the display. */
+    struct VideoPlan {
+        std::vector<uint32_t> composited;
+        VideoParams vp;
+        int32_t x = 0, y = 0;
+        Rect clip;
+        uint64_t bytes = 0;
+        uint32_t buffers = 0;
+        const char *error = nullptr;
     };
 
-    uint32_t admit(uint64_t owner, int target, size_t pixel_bytes, std::string *err);
+    uint32_t admit(uint64_t owner, int target, int64_t pixel_bytes, std::string *err);
+    std::vector<VideoSpec> video_specs() const;
+    VideoPlan plan_videos(int ti, const std::vector<VideoSpec> &specs) const;
+    /* Whether the videos fit the display's video buffers; *bytes: their
+     * composites' pixel bytes. Compiles the composite's effects when one is
+     * needed. */
+    bool videos_fit(const std::vector<VideoSpec> &specs, uint64_t *bytes, std::string *err);
+    bool view_effects(std::string *err);
+    /* Brings the target's videos to its plan: which draw themselves and
+     * which its composite draws. */
+    void reconcile(int ti);
+    void attach_composite(Target &t);
+    /* The layer is drawn in its target's scene: attached, or composited by
+     * an attached composite. */
+    bool on_scene(const Entry &e) const;
     /* The budget the target's writes spend: the HUD's share for a share
      * target. */
     crk::UploadPacer &pacer_for(int target);
@@ -233,6 +299,7 @@ private:
     int64_t second_ms_ = 0;
     int64_t (*clock_us_)() = nullptr;
     int atlas_fx_ = 0, block_fx_ = 0, image_fx_ = 0;
+    int atlas_view_fx_ = 0, block_view_fx_ = 0;   /* the composite's, made with the first one */
     std::map<uint32_t, Entry> layers_;
     std::map<uint32_t, AssetEntry> assets_;
     std::vector<Target> targets_;

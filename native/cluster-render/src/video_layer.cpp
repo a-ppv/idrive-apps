@@ -68,6 +68,54 @@ void VideoLayer::repeat(int64_t now_ms)
     front_ms_ = last_frame_ms_ = now_ms;
 }
 
+void VideoLayer::to_source()
+{
+    source_ = true;
+    /* The newest frame into front_, as attach() finds it. */
+    if (!front_pending_ && !planner_.quiet() && shown_.size() == atlas_bytes_) {
+        front_.swap(shown_);
+        front_ms_ = shown_ms_;
+    }
+    repeated_ = front_stale_ = false;
+    front_pending_ = false;
+}
+
+void VideoLayer::direct()
+{
+    source_ = false;
+    repeated_ = false;
+    front_pending_ = front_.size() == atlas_bytes_ && front_ms_ >= 0;
+}
+
+uint8_t *VideoLayer::taken()
+{
+    if (shown_.size() != atlas_bytes_)
+        shown_.assign(atlas_bytes_, 0);
+    return shown_.data();
+}
+
+uint8_t *VideoLayer::canvas()
+{
+    if (front_.size() != atlas_bytes_) {
+        front_.assign(atlas_bytes_, 128);   /* black: Y 0, U and V neutral */
+        std::fill(front_.begin(), front_.begin() + (size_t)p_.w * p_.h, 0);
+    } else if (front_stale_) {
+        front_ = shown_;   /* once after each whole write */
+    }
+    front_stale_ = false;
+    return front_.data();
+}
+
+void VideoLayer::canvas_changed(int64_t now_ms)
+{
+    if (front_pending_)
+        superseded_++;
+    repeated_ = front_stale_ = false;
+    front_pending_ = true;
+    front_ms_ = last_frame_ms_ = now_ms;
+    have_ = true;
+}
+
 bool VideoLayer::ready(int64_t now_ms) const
 {
     return have_ && now_ms - last_frame_ms_ <= p_.stall_ms;
@@ -96,20 +144,13 @@ bool VideoLayer::attach(Graph *g, int64_t now_ms, std::string *err)
     refine_due_ms_ = -1;
     drawn_ = false;
 
-    const float size[2] = {(float)p_.w, (float)p_.h}, zero = 0.0f;
     atlas_buf_ = g->buffer(TexFormat::R8, p_.w, atlas_h_, Sampling::Bilinear);
-    atlas_quad_ = atlas_buf_ ? g->quad(atlas_effect_, params.rect) : 0;
-    bool good = atlas_quad_ && g->turn(atlas_quad_, params.turn()) && g->texture(atlas_quad_, "u_image", atlas_buf_) &&
-                g->uniform(atlas_quad_, "u_size", size, 2) && g->uniform(atlas_quad_, "u_opacity", &zero, 1) &&
-                g->show(atlas_quad_, false) && g->order(atlas_quad_, order_);
+    bool good = atlas_buf_ && make_atlas_quads(g);
     if (good && p_.pan_blocks) {
         const uint32_t bw = crk::block_texels_w(p_.w), bh = crk::block_texels_h(p_.h);
         for (int k = 0; k < 2 && good; k++)
             good = (block_buf_[k] = g->buffer(TexFormat::RGBA8, bw, bh, Sampling::Nearest)) != 0;
-        block_quad_ = good ? g->quad(block_effect_, params.rect) : 0;
-        good = block_quad_ && g->turn(block_quad_, params.turn()) && g->texture(block_quad_, "u_image", block_buf_[0]) &&
-               g->uniform(block_quad_, "u_size", size, 2) && g->uniform(block_quad_, "u_opacity", &zero, 1) &&
-               g->show(block_quad_, false) && g->order(block_quad_, order_ + 1);
+        good = good && make_block_quads(g);
         block_bank_ = 0;
     }
     if (!good) {
@@ -121,12 +162,35 @@ bool VideoLayer::attach(Graph *g, int64_t now_ms, std::string *err)
     return true;
 }
 
+bool VideoLayer::make_atlas_quads(Graph *g)
+{
+    const float size[2] = {(float)p_.w, (float)p_.h}, zero = 0.0f;
+    atlas_quad_ = g->quad(atlas_effect_, params.rect);
+    return atlas_quad_ && g->turn(atlas_quad_, params.turn()) && g->texture(atlas_quad_, "u_image", atlas_buf_) &&
+           g->uniform(atlas_quad_, "u_size", size, 2) && g->uniform(atlas_quad_, "u_opacity", &zero, 1) &&
+           g->show(atlas_quad_, false) && g->order(atlas_quad_, order_);
+}
+
+bool VideoLayer::make_block_quads(Graph *g)
+{
+    const float size[2] = {(float)p_.w, (float)p_.h}, zero = 0.0f;
+    block_quad_ = g->quad(block_effect_, params.rect);
+    return block_quad_ && g->turn(block_quad_, params.turn()) && g->texture(block_quad_, "u_image", block_buf_[0]) &&
+           g->uniform(block_quad_, "u_size", size, 2) && g->uniform(block_quad_, "u_opacity", &zero, 1) &&
+           g->show(block_quad_, false) && g->order(block_quad_, order_ + 1);
+}
+
+void VideoLayer::drop_quads()
+{
+    if (atlas_quad_) g_->drop_quad(atlas_quad_);
+    if (block_quad_) g_->drop_quad(block_quad_);
+}
+
 void VideoLayer::drop_objects()
 {
     if (!g_)
         return;
-    if (atlas_quad_) g_->drop_quad(atlas_quad_);
-    if (block_quad_) g_->drop_quad(block_quad_);
+    drop_quads();
     if (atlas_buf_) g_->drop_buffer(atlas_buf_);
     for (int k = 0; k < 2; k++)
         if (block_buf_[k]) g_->drop_buffer(block_buf_[k]);
@@ -154,9 +218,19 @@ void VideoLayer::show_blocks(bool on)
     blocks_shown_ = on;
     if (!g_)
         return;
-    g_->show(atlas_quad_, drawn_ && !on);
+    show_quads(on);
+}
+
+void VideoLayer::show_quads(bool blocks)
+{
+    g_->show(atlas_quad_, drawn_ && !blocks);
     if (block_quad_)
-        g_->show(block_quad_, drawn_ && on);
+        g_->show(block_quad_, drawn_ && blocks);
+}
+
+bool VideoLayer::bank_quads(int buf)
+{
+    return g_->texture(block_quad_, "u_image", buf);
 }
 
 void VideoLayer::set_opacity()
@@ -303,7 +377,7 @@ Stage VideoLayer::stage_blocks(int64_t, bool fresh)
     if (!written)
         refused_++;
     if (written)
-        written = g_->texture(block_quad_, "u_image", block_buf_[staged_.next_bank]);
+        written = bank_quads(block_buf_[staged_.next_bank]);
     if (!written)
         return Stage::Failed;
     if (!opaque_) {
@@ -328,7 +402,7 @@ void VideoLayer::committed(bool ok, int64_t now_ms)
         failed_++;
         pacer_.spend(s.accepted);
         if (s.kind == Kind::Blocks) {
-            g_->texture(block_quad_, "u_image", block_buf_[block_bank_]);
+            bank_quads(block_buf_[block_bank_]);
             parked_ = s.was_parked;
             show_blocks(s.was_shown);
         } else {
@@ -410,12 +484,13 @@ WriteStats VideoLayer::write_stats() const
 
 std::string VideoLayer::stats() const
 {
-    char b[256];
+    char b[320];
     std::snprintf(b, sizeof b,
-                  "%llu sent, %llu unchanged, %llu within threshold, %llu superseded, %llu settled, %llu failed "
+                  "%s%llu sent, %llu unchanged, %llu within threshold, %llu superseded, %llu settled, %llu failed "
                   "(%llu refused), %llu KB, %llu whole, %llu partial, %llu rects, %llu packed, %llu back to exact, "
                   "%llu budget holds",
-                  (unsigned long long)sent_, (unsigned long long)same_, (unsigned long long)quiet_,
+                  source_ ? "drawn by the target's composite; " : "", (unsigned long long)sent_,
+                  (unsigned long long)same_, (unsigned long long)quiet_,
                   (unsigned long long)superseded_, (unsigned long long)settled_, (unsigned long long)failed_,
                   (unsigned long long)refused_, (unsigned long long)(bytes_ / 1024),
                   (unsigned long long)whole_writes_, (unsigned long long)partial_writes_, (unsigned long long)rects_,

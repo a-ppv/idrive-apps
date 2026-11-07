@@ -24,7 +24,13 @@
  * The target's scene carries every layer, so stage() writes and the
  * compositor flushes once for all of them; committed() then settles the
  * flush's outcome: what it wrote is shown, or after a refusal the next write
- * is whole. Frames come from a client (offer). */
+ * is whole. Frames come from a client (offer).
+ *
+ * A target with several videos draws them through one composite
+ * (video_composite.h): each client video is then a source, with no objects
+ * in the scene; it keeps its newest frame for the composite to take, and
+ * goes back to drawing itself, its newest frame written whole, when it is
+ * the target's only video again. */
 #ifndef CRS_VIDEO_LAYER_H
 #define CRS_VIDEO_LAYER_H
 
@@ -82,12 +88,55 @@ public:
     }
     bool fades() const override { return true; }
 
+    const VideoParams &video() const { return p_; }
+
+    /* A source of its target's composite (video_composite.h): detached, its
+     * newest frame in newest(). direct() makes it a layer of its own again,
+     * before it is attached: its newest frame then goes whole. */
+    void to_source();
+    void direct();
+    bool source() const { return source_; }
+    /* The newest frame, frame_bytes() long; null before the first. */
+    const uint8_t *newest() const { return have_ ? front_.data() : nullptr; }
+    /* A source's frame or repeat waits for the composite, and whether it is
+     * a frame (not a repeat). took(): the composite has taken it. */
+    bool waiting() const { return front_pending_; }
+    bool fresh() const { return front_pending_ && !repeated_; }
+    void took() { front_pending_ = repeated_ = false; }
+    /* A source's copy of what the composite last took from it, frame_bytes()
+     * long, which its next frame is compared with. */
+    uint8_t *taken();
+
 protected:
     void faded() override
     {
         if (g_)
             set_opacity();
     }
+
+    /* The quads drawing the buffers: one over params.rect for the atlas and
+     * one for the packed blocks. The composite draws one pair a source. */
+    virtual bool make_atlas_quads(Graph *g);
+    virtual bool make_block_quads(Graph *g);
+    virtual void drop_quads();
+    /* Shows the atlas quads, or with blocks the packed ones, where drawn. */
+    virtual void show_quads(bool blocks);
+    /* The packed quads sample buf. */
+    virtual bool bank_quads(int buf);
+    virtual void set_opacity();
+
+    /* The composite's frame, composed in place: the newest frame, whole
+     * (black before the first). canvas_changed(): it changed, and waits to
+     * be written as an offered frame would. */
+    uint8_t *canvas();
+    void canvas_changed(int64_t now_ms);
+
+    VideoParams p_;
+    int atlas_effect_, block_effect_;
+    int atlas_buf_ = 0;
+    int block_buf_[2] = {0, 0};
+    int block_bank_ = 0;
+    bool blocks_shown_ = false, opaque_ = false;
 
 private:
     enum class Kind { None, Exact, Blocks };
@@ -104,11 +153,8 @@ private:
     Stage stage_exact(int64_t now_ms, bool fresh);
     Stage stage_blocks(int64_t now_ms, bool fresh);
     void show_blocks(bool on);
-    void set_opacity();
     void drop_objects();
 
-    VideoParams p_;
-    int atlas_effect_, block_effect_;
     size_t atlas_bytes_;
     uint32_t atlas_h_;
     crk::UploadPlanner planner_;   /* each update against shown_, and its quiet tiles */
@@ -126,13 +172,11 @@ private:
     int64_t front_ms_ = -1, shown_ms_ = -1, last_frame_ms_ = -1;
     bool have_ = false;
 
-    int atlas_buf_ = 0, atlas_quad_ = 0;
-    int block_buf_[2] = {0, 0}, block_quad_ = 0;
-    int block_bank_ = 0;
+    int atlas_quad_ = 0, block_quad_ = 0;
     /* parked_: a failed exact write left the atlas unlike any frame; the
      * target holds its flushes until the next whole write. first_: the
-     * scene's first write is still to go. */
-    bool blocks_shown_ = false, buffer_stale_ = false, opaque_ = false, parked_ = false, first_ = false;
+     * scene's first write is still to go. source_: drawn by the composite. */
+    bool buffer_stale_ = false, parked_ = false, first_ = false, source_ = false;
     std::vector<uint8_t> block_src_, packed_;
     int64_t refine_due_ms_ = -1;
     Staged staged_;

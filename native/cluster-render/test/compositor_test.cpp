@@ -610,12 +610,13 @@ static void held_videos_together()
     Rig r;   /* no limit: nothing lines the frame clocks up */
     std::string err;
     VideoParams vp;
+    /* The second at an odd x: each draws itself, with buffers of its own. */
     const uint32_t v1 = r.comp->add_video(1, r.panel, params(Klass::Content, R(0, 0, W, H)), vp, r.now, &err);
     VideoLayer *l1 = static_cast<VideoLayer *>(r.comp->layer(1, v1));
     l1->offer(frame(1).data(), r.now);
     r.step(1);
     r.run(10, 1);
-    const uint32_t v2 = r.comp->add_video(2, r.panel, params(Klass::Content, R(800, 240, W, H)), vp, r.now, &err);
+    const uint32_t v2 = r.comp->add_video(2, r.panel, params(Klass::Content, R(801, 240, W, H)), vp, r.now, &err);
     VideoLayer *l2 = static_cast<VideoLayer *>(r.comp->layer(2, v2));
     l2->offer(frame(2).data(), r.now);
     r.run(100, 1);
@@ -630,7 +631,7 @@ static void held_videos_together()
     const uint64_t f0 = g->flushes;
     r.run(100, 1);
     ok("two held videos with frame clocks apart rewrite together and the target flushes again",
-       g->flushes > f0 && g->visible().size() == 2);
+       g->flushes > f0 && g->visible().size() == 2 && !r.comp->composite(r.panel));
 }
 
 static void refusals_lower_the_cap()
@@ -821,7 +822,7 @@ static void limits()
 {
     CompositorLimits lim;
     lim.per_client = 2;
-    lim.videos = 1;
+    lim.client_videos = 1;
     Rig r(0, lim);
     std::string err;
     VideoParams vp;

@@ -9,7 +9,7 @@
 #
 #   make test                 every host test: the kit, slot arbitration, the
 #                             RAMSES console reader, the upload governor, the
-#                             stack, layers and compositor
+#                             stack, layers, compositor and video composites
 #                             on a fake renderer, the service over its socket
 #                             with the C++ client, and the Node client
 #   make test-kit             the kit's tests alone (for producers that link it)
@@ -52,7 +52,7 @@ T = $(BUILD)/target
 H = $(BUILD)/host
 
 KIT_SRC  = kit/dirty_tiles.cpp kit/yuv_atlas.cpp kit/block_pack.cpp
-CORE_SRC = src/slots.cpp src/guard.cpp src/governor.cpp src/stack.cpp src/layer.cpp src/video_layer.cpp src/mesh_layer.cpp \
+CORE_SRC = src/slots.cpp src/guard.cpp src/governor.cpp src/stack.cpp src/layer.cpp src/video_layer.cpp src/video_composite.cpp src/mesh_layer.cpp \
            src/asset.cpp src/compositor.cpp \
            src/server.cpp src/service.cpp src/dcsm2_port.cpp src/dcsm27_port.cpp src/ramses_console.cpp \
            client/protocol.cpp src/log.cpp
@@ -66,7 +66,8 @@ CLIENT_SRC = client/client.cpp client/protocol.cpp
 	test-ramses test-ramses27 clean
 
 KIT_TESTS = $(H)/map_upload_test $(H)/yuv_atlas_test $(H)/frame_clock_test $(H)/block_pack_test
-CPP_TESTS = $(H)/log_test $(H)/slots_test $(H)/governor_test $(H)/compositor_test $(H)/service_test \
+CPP_TESTS = $(H)/log_test $(H)/slots_test $(H)/governor_test $(H)/compositor_test $(H)/video_composite_test \
+	$(H)/service_test \
 	$(H)/dcsm2_port_test $(H)/ramses_console_test $(H)/dcsm27_port_test $(H)/generation_test $(H)/holds_test \
 	$(H)/guard_test $(H)/head_unit_test $(H)/refused_test
 
@@ -83,6 +84,7 @@ test-cpp: $(CPP_TESTS)
 	$(H)/ramses_console_test
 	$(H)/governor_test
 	$(H)/compositor_test
+	$(H)/video_composite_test
 	$(H)/dcsm2_port_test
 	$(H)/dcsm27_port_test
 	$(H)/generation_test
@@ -148,6 +150,9 @@ $(H)/governor_test: $(O)/test/governor_test.o $(O)/src/governor.o $(O)/src/log.o
 	$(CXX) $(CXXFLAGS) -o $@ $^ -lpthread
 
 $(H)/compositor_test: $(O)/test/compositor_test.o $(CORE_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ -lpthread
+
+$(H)/video_composite_test: $(O)/test/video_composite_test.o $(CORE_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ -lpthread
 
 $(H)/dcsm2_port_test: $(O)/test/dcsm2_port_test.o $(O)/src/dcsm2_port.o $(O)/src/slots.o $(O)/src/guard.o $(O)/src/governor.o \

@@ -452,8 +452,11 @@ bool Server::apply(Layer *l, const cr::Json &j, std::string *err)
         }
         if (!mesh_params(j, &mp, err))
             return false;
-        m->mesh = mp;
     }
+    if (!comp_->check(l, p, err))
+        return false;
+    if (m)
+        m->mesh = mp;
     l->params = p;
     comp_->changed(l);
     return true;
@@ -1023,6 +1026,11 @@ std::string Server::status_text(int64_t now_ms) const
                       st.reason.empty() ? "" : (" " + st.reason).c_str(), rendering.empty() ? "" : "; ",
                       rendering.c_str());
         s += line;
+        if (const CompositeVideo *cv = comp_->composite((int)t)) {
+            std::snprintf(line, sizeof line, "  videos composed into one %ux%u at %d,%d: ", cv->video().w,
+                          cv->video().h, cv->x(), cv->y());
+            s += line + cv->stats() + "\n";
+        }
     }
     s += slots_->guard_text();
     s += slots_->renderer_text(now_ms);
