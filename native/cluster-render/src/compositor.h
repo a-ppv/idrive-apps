@@ -55,13 +55,15 @@
  * Videos: each video layer keeps buffers on the display (video_layer.h),
  * whose memory nobody has measured, so the display holds at most
  * CompositorLimits::videos of them, however many video layers the clients
- * have. A video alone on its target draws itself, exactly as it would with
- * no other video anywhere. Two or more videos on one target drawn
- * unturned, at their frame's size and at even x and y are drawn through
- * the target's composite (video_composite.h): one video layer composed on
- * the CPU, one set of buffers, one video in the byte budget and the dirty-
- * tile planner. A video turned, scaled or at an odd x or y keeps buffers of
- * its own. A video joining or leaving a composite, and a composite made
+ * have. While the display can hold every video's buffers, each video draws
+ * itself, exactly as with no composites at all. Past that, the videos on
+ * one target drawn unturned, at their frame's size and at even x and y are
+ * drawn through the target's composite (video_composite.h): one video
+ * layer composed on the CPU, one set of buffers, one video in the byte
+ * budget and the dirty-tile planner; the targets whose composite saves the
+ * most buffers compose, as few as it takes. A video turned, scaled or at an
+ * odd x or y keeps buffers of its own. A video joining or leaving a
+ * composite, and a composite made
  * again (its sources' rectangles together moved), start their scene objects
  * again: their first frame goes whole. Old objects go before new ones are
  * made, so the display never holds more video buffers than the limit. */
@@ -249,15 +251,25 @@ private:
 
     uint32_t admit(uint64_t owner, int target, int64_t pixel_bytes, std::string *err);
     std::vector<VideoSpec> video_specs() const;
-    VideoPlan plan_videos(int ti, const std::vector<VideoSpec> &specs) const;
+    /* The target's videos composed: its plan when it composes (none for
+     * fewer than two composable videos). */
+    VideoPlan compose_plan(int ti, const std::vector<VideoSpec> &specs) const;
+    /* Every target's plan: every video separate while the display holds
+     * them all (CompositorLimits::videos); past it, the targets whose
+     * composite saves the most buffers compose, as few as it takes. *err:
+     * why they do not fit even so; empty when they do. */
+    std::vector<VideoPlan> plan_videos(const std::vector<VideoSpec> &specs, std::string *err) const;
     /* Whether the videos fit the display's video buffers; *bytes: their
      * composites' pixel bytes. Compiles the composite's effects when one is
      * needed. */
     bool videos_fit(const std::vector<VideoSpec> &specs, uint64_t *bytes, std::string *err);
     bool view_effects(std::string *err);
-    /* Brings the target's videos to its plan: which draw themselves and
-     * which its composite draws. */
-    void reconcile(int ti);
+    /* Brings every target's videos to its plan: which draw themselves and
+     * which its composite draws; what goes, on every target, before what
+     * is made. */
+    void reconcile();
+    void reconcile_drop(int ti, const VideoPlan &pl);
+    void reconcile_make(int ti, const VideoPlan &pl);
     void attach_composite(Target &t);
     /* The layer is drawn in its target's scene: attached, or composited by
      * an attached composite. */

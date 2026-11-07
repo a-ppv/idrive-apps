@@ -54,18 +54,21 @@ all clients together 32 (past either: `too many assets`).
 Video layers: all clients together have at most 8 (past it: `too many
 video layers`), each within the service's 16 MB of pixel memory (past it:
 `the service's pixel memory is full`). The display holds the buffers of at
-most 2 videos. The videos on one target drawn unturned (`rotate` 0, `sx`
-and `sy` 1), at their frame's size (`w` x `h` = `vw` x `vh`) and at even
-`x` and `y` share one: the service composes them into one video on the
-head unit. A video alone on its target, or turned, scaled or at an odd `x`
-or `y`, takes one of its own. A `layer` or a `set` that would need a third
-is refused with `too many video buffers on the display`, and one that
-would have a target's shared videos span more than 1920x720 with `the
+most 2 videos. While that holds every video, each video has buffers of its
+own. Past it, the videos on one target drawn unturned (`rotate` 0, `sx` and
+`sy` 1), at their frame's size (`w` x `h` = `vw` x `vh`) and at even `x`
+and `y` share one: the service composes them into one video on the head
+unit, on as few targets as it takes. A turned, scaled or odd-placed video
+always takes one of its own. A `layer` or a `set` that would need a third
+is refused with `too many video buffers on the display`, and one whose
+target's videos would have to share across more than 1920x720 with `the
 target's videos together span more than 1920x720`. Videos that share keep
 their place in the stack, rect and opacity; where translucent videos
 overlap, they show as drawn on their own unless another layer is between
-them in the stack. A target's videos starting or stopping sharing, or the
-rectangle they cover together changing, rewrite its video whole.
+them in the stack. They are written as one video: while any of them moves
+faster than the upload budget covers, all of them go as packed 4x4 blocks.
+A target's videos starting or stopping sharing, or the rectangle they cover
+together changing, rewrite its video whole.
 
 Layer fields (all optional):
 

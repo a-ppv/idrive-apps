@@ -504,11 +504,12 @@ Beside the layers:
   change, before the layers, within the budget. A layer sampling one is
   drawn only while its buffer holds it whole.
 - **Several videos** (`src/video_composite.h`): the display holds the
-  buffers of at most two videos, its memory unmeasured. A video alone on
-  its target draws itself as above. Two or more on one target, unturned,
-  at their frame's size and at even x and y, are composed on the head
-  unit's CPU into one video layer: one set of buffers, one video in the
-  budget and the dirty-tile planner. Only the 64x64 tiles a video changed
+  buffers of at most two videos, its memory unmeasured. While it holds
+  them all, each video draws itself as above. Past that, the videos on a
+  target, unturned, at their frame's size and at even x and y, are composed
+  on the head unit's CPU into one video layer, on as few targets as it
+  takes: one set of buffers, one video in the budget and the dirty-tile
+  planner (so while one of them moves past the budget, all go packed). Only the 64x64 tiles a video changed
   are composed again, copied where the top video is opaque or alone and
   blended (SSE2) only where translucent videos overlap; each video is drawn
   by its own quads over its rect, sampling its part, at its place in the
@@ -917,12 +918,15 @@ The host tests:
   target staging nothing, and a released target's warm scene; the limits
   (64 layers a client, 96 in all) and 96 small layers changing every tick
   past the 5500 KB/s ceiling, written within it, each an even share;
-- `video_composite_test`: one video per target draws itself and drives the
-  renderer call for call and byte for byte as recorded from the build
-  before composites (`test/video_trace.h`); the blend and cells, SSE2 and
+- `video_composite_test`: one video, and two on one target or on two,
+  draw themselves and drive the renderer call for call and byte for byte
+  as recorded from the build before composites (`test/video_trace.h`); a
+  third composing on as few targets as it takes, and separating again; the
+  blend and cells, SSE2 and
   scalar equal, against a float reference; an opaque video drawn through
   the composite exactly as alone (the shaders' CPU twins); two, three and
-  four videos on one target with order, opacity, overlap and none; only
+  four videos on one target (two on a one-buffer display) with order,
+  opacity, overlap and none; only
   changed tiles composed and written; hiding, showing, moving, fading; the
   limits and refusals (client videos, display buffers, memory, span, a
   `set`); the last other video leaving and the remaining one drawing itself

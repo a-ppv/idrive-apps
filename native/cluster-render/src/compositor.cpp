@@ -245,7 +245,7 @@ uint32_t Compositor::add_video(uint64_t owner, int target, const LayerParams &lp
     e.owner = owner;
     e.pixel_bytes = bytes;
     now_ms_ = std::max(now_ms_, now_ms);
-    reconcile(target);
+    reconcile();
     return id;
 }
 
@@ -506,7 +506,7 @@ void Compositor::changed(Layer *l)
     if (t.graph)
         t.dirty = true;
     if (std::string(l->kind()) == "video")
-        reconcile(l->target());
+        reconcile();
 }
 
 void Compositor::remove(uint64_t owner, uint32_t id)
@@ -525,7 +525,7 @@ void Compositor::remove(uint64_t owner, uint32_t id)
     drop_effects(it->second);
     layers_.erase(it);
     if (video)
-        reconcile(ti);
+        reconcile();
 }
 
 void Compositor::remove_owner(uint64_t owner)
@@ -1028,7 +1028,7 @@ uint32_t up(uint32_t v, uint32_t m) { return (v + m - 1) / m * m; }
 
 }  // namespace
 
-Compositor::VideoPlan Compositor::plan_videos(int ti, const std::vector<VideoSpec> &specs) const
+Compositor::VideoPlan Compositor::compose_plan(int ti, const std::vector<VideoSpec> &specs) const
 {
     VideoPlan pl;
     std::vector<const VideoSpec *> group;
@@ -1095,25 +1095,59 @@ Compositor::VideoPlan Compositor::plan_videos(int ti, const std::vector<VideoSpe
     return pl;
 }
 
+std::vector<Compositor::VideoPlan> Compositor::plan_videos(const std::vector<VideoSpec> &specs,
+                                                            std::string *err) const
+{
+    /* Every video separate while the display holds them all. */
+    std::vector<VideoPlan> plans(targets_.size());
+    uint32_t buffers = 0;
+    for (const VideoSpec &s : specs) {
+        plans[s.target].buffers++;
+        buffers++;
+    }
+    err->clear();
+    if (buffers <= limits_.videos)
+        return plans;
+    /* Past it, the targets whose composite saves the most buffers compose,
+     * as few as it takes. */
+    std::vector<VideoPlan> composed(targets_.size());
+    std::vector<std::pair<uint32_t, int>> saves;
+    const char *span = nullptr;
+    for (size_t ti = 0; ti < targets_.size(); ti++) {
+        composed[ti] = compose_plan((int)ti, specs);
+        if (composed[ti].composited.size() < 2)
+            continue;
+        if (composed[ti].error)
+            span = composed[ti].error;
+        else
+            saves.push_back(std::make_pair(plans[ti].buffers - composed[ti].buffers, (int)ti));
+    }
+    std::stable_sort(saves.begin(), saves.end(),
+                     [](const std::pair<uint32_t, int> &a, const std::pair<uint32_t, int> &b) { return a.first > b.first; });
+    for (const auto &sv : saves) {
+        if (buffers <= limits_.videos)
+            break;
+        buffers -= sv.first;
+        plans[sv.second] = composed[sv.second];
+    }
+    if (buffers > limits_.videos)
+        *err = span ? span
+                    : "too many video buffers on the display (at most " + std::to_string(limits_.videos) +
+                          "): a target's videos share one past it, but a video turned, scaled or at an odd x or y "
+                          "needs its own";
+    return plans;
+}
+
 bool Compositor::videos_fit(const std::vector<VideoSpec> &specs, uint64_t *bytes, std::string *err)
 {
-    uint32_t buffers = 0;
+    const std::vector<VideoPlan> plans = plan_videos(specs, err);
+    if (!err->empty())
+        return false;
     bool composite = false;
     *bytes = 0;
-    for (size_t ti = 0; ti < targets_.size(); ti++) {
-        const VideoPlan pl = plan_videos((int)ti, specs);
-        if (pl.error) {
-            *err = pl.error;
-            return false;
-        }
-        buffers += pl.buffers;
+    for (const VideoPlan &pl : plans) {
         *bytes += pl.bytes;
         composite = composite || !pl.composited.empty();
-    }
-    if (buffers > limits_.videos) {
-        *err = "too many video buffers on the display (at most " + std::to_string(limits_.videos) +
-               "): a target's videos share one, but a video turned, scaled or at an odd x or y needs its own";
-        return false;
     }
     return !composite || view_effects(err);
 }
@@ -1159,13 +1193,26 @@ void Compositor::attach_composite(Target &t)
     t.dirty = true;
 }
 
-void Compositor::reconcile(int ti)
+void Compositor::reconcile()
+{
+    std::string err;
+    const std::vector<VideoPlan> plans = plan_videos(video_specs(), &err);
+    /* What goes, on every target first: so the display never holds more
+     * video buffers than the plans allow. */
+    for (size_t ti = 0; ti < targets_.size(); ti++)
+        reconcile_drop((int)ti, plans[ti]);
+    for (size_t ti = 0; ti < targets_.size(); ti++)
+        reconcile_make((int)ti, plans[ti]);
+}
+
+static bool planned(const std::vector<uint32_t> &composited, uint32_t id)
+{
+    return std::find(composited.begin(), composited.end(), id) != composited.end();
+}
+
+void Compositor::reconcile_drop(int ti, const VideoPlan &pl)
 {
     Target &t = targets_[ti];
-    const VideoPlan pl = plan_videos(ti, video_specs());
-    auto planned = [&](uint32_t id) {
-        return std::find(pl.composited.begin(), pl.composited.end(), id) != pl.composited.end();
-    };
     CompositeVideo *c = t.composite.get();
     const VideoParams *cv = c ? &c->video() : nullptr;
     const bool keep = c && !pl.composited.empty() && c->x() == pl.x && c->y() == pl.y && c->clip().w == pl.clip.w &&
@@ -1173,8 +1220,6 @@ void Compositor::reconcile(int ti)
                       cv->dirty_threshold == pl.vp.dirty_threshold &&
                       cv->dirty_settle_ms == pl.vp.dirty_settle_ms && cv->pan_blocks == pl.vp.pan_blocks &&
                       cv->stall_ms == pl.vp.stall_ms;
-    /* What goes, first: so the display never holds more video buffers
-     * than the plans allow. */
     if (c && !keep) {
         if (c->attached()) {
             c->detach(true);
@@ -1193,7 +1238,7 @@ void Compositor::reconcile(int ti)
         if (e.layer->target() != ti || std::string(e.layer->kind()) != "video")
             continue;
         VideoLayer *v = static_cast<VideoLayer *>(e.layer.get());
-        if (planned(kv.first)) {
+        if (planned(pl.composited, kv.first)) {
             if (!v->source()) {
                 if (v->attached()) {
                     v->detach(true);
@@ -1209,10 +1254,15 @@ void Compositor::reconcile(int ti)
             t.dirty = true;
         }
     }
+}
+
+void Compositor::reconcile_make(int ti, const VideoPlan &pl)
+{
+    Target &t = targets_[ti];
     /* Videos drawing themselves. */
     for (auto &kv : layers_) {
         Entry &e = kv.second;
-        if (e.layer->target() != ti || std::string(e.layer->kind()) != "video" || planned(kv.first))
+        if (e.layer->target() != ti || std::string(e.layer->kind()) != "video" || planned(pl.composited, kv.first))
             continue;
         VideoLayer *v = static_cast<VideoLayer *>(e.layer.get());
         if (v->source())
@@ -1222,6 +1272,7 @@ void Compositor::reconcile(int ti)
     }
     if (pl.composited.empty())
         return;
+    CompositeVideo *c = t.composite.get();
     if (!c) {
         std::string err;
         if (!view_effects(&err))

@@ -2,16 +2,20 @@
  * Copyright (C) 2026 Robert Nisipeanu */
 /* Host test for several videos on one target (video_composite.h,
  * compositor.h) on the fake renderer:
- * - one video on its target draws itself, with no composite, and drives the
- *   renderer exactly as before the composite existed: every call, every
- *   pixel and every flush of a 20 s run match the trace recorded from that
- *   build (video_trace.h);
+ * - while the display holds every video's buffers (one video, or two on
+ *   one target or on two), each video draws itself, with no composite, and
+ *   drives the renderer exactly as the build before composites: every call,
+ *   every pixel and every flush of a 20 s run match the trace recorded from
+ *   that build (video_trace.h);
+ * - a third video composes, as few targets as it takes, and with one gone
+ *   the videos are separate again;
  * - the blend and the cell composition: SSE2 and scalar equal, copies where
  *   the top source is opaque or alone, the coverage blend where translucent
  *   sources overlap, cells nothing covers left alone;
  * - an opaque source drawn through the composite's quads shows exactly what
  *   it shows drawing itself (the shaders' CPU twins);
- * - two and three videos on one target: one composite, the stack's order,
+ * - two (on a one-buffer display) to four videos on one target: one
+ *   composite, the stack's order,
  *   opacity, overlap and none; the canvas against a float reference;
  * - only the tiles a source changed are composed and written;
  * - a source hidden, shown, moved, faded; the scene taken down and back;
@@ -175,6 +179,15 @@ struct Rig {
     }
 };
 
+/* The display holding one video's buffers: two videos on a target
+ * compose, for the tests of composing itself. */
+static CompositorLimits one_buffer()
+{
+    CompositorLimits l;
+    l.videos = 1;
+    return l;
+}
+
 static Rect R(int x, int y, uint32_t w, uint32_t h)
 {
     Rect r;
@@ -251,6 +264,11 @@ static const uint64_t kMainTrace[2][6] = {
     {0xe0b20733c2a49aeeull, 1208, 31669248, 227, 5, 0},
     {0x772813a8daa32b9aull, 1315, 33012736, 256, 5, 8},
 };
+/* Two videos (video_trace.h two_video_trace), recorded the same way. */
+static const uint64_t kMainTwoTrace[2][6] = {
+    {0x5c8593e5bcc02a9eull, 3087, 40754688, 379, 4, 30},
+    {0x8f0173ab738d414dull, 3146, 40896000, 507, 5, 0},
+};
 
 static void single_video()
 {
@@ -265,6 +283,18 @@ static void single_video()
         ok(name, t.hash == kMainTrace[which][0] && t.calls == kMainTrace[which][1] &&
                      t.write_bytes == kMainTrace[which][2] && t.flushes == kMainTrace[which][3] &&
                      t.failed_flushes == kMainTrace[which][4] && t.failed_writes == kMainTrace[which][5]);
+    }
+    for (int which = 0; which < 2; which++) {
+        const Trace t = two_video_trace(which);
+        char name[200];
+        std::snprintf(name, sizeof name,
+                      "two videos (a map and a camera %s): each draws itself, every renderer call, pixel and flush "
+                      "as before composites (%llu calls, %llu KB, %llu flushes)",
+                      which ? "on the panel" : "over it on the map", (unsigned long long)t.calls,
+                      (unsigned long long)(t.write_bytes / 1024), (unsigned long long)t.flushes);
+        ok(name, t.hash == kMainTwoTrace[which][0] && t.calls == kMainTwoTrace[which][1] &&
+                     t.write_bytes == kMainTwoTrace[which][2] && t.flushes == kMainTwoTrace[which][3] &&
+                     t.failed_flushes == kMainTwoTrace[which][4] && t.failed_writes == kMainTwoTrace[which][5]);
     }
     Rig r(5500 * 1024);
     std::string err;
@@ -456,11 +486,14 @@ static void two_videos()
     VideoLayer *c = r.video(2, r.map, R(704, 192, 320, 240), 320, 240, &err, 1.0f, 1);
     ok("a second video on the map is taken", c != nullptr);
     c->offer(cam.data(), r.now);
+    /* A third video, on the panel: three buffers would be one too many. */
+    VideoLayer *p = r.video(3, r.panel, R(0, 0, 320, 240), 320, 240, &err);
+    p->offer(cam.data(), r.now);
     r.run(50);
     const CompositeVideo *cv = r.comp->composite(r.map);
-    ok("two videos on the map: one composite of both, each a source", cv && cv->sources() == 2 && m->source() &&
-                                                                           c->source() && cv->video().w == W &&
-                                                                           cv->video().h == H);
+    ok("with a third video on the panel: the map's two in one composite, each a source, the panel's alone",
+       cv && cv->sources() == 2 && m->source() && c->source() && cv->video().w == W && cv->video().h == H &&
+           !r.comp->composite(r.panel) && !p->source());
     ok("the display holds one atlas and two packed buffers, as for one video",
        buffers(g, TexFormat::R8) == 1 && buffers(g, TexFormat::RGBA8) == 2);
     const std::vector<const FakeQuad *> q = atlas_quads(g);
@@ -590,7 +623,7 @@ static void three_videos()
 
 static void dirty_tiles()
 {
-    Rig r(0);
+    Rig r(0, one_buffer());
     std::string err;
     std::vector<uint8_t> map = frame(W, H, 1), cam = frame(320, 256, 5);
     VideoParams exact;
@@ -675,20 +708,33 @@ static void leaving()
     r.show("map");
     r.run(100);
     VideoLayer *c = r.video(2, r.map, R(64, 64, 320, 240), 320, 240, &err, 1.0f, 1);
+    VideoLayer *d = r.video(3, r.map, R(640, 64, 320, 240), 320, 240, &err, 1.0f, 2);
     c->offer(cam.data(), r.now);
+    d->offer(cam.data(), r.now);
     r.run(100);
-    ok("with a camera: composited", r.comp->composite(r.map) != nullptr);
-    const std::vector<uint8_t> map2 = frame(W, H, 2);
+    ok("with two cameras: composited", r.comp->composite(r.map) != nullptr);
+    const std::vector<uint8_t> map2 = frame(W, H, 2), cam2 = frame(320, 240, 6);
     m->offer(map2.data(), r.now);
+    c->offer(cam2.data(), r.now);
     r.run(10);
-    r.comp->remove_owner(2);
+    r.comp->remove_owner(3);
     r.run(100);
     FakeGraph *g = r.g("map");
-    const std::vector<const FakeQuad *> q = atlas_quads(g);
-    ok("the camera's client gone: no composite, the map draws itself again, its newest frame whole",
-       !r.comp->composite(r.map) && !m->source() && buffers(g, TexFormat::R8) == 1 &&
-           buffers(g, TexFormat::RGBA8) == 2 && q.size() == 1 && !q[0]->uniforms.count("u_view") &&
-           atlas_of(g)->px == rounded(map2));
+    std::vector<const FakeQuad *> q = atlas_quads(g);
+    const FakeBuffer *cb = nullptr;
+    for (const auto &kv : g->shown.buffers)
+        if (kv.second.f == TexFormat::R8 && kv.second.w == 320)
+            cb = &kv.second;
+    ok("one camera gone: two videos, separate again, each its own buffers and its newest frame whole",
+       !r.comp->composite(r.map) && !m->source() && !c->source() && buffers(g, TexFormat::R8) == 2 &&
+           buffers(g, TexFormat::RGBA8) == 4 && q.size() == 2 && !q[0]->uniforms.count("u_view") &&
+           !q[1]->uniforms.count("u_view") && cb && cb->px == rounded(cam2));
+    r.comp->remove_owner(2);
+    r.run(100);
+    q = atlas_quads(g);
+    ok("the other gone: the map alone, its newest frame",
+       !r.comp->composite(r.map) && buffers(g, TexFormat::R8) == 1 && buffers(g, TexFormat::RGBA8) == 2 &&
+           q.size() == 1 && atlas_of(g)->px == rounded(map2));
     /* And it goes on exactly as a single video: a changed tile alone. */
     std::vector<uint8_t> map3 = map2;
     for (uint32_t y = 0; y < 64; y++)
@@ -698,6 +744,50 @@ static void leaving()
     m->offer(map3.data(), r.now);
     r.run(100);
     ok("and writes only what changes, as before", g->flushed_bytes - b0 == 64 * 64);
+}
+
+/* Composing only past the display's two video buffers. */
+static void cap_rule()
+{
+    Rig r(5500 * 1024);
+    std::string err;
+    const std::vector<uint8_t> map = frame(W, H, 1), cam = frame(320, 240, 5);
+    VideoLayer *m = r.video(1, r.map, R(0, 0, W, H), W, H, &err);
+    VideoLayer *c = r.video(2, r.map, R(704, 64, 320, 240), 320, 240, &err, 1.0f, 1);
+    m->offer(map.data(), r.now);
+    c->offer(cam.data(), r.now);
+    r.show("map");
+    r.run(100);
+    FakeGraph *g = r.g("map");
+    ok("two videos on the map: separate, two atlases, each drawing itself",
+       !r.comp->composite(r.map) && !m->source() && !c->source() && buffers(g, TexFormat::R8) == 2 &&
+           atlas_quads(g).size() == 2);
+    VideoLayer *d = r.video(3, r.map, R(64, 64, 320, 240), 320, 240, &err, 1.0f, 2);
+    d->offer(cam.data(), r.now);
+    r.run(100);
+    ok("a third: the three composed, one atlas", r.comp->composite(r.map) &&
+                                                     r.comp->composite(r.map)->sources() == 3 &&
+                                                     buffers(g, TexFormat::R8) == 1 && atlas_quads(g).size() == 3);
+    r.comp->remove_owner(3);
+    r.run(100);
+    ok("the third gone: separate again", !r.comp->composite(r.map) && buffers(g, TexFormat::R8) == 2);
+    /* Two on the map and two on the panel: both compose. */
+    VideoLayer *p1 = r.video(4, r.panel, R(0, 0, 320, 240), 320, 240, &err);
+    ok("a third on the panel: the map's two compose, the panel's draws itself",
+       p1 && r.comp->composite(r.map) && !r.comp->composite(r.panel) && !p1->source());
+    VideoLayer *p2 = r.video(5, r.panel, R(320, 0, 320, 240), 320, 240, &err);
+    ok("a fourth, on the panel: both targets compose", p2 && r.comp->composite(r.map) && r.comp->composite(r.panel));
+    r.comp->remove_owner(5);
+    VideoLayer *m3 = r.video(6, r.map, R(64, 64, 320, 240), 320, 240, &err);
+    ok("three on the map and one on the panel: the map alone composes",
+       m3 && r.comp->composite(r.map) && r.comp->composite(r.map)->sources() == 3 && !r.comp->composite(r.panel));
+    r.comp->remove_owner(4);
+    r.comp->remove_owner(6);
+    r.comp->remove_owner(2);
+    VideoLayer *h = r.video(7, r.hud, R(0, 0, 320, 240), 320, 240, &err);
+    VideoLayer *p = r.video(8, r.panel, R(0, 0, 320, 240), 320, 240, &err);
+    ok("a video on each of three targets: the third refused, nothing composes",
+       !r.comp->composite(r.map) && h && !p && err.find("too many video buffers on the display") == 0);
 }
 
 static void limits()
@@ -758,13 +848,14 @@ static void limits()
     {
         Rig r(0);
         std::string err;
-        VideoLayer *a = r.video(1, r.wide, R(0, 0, 1088, 480), 1088, 480, &err);
-        VideoLayer *b = r.video(2, r.wide, R(1100, 400, 1088, 480), 1088, 480, &err);
-        ok("videos on a target together wider than 1920: refused",
-           a && !b && err == "the target's videos together span more than 1920x720");
+        VideoLayer *m = r.video(1, r.map, R(0, 0, 320, 240), 320, 240, &err);
+        VideoLayer *a = r.video(2, r.wide, R(0, 0, 1088, 480), 1088, 480, &err);
+        VideoLayer *b = r.video(3, r.wide, R(1100, 400, 1088, 480), 1088, 480, &err);
+        ok("a third video whose target's would have to compose wider than 1920: refused",
+           m && a && !b && err == "the target's videos together span more than 1920x720");
     }
     {
-        CompositorLimits lim;
+        CompositorLimits lim = one_buffer();
         lim.pixel_bytes = 6815744;   /* the two videos fit, with the composite they do not */
         Rig r(0, lim);
         std::string err;
@@ -885,7 +976,7 @@ static void cost()
                            "translucent overlap (a camera at 0.5 over the map, both changing everywhere)"};
     const int frames = 300;
     for (int kind = 0; kind < 3; kind++) {
-        Rig r(0);
+        Rig r(0, one_buffer());
         std::string err;
         VideoLayer *m = r.video(1, r.map, R(0, 0, W, H), W, H, &err);
         VideoLayer *c = r.video(2, r.map, R(704, 192, 320, 240), 320, 240, &err, kind == 2 ? 0.5f : 1.0f, 1);
@@ -935,6 +1026,7 @@ int main()
     three_videos();
     dirty_tiles();
     leaving();
+    cap_rule();
     limits();
     two_buffers();
     budget();

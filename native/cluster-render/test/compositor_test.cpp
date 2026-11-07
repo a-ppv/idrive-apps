@@ -610,13 +610,12 @@ static void held_videos_together()
     Rig r;   /* no limit: nothing lines the frame clocks up */
     std::string err;
     VideoParams vp;
-    /* The second at an odd x: each draws itself, with buffers of its own. */
     const uint32_t v1 = r.comp->add_video(1, r.panel, params(Klass::Content, R(0, 0, W, H)), vp, r.now, &err);
     VideoLayer *l1 = static_cast<VideoLayer *>(r.comp->layer(1, v1));
     l1->offer(frame(1).data(), r.now);
     r.step(1);
     r.run(10, 1);
-    const uint32_t v2 = r.comp->add_video(2, r.panel, params(Klass::Content, R(801, 240, W, H)), vp, r.now, &err);
+    const uint32_t v2 = r.comp->add_video(2, r.panel, params(Klass::Content, R(800, 240, W, H)), vp, r.now, &err);
     VideoLayer *l2 = static_cast<VideoLayer *>(r.comp->layer(2, v2));
     l2->offer(frame(2).data(), r.now);
     r.run(100, 1);

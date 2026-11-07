@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2026 Robert Nisipeanu */
-/* Everything the compositor sends a renderer for one video, as a trace:
+/* Everything the compositor sends a renderer for one or two videos, as a trace:
  * every Graph call with its arguments, the pixels of every write and each
  * flush's outcome, folded into one hash, with the calls, write bytes and
  * flushes counted. Two builds whose traces match drive the display the same
@@ -352,6 +352,77 @@ inline Trace single_video_trace(int which)
     }
     r.comp->remove_owner(1);
     r.comp->remove_owner(2);
+    r.step(11);
+    return r.gpu.trace;
+}
+
+/* Two videos, as on the display's two video buffers: a map as above on
+ * the map at 0,0 and a 320x240 camera moving every frame, on the map over
+ * it at 704,64 (which 0) or on the panel at 96,96 (which 1). 30 fps for 20
+ * s with the map's still, noisy, repeated, patched and panning stretches,
+ * a refused write and a refused flush on the map, and the map's scene taken
+ * down and published again. */
+inline Trace two_video_trace(int which)
+{
+    TraceRig r;
+    std::string err;
+    LayerParams lp;
+    lp.contend = true;
+    lp.rect.w = 1088;
+    lp.rect.h = 480;
+    VideoParams vp;
+    VideoLayer *v = static_cast<VideoLayer *>(r.comp->layer(1, r.comp->add_video(1, 0, lp, vp, r.now, &err)));
+    LayerParams cp;
+    cp.contend = true;
+    cp.z = 1;
+    cp.rect.x = which ? 96 : 704;
+    cp.rect.y = which ? 96 : 64;
+    cp.rect.w = 320;
+    cp.rect.h = 240;
+    VideoParams cvp;
+    cvp.w = 320;
+    cvp.h = 240;
+    VideoLayer *c =
+        static_cast<VideoLayer *>(r.comp->layer(2, r.comp->add_video(2, which ? 1 : 0, cp, cvp, r.now, &err)));
+    std::vector<uint8_t> f, cf;
+    int pan = 0;
+    for (int k = 0; k < 600; k++) {
+        const int phase = (k / 60) % 5;
+        if (phase == 1 && k % 2)
+            v->repeat(r.now);
+        else {
+            if (phase == 3)
+                pan += 24;
+            trace_frame(f, 1088, 480, pan, phase == 2 ? k : 0, phase == 0 || phase == 4 ? k : 0);
+            v->offer(f.data(), r.now);
+        }
+        trace_frame(cf, 320, 240, k * 8, k, k % 3 ? 0 : k);
+        c->offer(cf.data(), r.now);
+        FakeGraph *g = r.gpu.graph("map");
+        if (g && k == 250)
+            g->write_budget = (long)g->written + 20000;
+        if (g && k == 262)
+            g->write_budget = -1;
+        if (g && k == 190)
+            g->fail_flush = true;
+        if (g && k == 193)
+            g->fail_flush = false;
+        if (k == 470) {
+            const TargetSpec &spec = r.slots.targets()[0];
+            r.comp->unpublish(spec);
+            r.comp->publish(spec, &err);
+        }
+        for (int t = 0; t < 33; t += 11) {
+            r.step(11);
+            if (k == 0 && t == 0) {
+                r.slots.on_shown(0x010004f0, r.now);
+                if (which)
+                    r.slots.on_shown(0x01000400, r.now);
+            }
+        }
+    }
+    r.comp->remove_owner(2);
+    r.comp->remove_owner(1);
     r.step(11);
     return r.gpu.trace;
 }
