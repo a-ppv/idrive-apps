@@ -913,13 +913,14 @@ static void cost()
                 m->offer(fm[k % 2].data(), r.now);
                 c->offer(fc[k % 2].data(), r.now);
             }
+            r.now += 34;   /* the composite's 30 fps clock due again */
             const double c0 = cpu_ms(), w0 = wall_ms();
             cv->compose(r.now);
             spent += cpu_ms() - c0;
             wall += wall_ms() - w0;
         }
         char name[260];
-        std::snprintf(name, sizeof name, "cost, %s: %.3f ms a frame (%.0f ms a second at 30 fps), %.1f tiles a frame",
+        std::snprintf(name, sizeof name, "cost, %s: %.3f ms a frame (%.1f ms a second at 30 fps), %.1f tiles a frame",
                       names[kind], wall / frames, wall / frames * 30, (double)(cv->composed_tiles() - t0) / frames);
         ok(name, spent >= 0);
     }

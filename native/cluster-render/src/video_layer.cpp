@@ -116,6 +116,11 @@ void VideoLayer::canvas_changed(int64_t now_ms)
     have_ = true;
 }
 
+bool VideoLayer::due(int64_t now_ms)
+{
+    return (clock_.due(now_ms) || parked_) && pacer_.ready(now_ms);
+}
+
 bool VideoLayer::ready(int64_t now_ms) const
 {
     return have_ && now_ms - last_frame_ms_ <= p_.stall_ms;

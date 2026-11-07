@@ -27,8 +27,11 @@
  * centres and chroma clamped inside the part, as the video shader clamps a
  * whole frame, so an opaque source draws as it would alone.
  *
- * Work per frame: a source's new frame is compared with what the composite
- * last took from it, tile by tile (the canvas's 64x64 tiles); only the
+ * Work per frame: the composite composes when it may write (its frame
+ * clock is due and the budget allows), from each source's newest frame, so
+ * a frame that would never be sent is never composed. A source's new frame
+ * is compared with what the composite last took from it, tile by tile (the
+ * canvas's 64x64 tiles); only the
  * tiles a source changed, and those a source moving, hiding, showing or
  * changing opacity or order touched, are composed again. A cell of a tile
  * covered by one source, or under an opaque top source, is copied; only
@@ -99,11 +102,13 @@ public:
     void arrange_source(uint32_t id, bool drawn, int32_t order);
     /* Whether anything the scene shows changed since the last call. */
     bool arranged();
-    /* Takes the sources' new frames and composes what they changed; before
-     * stage(). */
+    /* Takes the sources' new frames and composes what they changed, when
+     * the composite may write (due()); before stage(). Frames that come
+     * faster than it writes wait in their sources, newest only. */
     void compose(int64_t now_ms);
 
     void detach(bool drop) override;
+    int64_t wake_in_ms(int64_t now_ms) const override;
     void arrange(bool drawn, int32_t order) override;
     void place() override;
     std::string stats() const override;

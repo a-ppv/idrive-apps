@@ -130,6 +130,11 @@ protected:
      * be written as an offered frame would. */
     uint8_t *canvas();
     void canvas_changed(int64_t now_ms);
+    /* A write may go now: the frame clock is due (or a whole rewrite is) and
+     * the budget allows one. */
+    bool due(int64_t now_ms);
+    /* Milliseconds until the frame clock is due; 0 or less: it is. */
+    int64_t clock_wait_ms(int64_t now_ms) const { return clock_.ms_until_due(now_ms); }
 
     VideoParams p_;
     int atlas_effect_, block_effect_;

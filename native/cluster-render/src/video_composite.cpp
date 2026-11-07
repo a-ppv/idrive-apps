@@ -387,6 +387,8 @@ bool CompositeVideo::arranged()
 
 void CompositeVideo::compose(int64_t now_ms)
 {
+    if (!due(now_ms))
+        return;
     bool frame = false;
     for (Source &s : src_) {
         const uint8_t *f = s.layer->newest();
@@ -461,6 +463,19 @@ void CompositeVideo::compose(int64_t now_ms)
     } else if (frame) {
         repeat(now_ms);
     }
+}
+
+int64_t CompositeVideo::wake_in_ms(int64_t now_ms) const
+{
+    const int64_t w = VideoLayer::wake_in_ms(now_ms);
+    if (w > 0 || !g_ || !drawn_)
+        return w;
+    /* A source's frame waits to be composed at the frame clock. */
+    bool waits = std::find(dirty_.begin(), dirty_.end(), 1) != dirty_.end();
+    for (const Source &s : src_)
+        waits = waits || (s.drawn && (s.full || s.layer->waiting()));
+    const int64_t c = clock_wait_ms(now_ms);
+    return waits && c > 0 ? c : -1;
 }
 
 bool CompositeVideo::make_quad(Graph *g, Source &s, bool blocks, int bank)
