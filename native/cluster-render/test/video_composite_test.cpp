@@ -1134,6 +1134,29 @@ static void held_changes()
     {
         Rig r(0);
         std::string err;
+        VideoLayer *a = r.video(1, r.map, R(0, 0, 320, 240), 320, 240, &err);
+        VideoLayer *b = r.video(2, r.map, R(400, 0, 320, 240), 320, 240, &err, 1.0f, 1);
+        a->offer(cam.data(), r.now);
+        b->offer(cam.data(), r.now);
+        r.show("map");
+        r.run(100, 10);
+        VideoLayer *p = r.video(3, r.panel, R(0, 0, 320, 240), 320, 240, &err);
+        r.show("panel");
+        LayerParams out = b->params;
+        out.rect.x = 760;
+        ok("past the composite within kRemakeMs of its making: taken, its remake waits",
+           p && r.comp->composite(r.map) && r.comp->check(b, out, &err));
+        b->params = out;
+        r.comp->changed(b);
+        b->params.rotate = 90;   /* past check(): three buffers once real */
+        r.comp->changed(b);
+        r.run(1500, 10);
+        ok("a turn let in past what fits drops the waiting remake: no wake-up every millisecond",
+           r.comp->composite(r.map) && r.gpu.atlases.max <= 2 && r.comp->wake_in_ms(r.now) != 1);
+    }
+    {
+        Rig r(0);
+        std::string err;
         VideoLayer *a = r.video(1, r.wide, R(0, 0, W, H), W, H, &err);
         VideoLayer *d = r.video(2, r.wide, R(64, 64, 320, 240), 320, 240, &err, 1.0f, 1);
         r.run(100, 10);

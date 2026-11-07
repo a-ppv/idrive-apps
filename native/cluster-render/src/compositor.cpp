@@ -1264,7 +1264,7 @@ void Compositor::reconcile()
             log_error("videos: %s; the display's videos stay as they are", err.c_str());
         plan_error_ = err;
         for (Target &t : targets_)
-            t.hold_ms = -1;
+            t.hold_ms = t.remake_ms = -1;
         return;
     }
     plan_error_.clear();
