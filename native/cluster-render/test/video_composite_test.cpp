@@ -18,6 +18,9 @@
  *   composited at most once a second, a bounded number of buffers made;
  * - a video arriving while a composite waits to shrink is priced against
  *   the composite held;
+ * - a change held a while is taken only if it fits once real too, and
+ *   videos let in past what fits change no buffer; a composite made with a
+ *   held video at an odd x starts at the even x it is drawn at;
  * - a moved or shown video's quads go to its new place only in the flush
  *   whose write puts it there on the canvas, never before, refused flushes
  *   included;
@@ -1089,6 +1092,85 @@ static void shrink_memory()
     ok("once it has shrunk, taken", r.comp->composite(r.panel)->video().w == W && h);
 }
 
+/* Changes held a while (a composited video turned or put at an odd x, a
+ * direct one put where it would compose past 1920x720) are taken only when
+ * they fit once real too; and videos let in past what fits change no
+ * buffer. */
+static void held_changes()
+{
+    const std::vector<uint8_t> map = frame(W, H, 1), cam = frame(320, 240, 5);
+    {
+        Rig r(0);
+        std::string err;
+        VideoLayer *a = r.video(1, r.map, R(0, 0, W, H), W, H, &err);
+        VideoLayer *b = r.video(2, r.map, R(64, 64, 320, 240), 320, 240, &err, 1.0f, 1);
+        a->offer(map.data(), r.now);
+        b->offer(cam.data(), r.now);
+        r.show("map");
+        r.run(100, 10);
+        /* A third: the map's two composed now, the hold window open. */
+        VideoLayer *p = r.video(3, r.panel, R(0, 0, 320, 240), 320, 240, &err);
+        p->offer(cam.data(), r.now);
+        r.show("panel");
+        LayerParams turned = b->params, odd = b->params;
+        turned.rotate = 90;
+        odd.rect.x = 65;
+        ok("within the hold after composing: turning one of the map's (three buffers once real) refused",
+           r.comp->composite(r.map) && !r.comp->check(b, turned, &err) &&
+               err.find("too many video buffers on the display") == 0);
+        ok("and putting it at an odd x", !r.comp->check(b, odd, &err) &&
+                                             err.find("too many video buffers on the display") == 0);
+        /* Past check(): held now, three buffers once real. */
+        b->params = turned;
+        r.comp->changed(b);
+        r.run(1500, 10);
+        ok("a turn let in past what fits: at the hold's end no buffer changes, the video stays composited",
+           r.comp->composite(r.map) && b->source() && r.gpu.atlases.live == 2 && r.gpu.atlases.max <= 2);
+        b->params.rotate = 0;
+        r.comp->changed(b);
+        r.run(100, 10);
+        ok("turned back: fits, as before", r.comp->composite(r.map) && b->source() && r.gpu.atlases.max <= 2);
+    }
+    {
+        Rig r(0);
+        std::string err;
+        VideoLayer *a = r.video(1, r.wide, R(0, 0, W, H), W, H, &err);
+        VideoLayer *d = r.video(2, r.wide, R(64, 64, 320, 240), 320, 240, &err, 1.0f, 1);
+        r.run(100, 10);
+        VideoLayer *b = r.video(3, r.wide, R(1101, 400, W, H), W, H, &err);   /* a and d composed now */
+        LayerParams even = b && a && d ? b->params : LayerParams();
+        even.rect.x = 1100;
+        ok("within the hold: a direct video put where it would compose past 1920x720 once real: refused",
+           a && d && b && r.comp->composite(r.wide) && !b->source() && !r.comp->check(b, even, &err) &&
+               err == "the target's videos together span more than 1920x720");
+    }
+}
+
+/* A composited video held at an odd x and leftmost when the composite is
+ * made again: the canvas starts at the even x it is drawn at. */
+static void even_origin()
+{
+    Rig r(0);
+    std::string err;
+    const std::vector<uint8_t> map = frame(W, H, 1), cam = frame(320, 240, 5);
+    VideoLayer *m = r.video(1, r.panel, R(416, 120, W, H), W, H, &err);
+    VideoLayer *a = r.video(2, r.panel, R(600, 200, 320, 240), 320, 240, &err, 1.0f, 1);
+    VideoLayer *pip = r.video(3, r.panel, R(480, 300, 320, 240), 320, 240, &err, 1.0f, 2);
+    for (VideoLayer *v : {m, a, pip})
+        v->offer(v == m ? map.data() : cam.data(), r.now);
+    r.show("panel");
+    r.run(1100, 10);
+    VideoLayer *q = r.video(4, r.panel, R(800, 300, 320, 240), 320, 240, &err, 1.0f, 3);   /* joins inside: a member change */
+    q->offer(cam.data(), r.now);
+    pip->params.rect.x = 101;
+    pip->params.rect.y = 51;
+    r.comp->changed(pip);
+    r.run(100, 10);
+    const CompositeVideo *cv = r.comp->composite(r.panel);
+    ok("a video held composited at 101,51 leftmost and topmost: the composite remade from 100,50, even",
+       cv && pip->source() && cv->x() == 100 && cv->y() == 50);
+}
+
 static void limits()
 {
     {
@@ -1326,6 +1408,8 @@ int main()
     moves_with_canvas();
     odd_steps();
     shrink_memory();
+    held_changes();
+    even_origin();
     limits();
     two_buffers();
     budget();

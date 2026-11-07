@@ -940,7 +940,10 @@ The host tests:
   faster than the budget writes, hidden, shown and with flushes refused,
   its quads never over a place that does not hold it; a video stepped 1 px
   a set for 10 s making a bounded number of buffers; a video arriving
-  while a composite waits to shrink priced against the one held; the
+  while a composite waits to shrink priced against the one held; a held
+  change refused when it would not fit once taken, and videos let in past
+  what fits changing no buffer; a composite made with a video held at an
+  odd x starting at the even x; the
   blend and cells, SSE2 and
   scalar equal, against a float reference; an opaque video drawn through
   the composite exactly as alone (the shaders' CPU twins); two, three and

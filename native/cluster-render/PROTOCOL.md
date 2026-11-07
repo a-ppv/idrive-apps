@@ -79,7 +79,8 @@ and smaller once their rectangle has stayed smaller for 3 s. A `set` that
 makes a video start or stop sharing (an odd `x`, a turn) takes effect at
 most once a second on its target; till then a sharing video is drawn
 unturned, at its frame's size and at the even `x` and `y` at or left of and
-above its own.
+above its own. Such a `set` is refused at once when the videos would not
+fit once it takes effect.
 
 Layer fields (all optional):
 

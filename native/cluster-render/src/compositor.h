@@ -71,7 +71,9 @@
  * being composited by a change of its params (an odd x, a turn) at most
  * kRemakeMs after its target's last such change; till then it keeps its
  * mode, a composited one drawn unturned at its frame's size and at even x
- * and y. Old objects go before new ones are
+ * and y. A change is taken only when the videos fit the display both while
+ * it is held and once it is real; and reconcile() never changes a buffer
+ * for videos that do not fit, whatever let them in. Old objects go before new ones are
  * made, so the display never holds more video buffers than the limit. */
 #ifndef CRS_COMPOSITOR_H
 #define CRS_COMPOSITOR_H
@@ -273,7 +275,13 @@ private:
     };
 
     uint32_t admit(uint64_t owner, int target, int64_t pixel_bytes, std::string *err);
-    std::vector<VideoSpec> video_specs() const;
+    /* real: every video's own composability, no hold (as once the holds
+     * are over). */
+    std::vector<VideoSpec> video_specs(bool real = false) const;
+    /* Whether specs fit the display's video buffers both as held and once
+     * the holds are over (real); *bytes: the larger cost. */
+    bool videos_fit_both(const std::vector<VideoSpec> &held, const std::vector<VideoSpec> &real, uint64_t *bytes,
+                         std::string *err);
     /* A placed video's composability changing with its params waits
      * kRemakeMs from its target's last membership change: the plan takes
      * the old one meanwhile (*held). */
@@ -346,6 +354,7 @@ private:
     int64_t (*clock_us_)() = nullptr;
     int atlas_fx_ = 0, block_fx_ = 0, image_fx_ = 0;
     int atlas_view_fx_ = 0, block_view_fx_ = 0;   /* the composite's, made with the first one */
+    std::string plan_error_;   /* why the last reconcile changed nothing; logged once */
     std::map<uint32_t, Entry> layers_;
     std::map<uint32_t, AssetEntry> assets_;
     std::vector<Target> targets_;

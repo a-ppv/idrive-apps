@@ -230,15 +230,16 @@ uint32_t Compositor::add_video(uint64_t owner, int target, const LayerParams &lp
         *err = "too many video layers";
         return 0;
     }
-    std::vector<VideoSpec> specs = video_specs();
+    std::vector<VideoSpec> specs = video_specs(), real = video_specs(true);
     VideoSpec mine;
     mine.target = target;
     mine.params = lp;
     mine.vp = vp;
     mine.composable = composable(lp, vp);
     specs.push_back(mine);
+    real.push_back(mine);
     uint64_t composites = 0;
-    if (!videos_fit(specs, &composites, err))
+    if (!videos_fit_both(specs, real, &composites, err))
         return 0;
     uint64_t now_composites = 0;
     for (const Target &t : targets_)
@@ -1025,7 +1026,7 @@ bool Compositor::composable_now(const Entry &e, const LayerParams &p, const Vide
     return *held ? e.composable : is;
 }
 
-std::vector<Compositor::VideoSpec> Compositor::video_specs() const
+std::vector<Compositor::VideoSpec> Compositor::video_specs(bool real) const
 {
     std::vector<VideoSpec> out;
     for (const auto &kv : layers_) {
@@ -1036,7 +1037,7 @@ std::vector<Compositor::VideoSpec> Compositor::video_specs() const
         s.target = kv.second.layer->target();
         s.params = kv.second.layer->params;
         s.vp = static_cast<const VideoLayer *>(kv.second.layer.get())->video();
-        s.composable = composable_now(kv.second, s.params, s.vp, &s.held);
+        s.composable = real ? composable(s.params, s.vp) : composable_now(kv.second, s.params, s.vp, &s.held);
         out.push_back(s);
     }
     return out;
@@ -1078,7 +1079,13 @@ Compositor::VideoPlan Compositor::compose_plan(int ti, const std::vector<VideoSp
     vp.stall_ms = 0;
     bool unclocked = false;
     for (const VideoSpec *s : group) {
-        const Rect &r = s->params.rect;
+        /* What is drawn: its frame at its size, at even x and y (a video
+         * held composited after it stopped being composable included). */
+        Rect r;
+        r.x = s->params.rect.x & ~1;
+        r.y = s->params.rect.y & ~1;
+        r.w = s->vp.w;
+        r.h = s->vp.h;
         x0 = std::min<int64_t>(x0, r.x);
         y0 = std::min<int64_t>(y0, r.y);
         x1 = std::max<int64_t>(x1, (int64_t)r.x + r.w);
@@ -1179,6 +1186,16 @@ bool Compositor::videos_fit(const std::vector<VideoSpec> &specs, uint64_t *bytes
     return !composite || view_effects(err);
 }
 
+bool Compositor::videos_fit_both(const std::vector<VideoSpec> &held, const std::vector<VideoSpec> &real,
+                                 uint64_t *bytes, std::string *err)
+{
+    uint64_t later = 0;
+    if (!videos_fit(held, bytes, err) || !videos_fit(real, &later, err))
+        return false;
+    *bytes = std::max(*bytes, later);
+    return true;
+}
+
 uint64_t Compositor::composites_cost(const std::vector<VideoPlan> &plans) const
 {
     uint64_t bytes = 0;
@@ -1200,14 +1217,19 @@ bool Compositor::check(const Layer *l, const LayerParams &p, std::string *err)
 {
     if (std::string(l->kind()) != "video")
         return true;
-    std::vector<VideoSpec> specs = video_specs();
+    std::vector<VideoSpec> specs = video_specs(), real = video_specs(true);
     for (VideoSpec &s : specs)
         if (s.id == l->id()) {
             s.params = p;
             s.composable = composable_now(layers_.at(s.id), p, s.vp, &s.held);
         }
+    for (VideoSpec &s : real)
+        if (s.id == l->id()) {
+            s.params = p;
+            s.composable = composable(p, s.vp);
+        }
     uint64_t composites = 0, now_composites = 0;
-    if (!videos_fit(specs, &composites, err))
+    if (!videos_fit_both(specs, real, &composites, err))
         return false;
     for (const Target &t : targets_)
         now_composites += t.composite_bytes;
@@ -1235,6 +1257,17 @@ void Compositor::reconcile()
     std::string err;
     const std::vector<VideoSpec> specs = video_specs();
     std::vector<VideoPlan> plans = plan_videos(specs, &err);
+    if (!err.empty()) {
+        /* Videos that do not fit (a change let in past what fits): no buffer
+         * changes, every video keeps its mode, until a change fits again. */
+        if (err != plan_error_)
+            log_error("videos: %s; the display's videos stay as they are", err.c_str());
+        plan_error_ = err;
+        for (Target &t : targets_)
+            t.hold_ms = -1;
+        return;
+    }
+    plan_error_.clear();
     /* What goes, on every target first: so the display never holds more
      * video buffers than the plans allow. */
     for (size_t ti = 0; ti < targets_.size(); ti++)
