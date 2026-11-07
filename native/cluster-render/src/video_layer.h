@@ -26,6 +26,23 @@
  * flush's outcome: what it wrote is shown, or after a refusal the next write
  * is whole. Frames come from a client (offer).
  *
+ * Hidden tiles (occlusion.h). Each tick before stage() the compositor
+ * tells the layer what the next flush shows opaquely above it (occluded();
+ * a composite's tiles are given by hide()), and so which of its atlas tiles
+ * are wholly under opaque layers. Those are not written while they
+ * stay hidden; the buffer keeps what it held there. A hidden tile that has
+ * come to differ from the frame past the threshold is held: once it is no
+ * longer hidden (the layer above moved, went, turned translucent or
+ * faded, or this one moved), it must be written before any flush shows it.
+ * The layer is then uncovering(): its next stage() plans and writes, its
+ * frame clock notwithstanding, every visible tile that differs, held ones
+ * included, and the compositor flushes the target only with that write
+ * (compositor.h). While the packed quad shows, the atlas is not drawn and
+ * nothing is uncovered; the write that brings the atlas back is planned
+ * with the tiles hidden then. A whole write (the first in a scene, or after
+ * a failed one) writes hidden tiles too. With no tile hidden the layer
+ * writes exactly as without any of this.
+ *
  * A target with several videos draws them through one composite
  * (video_composite.h): each client video is then a source, with no objects
  * in the scene; it keeps its newest frame for the composite to take, and
@@ -35,6 +52,7 @@
 #define CRS_VIDEO_LAYER_H
 
 #include "layer.h"
+#include "occlusion.h"
 
 namespace crs {
 
@@ -90,6 +108,19 @@ public:
 
     const VideoParams &video() const { return p_; }
 
+    /* The atlas tiles (row by row, planner's) the next flush shows wholly
+     * under opaque layers, given each tick before stage(); null: none. */
+    void hide(const uint8_t *tiles);
+    /* Called each tick before stage() with the coverage of the layers drawn
+     * above it (occlusion.h): hides what that covers. */
+    void occluded(const Coverage &cov) override;
+    /* Adds what it draws opaquely, as the next flush shows it. */
+    void occlude(Coverage *cov) override;
+    /* Held tiles are no longer hidden: the next flush must carry them. */
+    bool uncovering() const override;
+    /* The tiles hidden this tick; null: none. */
+    const uint8_t *hidden_mask() const { return hiding_ ? hidden_.data() : nullptr; }
+
     /* A source of its target's composite (video_composite.h): detached, its
      * newest frame in newest(). direct() makes it a layer of its own again,
      * before it is attached: its newest frame then goes whole. */
@@ -130,8 +161,8 @@ protected:
      * be written as an offered frame would. */
     uint8_t *canvas();
     void canvas_changed(int64_t now_ms);
-    /* A write may go now: the frame clock is due (or a whole rewrite is) and
-     * the budget allows one. */
+    /* A write may go now: the frame clock is due (or a whole rewrite is, or
+     * held tiles are uncovered) and the budget allows one. */
     bool due(int64_t now_ms);
     /* Milliseconds until the frame clock is due; 0 or less: it is. */
     int64_t clock_wait_ms(int64_t now_ms) const { return clock_.ms_until_due(now_ms); }
@@ -159,6 +190,8 @@ private:
     Stage stage_blocks(int64_t now_ms, bool fresh);
     void show_blocks(bool on);
     void drop_objects();
+    /* After a plan with the tiles hidden_: what the buffer will hold. */
+    void planned_hidden(bool whole);
 
     size_t atlas_bytes_;
     uint32_t atlas_h_;
@@ -183,6 +216,13 @@ private:
      * scene's first write is still to go. source_: drawn by the composite. */
     bool buffer_stale_ = false, parked_ = false, first_ = false, source_ = false;
     std::vector<uint8_t> block_src_, packed_;
+    /* hidden_: the tiles hidden this tick (hiding_: any is). held_: tiles a
+     * plan left unwritten under cover that differ from the frame past the
+     * threshold (held_n_ of them); held_plan_ the last plan's. */
+    std::vector<uint8_t> hidden_, held_, held_plan_;
+    bool hiding_ = false;
+    uint32_t held_n_ = 0;
+    uint64_t hidden_tiles_ = 0, uncovers_ = 0;
     int64_t refine_due_ms_ = -1;
     Staged staged_;
 

@@ -12,6 +12,7 @@
 #define CRS_VIDEO_TRACE_H
 
 #include <cstring>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -25,6 +26,13 @@ namespace crs {
 struct Trace {
     uint64_t hash = 1469598103934665603ull;
     uint64_t calls = 0, write_bytes = 0, flushes = 0, failed_flushes = 0, failed_writes = 0;
+    /* Not hashed: the bytes written into buffers by their width, and copies
+     * of that a scenario takes as it goes. */
+    std::map<uint32_t, uint64_t> by_width;
+    std::vector<std::map<uint32_t, uint64_t>> marks;
+    /* A scenario's first video's write statistics and status line. */
+    WriteStats video;
+    std::string video_stats;
 
     void mix(const void *p, size_t n)
     {
@@ -67,6 +75,7 @@ public:
             const size_t n = (size_t)w * h * (it->second.f == TexFormat::R8 ? 1 : 4);
             t_->mix(px, n);
             t_->write_bytes += n;
+            t_->by_width[it->second.w] += n;
         }
         t_->failed_writes += !ok;
         return okv(ok);
@@ -227,7 +236,8 @@ struct TracePort : Port {
     void refresh_slots() override {}
 };
 
-/* The map (1088x480) and the panel (1920x720), a 5500 KB/s budget. */
+/* The map (1088x480) and the panel (1920x720), and with hud the HUD (800x480,
+ * writing from the HUD's share), a 5500 KB/s budget. */
 struct TraceRig {
     TracePort port;
     TraceGpu gpu;
@@ -235,7 +245,7 @@ struct TraceRig {
     std::unique_ptr<Compositor> comp;
     int64_t now = 50000;
 
-    explicit TraceRig(uint64_t budget = 5500 * 1024)
+    explicit TraceRig(uint64_t budget = 5500 * 1024, bool hud = false)
     {
         TargetSpec m;
         m.name = "map"; m.slot = 0x100; m.scene_id = 0x010004f0; m.width = 1088; m.height = 480; m.linger_ms = 2000;
@@ -243,6 +253,12 @@ struct TraceRig {
         p.name = "panel"; p.slot = 0x203; p.scene_id = 0x01000400; p.width = 1920; p.height = 720; p.linger_ms = 2000;
         slots.add(m);
         slots.add(p);
+        if (hud) {
+            TargetSpec h;
+            h.name = "hud"; h.slot = 0x323; h.scene_id = 0x01000401; h.width = 800; h.height = 480; h.linger_ms = 3000;
+            h.share = true;
+            slots.add(h);
+        }
         GovernorConfig gc;
         gc.max_bps = budget;
         gc.floor_bps = budget / 3;
@@ -358,11 +374,11 @@ inline Trace single_video_trace(int which)
 
 /* Two videos, as on the display's two video buffers: a map as above on
  * the map at 0,0 and a 320x240 camera moving every frame, on the map over
- * it at 704,64 (which 0) or on the panel at 96,96 (which 1). 30 fps for 20
- * s with the map's still, noisy, repeated, patched and panning stretches,
- * a refused write and a refused flush on the map, and the map's scene taken
- * down and published again. */
-inline Trace two_video_trace(int which)
+ * it at 704,64 (which 0) or on the panel at 96,96 (which 1), at opacity and
+ * turned by rotate degrees. 30 fps for 20 s with the map's still, noisy,
+ * repeated, patched and panning stretches, a refused write and a refused
+ * flush on the map, and the map's scene taken down and published again. */
+inline Trace two_video_trace(int which, float opacity = 1.0f, float rotate = 0)
 {
     TraceRig r;
     std::string err;
@@ -379,6 +395,8 @@ inline Trace two_video_trace(int which)
     cp.rect.y = which ? 96 : 64;
     cp.rect.w = 320;
     cp.rect.h = 240;
+    cp.opacity = opacity;
+    cp.rotate = rotate;
     VideoParams cvp;
     cvp.w = 320;
     cvp.h = 240;
@@ -491,6 +509,174 @@ inline Trace join_trace(int which)
                 r.slots.on_shown(0x01000400, r.now);
         }
     }
+    r.comp->remove_owner(2);
+    r.comp->remove_owner(1);
+    r.step(11);
+    return r.gpu.trace;
+}
+
+/* Waze on the cluster and the HUD at once: the map as above on the map at
+ * 0,0, and a 448x208 picture of it on the HUD at 176,136 at 15 fps with no
+ * packed blocks, writing from the HUD's share, for 20 s; nothing over
+ * either. */
+inline Trace hud_trace()
+{
+    TraceRig r(5500 * 1024, true);
+    std::string err;
+    LayerParams lp;
+    lp.contend = true;
+    lp.rect.w = 1088;
+    lp.rect.h = 480;
+    VideoParams vp;
+    VideoLayer *v = static_cast<VideoLayer *>(r.comp->layer(1, r.comp->add_video(1, 0, lp, vp, r.now, &err)));
+    LayerParams hp;
+    hp.contend = true;
+    hp.rect.x = 176;
+    hp.rect.y = 136;
+    hp.rect.w = 448;
+    hp.rect.h = 208;
+    VideoParams hvp;
+    hvp.w = 448;
+    hvp.h = 208;
+    hvp.fps = 15;
+    hvp.pan_blocks = false;
+    VideoLayer *h = static_cast<VideoLayer *>(r.comp->layer(1, r.comp->add_video(1, 2, hp, hvp, r.now, &err)));
+    std::vector<uint8_t> f, hf;
+    int pan = 0;
+    for (int k = 0; k < 600; k++) {
+        const int phase = (k / 60) % 5;
+        if (phase == 1 && k % 2) {
+            v->repeat(r.now);
+            h->repeat(r.now);
+        } else {
+            if (phase == 3)
+                pan += 24;
+            trace_frame(f, 1088, 480, pan, phase == 2 ? k : 0, phase == 0 || phase == 4 ? k : 0);
+            v->offer(f.data(), r.now);
+            trace_frame(hf, 448, 208, pan / 2, phase == 2 ? k : 0, phase == 0 || phase == 4 ? k : 0);
+            h->offer(hf.data(), r.now);
+        }
+        for (int t = 0; t < 33; t += 11) {
+            r.step(11);
+            if (k == 0 && t == 0) {
+                r.slots.on_shown(0x010004f0, r.now);
+                r.slots.on_shown(0x01000401, r.now);
+            }
+        }
+    }
+    r.comp->remove_owner(1);
+    r.step(11);
+    return r.gpu.trace;
+}
+
+/* The map as above on the map at 0,0 under a 1088x480 overlay image at
+ * opacity 1, redrawn every half second: opaque everywhere but one pixel in
+ * every 8x8 block (alpha 254), so no part of it is wholly opaque. 20 s. */
+inline Trace overlay_trace()
+{
+    TraceRig r;
+    std::string err;
+    LayerParams lp;
+    lp.contend = true;
+    lp.rect.w = 1088;
+    lp.rect.h = 480;
+    VideoParams vp;
+    VideoLayer *v = static_cast<VideoLayer *>(r.comp->layer(1, r.comp->add_video(1, 0, lp, vp, r.now, &err)));
+    LayerParams ip = lp;
+    ip.klass = Klass::Overlay;
+    ImageLayer *img = static_cast<ImageLayer *>(
+        r.comp->layer(2, r.comp->add_image(2, 0, ip, 1088, 480, 30, Sampling::Bilinear, r.now, &err)));
+    std::vector<uint8_t> f, px((size_t)1088 * 480 * 4);
+    int pan = 0;
+    for (int k = 0; k < 600; k++) {
+        const int phase = (k / 60) % 5;
+        if (phase == 1 && k % 2)
+            v->repeat(r.now);
+        else {
+            if (phase == 3)
+                pan += 24;
+            trace_frame(f, 1088, 480, pan, phase == 2 ? k : 0, phase == 0 || phase == 4 ? k : 0);
+            v->offer(f.data(), r.now);
+        }
+        if (k % 15 == 0) {
+            for (size_t i = 0; i < px.size(); i += 4) {
+                const size_t x = (i / 4) % 1088, y = (i / 4) / 1088;
+                px[i] = (uint8_t)(x + k), px[i + 1] = (uint8_t)y, px[i + 2] = (uint8_t)k;
+                px[i + 3] = x % 8 == (size_t)(k / 15) % 8 && y % 8 == 3 ? 254 : 255;
+            }
+            img->update({}, px.data(), px.size(), &err);
+        }
+        for (int t = 0; t < 33; t += 11) {
+            r.step(11);
+            if (k == 0 && t == 0)
+                r.slots.on_shown(0x010004f0, r.now);
+        }
+    }
+    r.comp->remove_owner(2);
+    r.comp->remove_owner(1);
+    r.step(11);
+    return r.gpu.trace;
+}
+
+/* A Waze-like map for a minute, with a camera over it: the map 1088x480 at
+ * 30 fps on the map at 0,0, in 6 s stretches: still with decoder noise, the
+ * position marker moving (a changing 64x64 patch), a fast pan (packed
+ * blocks), a slow pan, still again; a 320x240 camera changing every frame
+ * at 30 fps over it at 704,64 at opacity (kind 0: 1, kind 1: 0.9), or
+ * (kind 2) opaque, sliding 4 px a frame between x 64 and 704. The bytes
+ * written are the trace's write_bytes, by_width as each stretch starts in
+ * marks (the map's atlas is 1088 wide). */
+inline Trace camera_minute_trace(int kind)
+{
+    TraceRig r;
+    std::string err;
+    LayerParams lp;
+    lp.contend = true;
+    lp.rect.w = 1088;
+    lp.rect.h = 480;
+    VideoParams vp;
+    VideoLayer *v = static_cast<VideoLayer *>(r.comp->layer(1, r.comp->add_video(1, 0, lp, vp, r.now, &err)));
+    LayerParams cp;
+    cp.contend = true;
+    cp.z = 1;
+    cp.rect.x = 704;
+    cp.rect.y = 64;
+    cp.rect.w = 320;
+    cp.rect.h = 240;
+    cp.opacity = kind == 1 ? 0.9f : 1.0f;
+    VideoParams cvp;
+    cvp.w = 320;
+    cvp.h = 240;
+    VideoLayer *c = static_cast<VideoLayer *>(r.comp->layer(2, r.comp->add_video(2, 0, cp, cvp, r.now, &err)));
+    std::vector<uint8_t> f, cf;
+    int pan = 0, x = 704, dx = -4;
+    for (int k = 0; k < 1800; k++) {
+        const int phase = (k / 180) % 5;
+        if (phase == 2)
+            pan += 24;
+        if (phase == 3)
+            pan += 4;
+        trace_frame(f, 1088, 480, pan, phase == 1 ? k : 0, k);
+        v->offer(f.data(), r.now);
+        trace_frame(cf, 320, 240, k * 8, k, k);
+        c->offer(cf.data(), r.now);
+        if (k % 180 == 0)
+            r.gpu.trace.marks.push_back(r.gpu.trace.by_width);
+        if (kind == 2) {
+            if (x + dx < 64 || x + dx > 704)
+                dx = -dx;
+            x += dx;
+            c->params.rect.x = x;
+            r.comp->changed(c);
+        }
+        for (int t = 0; t < 33; t += 11) {
+            r.step(11);
+            if (k == 0 && t == 0)
+                r.slots.on_shown(0x010004f0, r.now);
+        }
+    }
+    r.gpu.trace.video = v->write_stats();
+    r.gpu.trace.video_stats = v->stats();
     r.comp->remove_owner(2);
     r.comp->remove_owner(1);
     r.step(11);

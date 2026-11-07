@@ -545,6 +545,86 @@ int64_t CompositeVideo::wake_in_ms(int64_t now_ms) const
     return waits && c > 0 ? c : -1;
 }
 
+void CompositeVideo::begin_hidden()
+{
+    visible_.assign((size_t)cols_ * ((crk::atlas_height(p_.h) + crk::kTileSize - 1) / crk::kTileSize), 0);
+    covered_ = false;
+    clear_.clear();
+}
+
+void CompositeVideo::see_source(uint32_t id, const Coverage &cov)
+{
+    const Source *s = find(id);
+    if (!s)
+        return;
+    if (cov.empty()) {
+        clear_.push_back(id);   /* all it shows is visible, if anything is covered */
+        return;
+    }
+    covered_ = true;
+    see(*s, &cov);
+}
+
+void CompositeVideo::see(const Source &s, const Coverage *cov)
+{
+    Box at[2];
+    int n = 0;
+    if (drawn_ && s.showing && s.placed.w)
+        at[n++] = box_of(s.placed);
+    if (s.drawn && s.rect.w)
+        at[n++] = box_of(s.rect);
+    if (!n)
+        return;
+    Rect canvas;
+    canvas.x = x_;
+    canvas.y = y_;
+    canvas.w = p_.w;
+    canvas.h = p_.h;
+    const uint32_t rows = (uint32_t)(visible_.size() / cols_);
+    Box parts[3];
+    for (uint32_t ty = 0; ty < rows; ty++)
+        for (uint32_t tx = 0; tx < cols_; tx++) {
+            uint8_t &v = visible_[(size_t)ty * cols_ + tx];
+            if (v)
+                continue;
+            const int np = tile_footprint(tx, ty, p_.w, p_.h, canvas, parts);
+            for (int i = 0; i < np && !v; i++)
+                for (int k = 0; k < n && !v; k++) {
+                    const Box b = intersect(parts[i], at[k]);
+                    v = !b.empty() && (!cov || !cov->covers(b));
+                }
+        }
+}
+
+void CompositeVideo::occlude_source(uint32_t id, Coverage *cov) const
+{
+    const Source *s = nullptr;
+    for (const Source &x : src_)
+        if (x.id == id)
+            s = &x;
+    if (!s || !g_ || !drawn_ || !opaque_ || !s->showing || !s->drawn || !s->placed.w || s->opacity * fade_ < 1.0f)
+        return;
+    /* Where its quads are, and with a move waiting, where they may go too. */
+    Box a = box_of(s->placed);
+    if (s->moved)
+        a = intersect(a, box_of(s->rect));
+    cov->add(a);
+}
+
+void CompositeVideo::end_hidden()
+{
+    if (!covered_) {
+        hide(nullptr);
+        return;
+    }
+    for (uint32_t id : clear_)
+        if (const Source *s = find(id))
+            see(*s, nullptr);
+    for (uint8_t &v : visible_)
+        v = !v;
+    hide(visible_.data());
+}
+
 bool CompositeVideo::make_quad(Graph *g, Source &s, bool blocks, int bank)
 {
     const float size[2] = {(float)p_.w, (float)p_.h}, zero = 0.0f;

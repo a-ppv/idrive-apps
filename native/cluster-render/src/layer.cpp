@@ -2,10 +2,12 @@
  * Copyright (C) 2026 Robert Nisipeanu */
 #include "layer.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
 #include "log.h"
+#include "occlusion.h"
 
 namespace crs {
 
@@ -200,6 +202,8 @@ bool ImageLayer::update(const std::vector<crk::PixelRect> &rects, const uint8_t 
         whole_ = true;
         dirty_.clear();
         have_ = true;
+        if (opq_on_)
+            std::fill(opq_px_.begin(), opq_px_.end(), 2);
         return true;
     }
     size_t need = 0;
@@ -218,6 +222,8 @@ bool ImageLayer::update(const std::vector<crk::PixelRect> &rects, const uint8_t 
         for (uint32_t y = 0; y < r.h; y++)
             std::memcpy(&px_[((size_t)(r.y + y) * w_ + r.x) * 4], data + (size_t)y * r.w * 4, (size_t)r.w * 4);
         data += (size_t)r.w * r.h * 4;
+        if (opq_on_)
+            opq_changed(r);
         if (!whole_) {
             if (dirty_.size() >= kMaxRects) {
                 whole_ = true;
@@ -245,6 +251,7 @@ bool ImageLayer::attach(Graph *g, int64_t, std::string *err)
     }
     drawn_ = false;
     whole_ = true;   /* a new buffer holds nothing yet */
+    opq_buf_known_ = false;
     start_animations();
     return true;
 }
@@ -262,6 +269,7 @@ void ImageLayer::detach(bool drop)
     buf_ = quad_ = 0;
     drawn_ = parked_ = hold_ = false;
     whole_ = true;
+    opq_buf_known_ = false;
 }
 
 void ImageLayer::arrange(bool drawn, int32_t order)
@@ -330,7 +338,14 @@ void ImageLayer::committed(bool ok, int64_t now_ms)
         writes_++;
         bytes_ += staged_;
         whole_ = false;
+        /* The write carried every change waiting: the buffer is px_. */
+        if (opq_on_) {
+            opq_resolve();
+            opq_buf_ = opq_px_;
+            opq_buf_known_ = true;
+        }
     } else {
+        opq_buf_known_ = false;
         /* The buffer may hold part of it unflushed: write it all again. An
          * exclusive image holds the target until then (the layers below it
          * are suspended, so hiding it would show nothing); any other is
@@ -345,6 +360,72 @@ void ImageLayer::committed(bool ok, int64_t now_ms)
     }
     dirty_.clear();
     staged_ = 0;
+}
+
+void ImageLayer::opq_changed(const crk::PixelRect &r)
+{
+    for (uint32_t by = r.y / kOpaqueBlock; by <= (r.y + r.h - 1) / kOpaqueBlock; by++)
+        std::fill(&opq_px_[(size_t)by * opq_cols_ + r.x / kOpaqueBlock],
+                  &opq_px_[(size_t)by * opq_cols_ + (r.x + r.w - 1) / kOpaqueBlock] + 1, 2);
+}
+
+void ImageLayer::opq_resolve()
+{
+    for (uint32_t by = 0; by < opq_rows_; by++)
+        for (uint32_t bx = 0; bx < opq_cols_; bx++) {
+            uint8_t &o = opq_px_[(size_t)by * opq_cols_ + bx];
+            if (o != 2)
+                continue;
+            const uint32_t x0 = bx * kOpaqueBlock, x1 = std::min(w_, x0 + kOpaqueBlock);
+            const uint32_t y0 = by * kOpaqueBlock, y1 = std::min(h_, y0 + kOpaqueBlock);
+            uint8_t a = 255;
+            for (uint32_t y = y0; y < y1 && a == 255; y++) {
+                const uint8_t *p = &px_[((size_t)y * w_ + x0) * 4 + 3];
+                for (uint32_t x = x0; x < x1; x++, p += 4)
+                    a &= *p;
+            }
+            o = a == 255;
+        }
+}
+
+void ImageLayer::occlude(Coverage *cov)
+{
+    const Rect &r = params.rect;
+    if (!g_ || !drawn_ || parked_ || animating() || params.opacity * fade_ < 1.0f || !unturned(params.turn()) ||
+        !r.w || !r.h)
+        return;
+    if (!opq_on_) {
+        opq_on_ = true;
+        opq_cols_ = (w_ + kOpaqueBlock - 1) / kOpaqueBlock;
+        opq_rows_ = (h_ + kOpaqueBlock - 1) / kOpaqueBlock;
+        opq_px_.assign((size_t)opq_cols_ * opq_rows_, 2);
+        opq_buf_.assign(opq_px_.size(), 0);
+        /* The buffer holds px_ while nothing waits to be written. */
+        opq_buf_known_ = !whole_ && dirty_.empty();
+        if (opq_buf_known_) {
+            opq_resolve();
+            opq_buf_ = opq_px_;
+        }
+    }
+    if (!opq_buf_known_)
+        return;
+    opq_resolve();
+    /* A target pixel samples about the image coordinate of its centre: the
+     * image pixels under it, one more each way for the filter. Opaque where
+     * both the buffer and the pixels waiting to be written are. */
+    cov->add_if(box_of(r), [&](const Box &c) {
+        const int64_t ix0 = std::max<int64_t>(0, (int64_t)(c.x0 - r.x) * w_ / r.w - 1);
+        const int64_t ix1 = std::min<int64_t>(w_, ((int64_t)(c.x1 - r.x) * w_ + r.w - 1) / r.w + 1);
+        const int64_t iy0 = std::max<int64_t>(0, (int64_t)(c.y0 - r.y) * h_ / r.h - 1);
+        const int64_t iy1 = std::min<int64_t>(h_, ((int64_t)(c.y1 - r.y) * h_ + r.h - 1) / r.h + 1);
+        for (int64_t by = iy0 / kOpaqueBlock; by <= (iy1 - 1) / kOpaqueBlock; by++)
+            for (int64_t bx = ix0 / kOpaqueBlock; bx <= (ix1 - 1) / kOpaqueBlock; bx++) {
+                const size_t b = (size_t)by * opq_cols_ + (size_t)bx;
+                if (opq_px_[b] != 1 || !opq_buf_[b])
+                    return false;
+            }
+        return true;
+    });
 }
 
 int64_t ImageLayer::wake_in_ms(int64_t now_ms) const

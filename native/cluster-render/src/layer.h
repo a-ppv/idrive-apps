@@ -30,6 +30,8 @@
 
 namespace crs {
 
+class Coverage;
+
 /* What a client sets on a layer, at any time. */
 struct LayerParams {
     Klass klass = Klass::Content;
@@ -166,6 +168,16 @@ public:
     /* Pixel bytes its buffers hold in the scene; 0 when not attached. */
     virtual size_t buffer_bytes() const { return 0; }
 
+    /* Occlusion (occlusion.h), each tick of a requested target before
+     * stage(), its layers top first: occluded() gets what the layers drawn
+     * above this one cover opaquely in the next flush (a video hides its
+     * tiles under it), and occlude() adds what this one covers. */
+    virtual void occluded(const Coverage &) {}
+    virtual void occlude(Coverage *) {}
+    /* Tiles it left unwritten while hidden are no longer hidden: the target
+     * flushes only with its write (video_layer.h). */
+    virtual bool uncovering() const { return false; }
+
 protected:
     /* After set_fade() changed the fade. */
     virtual void faded() {}
@@ -180,6 +192,8 @@ protected:
     virtual void restore(uint32_t, const Animation &) {}
     /* Starts every animation in the scene just attached. */
     void start_animations();
+    /* The renderer plays an animation of it: what it shows is not params. */
+    bool animating() const { return !played_.empty(); }
     /* The scene goes, or the layer: the animations' handles are forgotten,
      * stopped first when drop. */
     void forget_animations(bool drop);
@@ -240,6 +254,11 @@ public:
     WriteStats write_stats() const override;
     size_t buffer_bytes() const override { return g_ ? (size_t)w_ * h_ * 4 : 0; }
     bool fades() const override { return true; }
+    void occlude(Coverage *cov) override;
+
+    /* Opaque blocks: kOpaqueBlock x kOpaqueBlock pixels each, tracked once
+     * the image is asked what it covers. */
+    static const uint32_t kOpaqueBlock = 8;
 
 protected:
     void faded() override;
@@ -265,6 +284,15 @@ private:
     int buf_ = 0, quad_ = 0;
     std::vector<uint8_t> scratch_;
     size_t staged_ = 0;   /* bytes setData took this tick */
+    /* Per opaque block, once tracked (opq_on_): whether every pixel of px_
+     * has alpha 255 (opq_px_; 2: not looked at since it changed), and
+     * whether every pixel the buffer holds there has, as of the last write
+     * that went (opq_buf_; known only while opq_buf_known_). */
+    bool opq_on_ = false, opq_buf_known_ = false;
+    std::vector<uint8_t> opq_px_, opq_buf_;
+    uint32_t opq_cols_ = 0, opq_rows_ = 0;
+    void opq_changed(const crk::PixelRect &r);
+    void opq_resolve();
     uint64_t writes_ = 0, bytes_ = 0, failed_ = 0, held_budget_ = 0;
 };
 

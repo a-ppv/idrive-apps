@@ -525,6 +525,19 @@ Beside the layers:
   by its own quads over its rect, sampling its part, at its place in the
   stack and its opacity. A turned, scaled or odd-placed video keeps buffers
   of its own. Clients have up to 8 video layers together.
+- **Hidden tiles** (`src/occlusion.h`): a video's 64x64 tiles wholly under
+  opaque layers drawn above it on its target are not written while they
+  stay hidden, a composite's likewise. Opaque means a video drawn
+  unturned at opacity times the target's fade 1, once its first frame is
+  written; an image likewise, only where its pixels, both those its buffer
+  holds and those waiting to be written, have alpha 255; never an effect or
+  a mesh layer, an animated image, or anything turned, translucent or
+  fading. A hidden tile that has changed goes in the flush that uncovers it
+  (a layer above moved, hidden, made translucent, turned, faded or gone, or
+  the video moved): the target stages and flushes nothing until the budget
+  allows that write, which goes whatever the video's frame clock, so the
+  display keeps the tiles covered until they are current. With nothing
+  opaque over a video it writes as before, byte for byte.
 - **Turns**: video, image and effect quads rotate and scale about a pivot
   (a needle), each under two group nodes in the scene.
 - **Animations**: keys the renderer plays by itself (one real-time
@@ -954,6 +967,18 @@ The host tests:
   `set`); the last other video leaving and the remaining one drawing itself
   again; at most two video buffers on the display whatever comes and goes;
   three moving videos within 5500 KB/s; the composing cost, printed;
+- `occlusion_test`: the coverage's cells and the tiles' footprints (luma,
+  chroma, scaled); the tiles under an opaque camera left unwritten; nothing
+  hidden under a translucent, turned or scaled camera, an effect layer, an
+  image with transparent pixels (written or waiting), an animated image;
+  a camera, an image, a fade, packed blocks, a composite under an image
+  and a scaled map under a composite, moved, hidden, shown, made
+  translucent and turned faster than a tight budget writes, with refused
+  flushes and writes: no flush shows a part of a video from another frame
+  than the rest; with nothing opaque over a video, every renderer call and
+  byte as before (a camera at 0.9 or turned, Waze on the cluster and the
+  HUD, an overlay with transparent pixels); a minute's bytes under an
+  opaque, a translucent and a moving camera, and the cost a tick, printed;
 - `dcsm2_port_test`: the Dcsm2 request sequence, parked and promoted
   mappings, take-overs, reply matching and refusal kinds; the undecoded
   notifications' rate limit, subscription answers, the no-answer line and

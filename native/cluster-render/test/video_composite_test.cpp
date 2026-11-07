@@ -6,7 +6,8 @@
  *   one target or on two), each video draws itself, with no composite, and
  *   drives the renderer exactly as the build before composites: every call,
  *   every pixel and every flush of a 20 s run match the trace recorded from
- *   that build (video_trace.h);
+ *   that build (video_trace.h), but for an opaque camera over the map,
+ *   which leaves the map's tiles under it unwritten (occlusion_test.cpp);
  * - a third video composes, as few targets as it takes, and with one gone
  *   the videos are separate again; a video joining a kept composite is
  *   drawn at its opacity at once;
@@ -287,11 +288,15 @@ static const uint64_t kMainJoinTrace[2][6] = {
     {0x18f19b095ea37fc8ull, 3380, 21038592, 468, 0, 0},
     {0xdf96bf1d74f5b41bull, 3390, 21038592, 541, 0, 0},
 };
-/* Two videos (video_trace.h two_video_trace), recorded the same way. */
+/* Two videos (video_trace.h two_video_trace), recorded the same way. On the
+ * map the camera is opaque over the map, which leaves the 15 tiles wholly
+ * under it unwritten (occlusion_test.cpp): that run is recorded from this
+ * build, and main's is kMainOccluded. */
 static const uint64_t kMainTwoTrace[2][6] = {
-    {0x5c8593e5bcc02a9eull, 3087, 40754688, 379, 4, 30},
+    {0x2b96bfc56be05ffaull, 3287, 40503808, 396, 4, 21},
     {0x8f0173ab738d414dull, 3146, 40896000, 507, 5, 0},
 };
+static const uint64_t kMainOccluded[6] = {0x5c8593e5bcc02a9eull, 3087, 40754688, 379, 4, 30};
 
 static void single_video()
 {
@@ -309,12 +314,20 @@ static void single_video()
     }
     for (int which = 0; which < 2; which++) {
         const Trace t = two_video_trace(which);
-        char name[200];
-        std::snprintf(name, sizeof name,
-                      "two videos (a map and a camera %s): each draws itself, every renderer call, pixel and flush "
-                      "as before composites (%llu calls, %llu KB, %llu flushes)",
-                      which ? "on the panel" : "over it on the map", (unsigned long long)t.calls,
-                      (unsigned long long)(t.write_bytes / 1024), (unsigned long long)t.flushes);
+        char name[260];
+        if (which)
+            std::snprintf(name, sizeof name,
+                          "two videos (a map and a camera on the panel): each draws itself, every renderer call, "
+                          "pixel and flush as before composites (%llu calls, %llu KB, %llu flushes)",
+                          (unsigned long long)t.calls, (unsigned long long)(t.write_bytes / 1024),
+                          (unsigned long long)t.flushes);
+        else
+            std::snprintf(name, sizeof name,
+                          "two videos (a map and an opaque camera over it on the map): each draws itself, as "
+                          "recorded with the tiles under the camera left unwritten (%llu calls, %llu KB, %llu "
+                          "flushes; before composites %llu KB)",
+                          (unsigned long long)t.calls, (unsigned long long)(t.write_bytes / 1024),
+                          (unsigned long long)t.flushes, (unsigned long long)(kMainOccluded[2] / 1024));
         ok(name, t.hash == kMainTwoTrace[which][0] && t.calls == kMainTwoTrace[which][1] &&
                      t.write_bytes == kMainTwoTrace[which][2] && t.flushes == kMainTwoTrace[which][3] &&
                      t.failed_flushes == kMainTwoTrace[which][4] && t.failed_writes == kMainTwoTrace[which][5]);

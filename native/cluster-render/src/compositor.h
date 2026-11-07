@@ -74,7 +74,18 @@
  * and y. A change is taken only when the videos fit the display both while
  * it is held and once it is real; and reconcile() never changes a buffer
  * for videos that do not fit, whatever let them in. Old objects go before new ones are
- * made, so the display never holds more video buffers than the limit. */
+ * made, so the display never holds more video buffers than the limit.
+ *
+ * Hidden tiles: each tick, before a requested target stages, its layers are
+ * told from the top down what the layers drawn above them cover opaquely in
+ * the next flush (occlusion.h), so each video, and the composite, leaves
+ * the tiles wholly under that unwritten (video_layer.h). A video whose
+ * unwritten tiles a change uncovers (a layer above moved, hidden, turned
+ * translucent, faded or gone, or the video itself moved) writes them in the
+ * flush that uncovers them: the target does not stage or flush until the
+ * budget allows that write, which then goes whatever the video's frame
+ * clock, with the rest of the target's changes. Until then the display
+ * keeps showing the target as last flushed, the tiles still covered. */
 #ifndef CRS_COMPOSITOR_H
 #define CRS_COMPOSITOR_H
 
@@ -88,6 +99,7 @@
 #include "graph.h"
 #include "layer.h"
 #include "mesh_layer.h"
+#include "occlusion.h"
 #include "slots.h"
 #include "stack.h"
 #include "video_composite.h"
@@ -252,6 +264,8 @@ private:
         /* When a video last started or stopped being composited; when a
          * held change of a video's composability is due (-1: none is). */
         int64_t members_ms = INT64_MIN / 4, hold_ms = -1;
+        /* What the layers drawn above a point of its stack cover. */
+        Coverage coverage;
     };
     struct VideoSpec {
         uint32_t id = 0;
@@ -330,6 +344,11 @@ private:
     void attach(Entry &e, Target &t);
     /* A drawn layer on the target holds its flushes (Layer::holds_flush). */
     bool holds(const Target &t) const;
+    /* Tells the target's layers and composite, top first, what is drawn
+     * opaquely above each in the next flush. */
+    void occlude(int ti, Target &t);
+    /* A video on the target is uncovering (Layer::uncovering). */
+    bool uncovers(const Target &t) const;
     void apply_binds(Entry &e);
     void drop_effects(Entry &e);
     /* Every asset the layer samples has pixels; and its buffer holds them. */

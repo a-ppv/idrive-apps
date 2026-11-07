@@ -5,6 +5,7 @@
 #include <time.h>
 
 #include <algorithm>
+#include <cstring>
 
 #include "block_pack.h"
 #include "log.h"
@@ -697,6 +698,13 @@ void Compositor::render(int64_t now_ms)
          * again once shown. */
         if (!t.graph || !slots_->requested((int)ti) || slots_->status((int)ti).state == TargetState::Parked)
             continue;
+        /* Tiles a video left unwritten under opaque layers and a change
+         * uncovers go in the flush that uncovers them: until the budget
+         * allows that write, the target stages and flushes nothing. */
+        occlude((int)ti, t);
+        const bool uncover = uncovers(t);
+        if (uncover && !pacer_for((int)ti).ready(now_ms))
+            continue;
         /* A layer whose failed write left its buffer half written holds the
          * target: only its whole rewrite stages, and nothing flushes until
          * that goes, so the cluster keeps showing the last frame. */
@@ -734,7 +742,7 @@ void Compositor::render(int64_t now_ms)
             } else if (!l->attached()) {
                 continue;
             }
-            if (hold && !l->holds_flush())
+            if (hold && !l->holds_flush() && !l->uncovering())
                 continue;
             const Stage s = l->stage(now_ms);
             if (l == t.composite.get() && t.composite->placed_now())
@@ -758,7 +766,7 @@ void Compositor::render(int64_t now_ms)
         bool ok = false;
         if (failed)
             evidence(spec, Evidence::WriteRefused, now_ms, spec.name);
-        if (!failed && !holds(t)) {
+        if (!failed && !holds(t) && !(uncover && uncovers(t))) {
             const int64_t t0 = clock_us_();
             ok = t.graph->flush(++t.tag);
             const int64_t took = clock_us_() - t0;
@@ -842,6 +850,58 @@ bool Compositor::holds(const Target &t) const
     for (uint32_t id : t.arr.order) {
         auto it = layers_.find(id);
         if (it != layers_.end() && it->second.layer->attached() && it->second.layer->holds_flush())
+            return true;
+    }
+    return false;
+}
+
+void Compositor::occlude(int ti, Target &t)
+{
+    /* Only the layers from the top down to the lowest video matter; a
+     * target with no video is not looked at. */
+    CompositeVideo *cv = t.composite && t.composite->attached() ? t.composite.get() : nullptr;
+    size_t lowest = t.arr.order.size();
+    for (size_t pos = 0; pos < t.arr.order.size() && lowest == t.arr.order.size(); pos++) {
+        auto it = layers_.find(t.arr.order[pos]);
+        if (it != layers_.end() && ((it->second.composited && cv) ||
+                                    (it->second.layer->attached() && !std::strcmp(it->second.layer->kind(), "video"))))
+            lowest = pos;
+    }
+    if (lowest == t.arr.order.size())
+        return;
+    const TargetSpec &spec = slots_->targets()[ti];
+    t.coverage.reset(spec.width, spec.height);
+    if (cv)
+        cv->begin_hidden();
+    for (size_t pos = t.arr.order.size(); pos-- > lowest;) {
+        auto it = layers_.find(t.arr.order[pos]);
+        if (it == layers_.end())
+            continue;
+        if (it->second.composited) {
+            if (cv) {
+                cv->see_source(it->first, t.coverage);
+                cv->occlude_source(it->first, &t.coverage);
+            }
+            continue;
+        }
+        Layer *l = it->second.layer.get();
+        if (!l->attached())
+            continue;
+        l->occluded(t.coverage);
+        if (pos > lowest)
+            l->occlude(&t.coverage);
+    }
+    if (cv)
+        cv->end_hidden();
+}
+
+bool Compositor::uncovers(const Target &t) const
+{
+    if (t.composite && t.composite->attached() && t.composite->uncovering())
+        return true;
+    for (uint32_t id : t.arr.order) {
+        auto it = layers_.find(id);
+        if (it != layers_.end() && it->second.layer->attached() && it->second.layer->uncovering())
             return true;
     }
     return false;

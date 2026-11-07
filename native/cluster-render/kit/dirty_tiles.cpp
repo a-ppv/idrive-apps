@@ -83,8 +83,11 @@ void UploadPlanner::reset()
     settle_due_ms_ = -1;
 }
 
-UploadPlan UploadPlanner::plan(const uint8_t *shown, const uint8_t *cur, int64_t now_ms)
+UploadPlan UploadPlanner::plan(const uint8_t *shown, const uint8_t *cur, int64_t now_ms, const uint8_t *hidden,
+                               uint8_t *held)
 {
+    if (!shown)
+        hidden = nullptr;
     UploadPlan p;
     p.tiles = cols_ * rows_;
     const size_t stride = (size_t)w_ * bpp_;
@@ -95,7 +98,15 @@ UploadPlan UploadPlanner::plan(const uint8_t *shown, const uint8_t *cur, int64_t
         for (uint32_t tx = 0; tx <= cols_; tx++) {
             const uint32_t x0 = std::min(tx * tile_w_, w_);
             bool write = false;
-            if (tx < cols_) {
+            if (tx < cols_ && hidden && hidden[(size_t)ty * cols_ + tx]) {
+                /* Not seen: kept as the buffer holds it, and not quiet. */
+                const size_t i = (size_t)ty * cols_ + tx;
+                const uint32_t tw = std::min(tile_w_, w_ - x0);
+                if (held)
+                    held[i] = tile_delta(shown, cur, stride, (size_t)x0 * bpp_, y0, (size_t)tw * bpp_, th) > threshold_;
+                quiet_since_[i] = -1;
+                p.hidden_tiles++;
+            } else if (tx < cols_) {
                 int64_t &since = quiet_since_[(size_t)ty * cols_ + tx];
                 const uint32_t tw = std::min(tile_w_, w_ - x0);
                 const uint8_t d = shown ? tile_delta(shown, cur, stride, (size_t)x0 * bpp_, y0, (size_t)tw * bpp_, th) : 0;
@@ -129,7 +140,7 @@ UploadPlan UploadPlanner::plan(const uint8_t *shown, const uint8_t *cur, int64_t
             }
         }
     }
-    if (p.dirty_tiles > 0 && (uint64_t)p.dirty_tiles * 100 >= (uint64_t)p.tiles * kWholePercent) {
+    if (p.dirty_tiles > 0 && !p.hidden_tiles && (uint64_t)p.dirty_tiles * 100 >= (uint64_t)p.tiles * kWholePercent) {
         p.rects.assign(1, PixelRect{0, 0, w_, h_});
         p.whole = true;
         p.quiet_tiles = 0;

@@ -72,7 +72,7 @@ void VideoLayer::to_source()
 {
     source_ = true;
     /* The newest frame into front_, as attach() finds it. */
-    if (!front_pending_ && !planner_.quiet() && shown_.size() == atlas_bytes_) {
+    if (!front_pending_ && !planner_.quiet() && !held_n_ && shown_.size() == atlas_bytes_) {
         front_.swap(shown_);
         front_ms_ = shown_ms_;
     }
@@ -118,7 +118,59 @@ void VideoLayer::canvas_changed(int64_t now_ms)
 
 bool VideoLayer::due(int64_t now_ms)
 {
-    return (clock_.due(now_ms) || parked_) && pacer_.ready(now_ms);
+    return (clock_.due(now_ms) || parked_ || uncovering()) && pacer_.ready(now_ms);
+}
+
+void VideoLayer::hide(const uint8_t *tiles)
+{
+    hiding_ = false;
+    if (!tiles)
+        return;
+    hidden_.assign(tiles, tiles + planner_.tiles());
+    hiding_ = std::find(hidden_.begin(), hidden_.end(), 1) != hidden_.end();
+}
+
+void VideoLayer::occluded(const Coverage &cov)
+{
+    if (!g_ || !drawn_ || cov.empty() || !unturned(params.turn())) {
+        hiding_ = false;
+        return;
+    }
+    hiding_ = hidden_tiles(cov, p_.w, p_.h, params.rect, &hidden_);
+}
+
+void VideoLayer::occlude(Coverage *cov)
+{
+    /* Drawn at u_opacity, 0 until its first frame is written. */
+    if (g_ && drawn_ && opaque_ && params.opacity * fade_ >= 1.0f && unturned(params.turn()))
+        cov->add(box_of(params.rect));
+}
+
+bool VideoLayer::uncovering() const
+{
+    if (!held_n_ || !g_ || !drawn_ || blocks_shown_)
+        return false;
+    if (!hiding_)
+        return true;
+    for (size_t i = 0; i < held_.size(); i++)
+        if (held_[i] && !hidden_[i])
+            return true;
+    return false;
+}
+
+void VideoLayer::planned_hidden(bool whole)
+{
+    if (!held_n_ && !hiding_)
+        return;
+    held_n_ = 0;
+    if (whole || !hiding_) {
+        std::fill(held_.begin(), held_.end(), 0);
+        return;
+    }
+    for (size_t i = 0; i < held_.size(); i++) {
+        held_[i] = hidden_[i] ? held_plan_[i] : 0;
+        held_n_ += held_[i];
+    }
 }
 
 bool VideoLayer::ready(int64_t now_ms) const
@@ -130,10 +182,10 @@ bool VideoLayer::attach(Graph *g, int64_t now_ms, std::string *err)
 {
     g_ = g;
     /* The scene starts from the newest frame: one not yet written, the
-     * newest partly written (quiet tiles), or what the last scene's buffer
-     * held. The first stage() writes it whole, checked like any other
+     * newest partly written (quiet or held tiles), or what the last scene's
+     * buffer held. The first stage() writes it whole, checked like any other
      * write; a layer whose frames have stopped is not ready, so not drawn. */
-    if (!front_pending_ && !planner_.quiet() && shown_.size() == atlas_bytes_) {
+    if (!front_pending_ && !planner_.quiet() && !held_n_ && shown_.size() == atlas_bytes_) {
         front_.swap(shown_);
         front_ms_ = shown_ms_;
     }
@@ -142,6 +194,9 @@ bool VideoLayer::attach(Graph *g, int64_t now_ms, std::string *err)
     shown_.assign(atlas_bytes_, 0);
     shown_ms_ = -1;
     planner_.reset();
+    held_.assign(planner_.tiles(), 0);
+    held_n_ = 0;
+    hiding_ = false;
     buffer_stale_ = true;
     opaque_ = false;
     blocks_shown_ = parked_ = false;
@@ -210,6 +265,7 @@ void VideoLayer::detach(bool drop)
     if (blocks_shown_)
         front_pending_ = true;
     g_ = nullptr;
+    hiding_ = false;
     atlas_buf_ = atlas_quad_ = block_quad_ = 0;
     block_buf_[0] = block_buf_[1] = 0;
     blocks_shown_ = parked_ = false;
@@ -282,7 +338,9 @@ Stage VideoLayer::stage(int64_t now_ms)
     const int64_t settle_ms = planner_.settle_due_ms();
     const bool settle = !front_pending_ && settle_ms >= 0 && now_ms >= settle_ms;
     const bool refine = blocks_shown_ && !front_pending_ && now_ms >= refine_due_ms_;
-    if (!(front_pending_ || settle || refine) || (!clock_.due(now_ms) && !parked_))
+    /* Held tiles no longer hidden go now, whatever the frame clock. */
+    const bool uncover = uncovering();
+    if (!(front_pending_ || settle || refine || uncover) || (!clock_.due(now_ms) && !parked_ && !uncover))
         return Stage::Idle;
     if (!pacer_.ready(now_ms)) {
         held_budget_++;
@@ -303,7 +361,9 @@ Stage VideoLayer::stage_exact(int64_t now_ms, bool fresh)
     /* A repeat of the picture last staged: its plan would find what that
      * picture's found, nothing to write, unless tiles are due to settle. */
     const int64_t settle_ms = planner_.settle_due_ms();
-    if (fresh && repeated_ && (blocks_shown_ || (opaque_ && !buffer_stale_ && (settle_ms < 0 || now_ms < settle_ms)))) {
+    const bool uncover = uncovering();
+    if (fresh && repeated_ && !uncover &&
+        (blocks_shown_ || (opaque_ && !buffer_stale_ && (settle_ms < 0 || now_ms < settle_ms)))) {
         repeated_ = false;
         ((blocks_shown_ ? motion_.quiet() : planner_.quiet()) ? quiet_ : same_)++;
         if (!blocks_shown_)
@@ -321,8 +381,15 @@ Stage VideoLayer::stage_exact(int64_t now_ms, bool fresh)
         }
     }
     const bool refine = blocks_shown_;
-    const UploadPlan p = planner_.plan(shown_.data(), front_.data(), now_ms);
+    const uint8_t *hidden = hiding_ ? hidden_.data() : nullptr;
+    if (hidden)
+        held_plan_.assign(planner_.tiles(), 0);
+    const UploadPlan p = planner_.plan(shown_.data(), front_.data(), now_ms, hidden, hidden ? held_plan_.data() : nullptr);
+    hidden_tiles_ += p.hidden_tiles;
     if (p.rects.empty() && opaque_ && !refine && !buffer_stale_) {
+        planned_hidden(false);
+        if (uncover)
+            uncovers_++;
         if (fresh)
             (p.quiet_tiles ? quiet_ : same_)++;
         shown_ms_ = front_ms_;   /* the buffer is front_ to within the threshold */
@@ -335,6 +402,13 @@ Stage VideoLayer::stage_exact(int64_t now_ms, bool fresh)
     const size_t raw = whole ? front_.size() : p.bytes;
     if (fresh && !first_ && p_.pan_blocks && raw > packed_.size() && pacer_.allowance() < (int64_t)raw) {
         planner_.reset();   /* the atlas is not written: no tile of it is left quiet */
+        /* Nor are the held ones written: they stay held, with the hidden
+         * tiles this plan found changed. */
+        for (size_t i = 0; hidden && i < held_.size(); i++)
+            if (hidden_[i] && held_plan_[i] && !held_[i]) {
+                held_[i] = 1;
+                held_n_++;
+            }
         return stage_blocks(now_ms, fresh);
     }
     settled_ += p.settled_tiles;
@@ -355,6 +429,12 @@ Stage VideoLayer::stage_exact(int64_t now_ms, bool fresh)
         refused_++;
         return Stage::Failed;
     }
+    /* A failed flush makes the next write whole, and until it goes the
+     * target holds or the packed quad shows: the held tiles can be taken as
+     * written now. */
+    planned_hidden(whole);
+    if (uncover)
+        uncovers_++;
     if (!opaque_) {
         opaque_ = true;   /* undone in committed() if the flush fails */
         set_opacity();
@@ -489,7 +569,7 @@ WriteStats VideoLayer::write_stats() const
 
 std::string VideoLayer::stats() const
 {
-    char b[320];
+    char b[400];
     std::snprintf(b, sizeof b,
                   "%s%llu sent, %llu unchanged, %llu within threshold, %llu superseded, %llu settled, %llu failed "
                   "(%llu refused), %llu KB, %llu whole, %llu partial, %llu rects, %llu packed, %llu back to exact, "
@@ -501,7 +581,12 @@ std::string VideoLayer::stats() const
                   (unsigned long long)whole_writes_, (unsigned long long)partial_writes_, (unsigned long long)rects_,
                   (unsigned long long)packed_writes_, (unsigned long long)refines_,
                   (unsigned long long)held_budget_);
-    return b;
+    if (!hidden_tiles_)
+        return b;
+    char h[96];
+    std::snprintf(h, sizeof h, ", %llu tiles left hidden, %llu uncovered", (unsigned long long)hidden_tiles_,
+                  (unsigned long long)uncovers_);
+    return std::string(b) + h;
 }
 
 }  // namespace crs
