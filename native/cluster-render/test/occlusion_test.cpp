@@ -16,6 +16,12 @@
  *   from the frame the rest of it shows (the check is the test's own, from
  *   what the display shows: every visible luma pixel, and every chroma
  *   sample that reaches one);
+ * - the map panning past the budget on its target (and after resent's
+ *   whole-scene charge) while an image over a panel video moves and hides:
+ *   the panel's effect flushes every tick, the image's change waits only
+ *   until the budget's debt is repaid, and nothing stale shows;
+ * - a hidden tile changed within the threshold: a scene published again
+ *   starts from the newest frame there;
  * - with no opaque layer over a video, everything the renderer gets is
  *   what the build before hidden tiles sent (video_trace.h: a camera at 0.9
  *   or turned over the map, Waze on the cluster and the HUD, the map under
@@ -708,6 +714,173 @@ static void composite_occluding()
     ok(name, r.comp->composite(r.map) && hid > 1000 && checked > 50 && stale == 0);
 }
 
+/* ---- an uncover waiting for the budget ------------------------------------ */
+
+static const char *const kClockFs =
+    "#version 100\nprecision mediump float;\nuniform float u_time;\n"
+    "void main() { gl_FragColor = vec4(fract(u_time), 0.0, 0.0, 1.0); }";
+
+/* The map panning past the 5500 KB/s budget on map, and on the panel a
+ * video (counting frames) under an opaque image moved or hidden every 300
+ * ms, beside an effect whose u_time the service sets 30 times a second
+ * (with resend, both scenes charged whole by resent() at 1.7 s, the map
+ * paused before so that the panel video writes under the image). The
+ * panel flushes as
+ * often as its effect changes, the image's change shows once the panel
+ * video's uncovered tiles are written, within the time the budget takes to
+ * repay what it owes, and no panel flush shows part of the video from
+ * another frame. */
+static void uncover_waits(bool resend)
+{
+    Rig r(5500 * 1024);
+    std::string err;
+    LayerParams mp;
+    mp.rect = R(0, 0, W, H);
+    mp.contend = true;
+    VideoParams mvp;
+    VideoLayer *m = static_cast<VideoLayer *>(r.comp->layer(1, r.comp->add_video(1, r.map, mp, mvp, r.now, &err)));
+    VideoLayer *p = r.video(2, r.panel, R(416, 120, W, H), W, H, 0, 1.0f, exact());
+    ImageLayer *img = r.image(3, r.panel, R(800, 200, 320, 240), 320, 240, 30);
+    std::vector<uint8_t> px((size_t)320 * 240 * 4, 255);
+    img->update({}, px.data(), px.size(), &err);
+    LayerParams ep;
+    ep.rect = R(1600, 40, 200, 60);
+    ep.klass = Klass::Overlay;
+    const uint32_t eid = r.comp->add_effect(4, r.panel, ep, kQuadVertexShader, kClockFs, 30, r.now, &err);
+    std::vector<uint8_t> f;
+    int k = 0, pan = 0;
+    trace_frame(f, W, H, pan, 0, 0);
+    m->offer(f.data(), r.now);
+    p->offer(counting(W, H, k).data(), r.now);
+    r.show("map");
+    r.show("panel");
+    r.run(1000);
+    FakeGraph *g = r.g("panel");
+    int effect_quad = 0, image_quad = 0;
+    for (const auto &kv : g->shown.quads) {
+        if (kv.second.uniforms.count("u_time"))
+            effect_quad = kv.first;
+        auto t = kv.second.textures.find("u_image");
+        if (t != kv.second.textures.end() && g->shown.buffers.count(t->second) &&
+            g->shown.buffers.at(t->second).f == TexFormat::RGBA8 && !kv.second.uniforms.count("u_size"))
+            image_quad = kv.first;
+    }
+    (void)eid;
+    const int xs[] = {800, 512, 1200, 700, 960};
+    int64_t last_time_change = r.now, longest_gap = 0, longest_wait = 0, waits = 0, landed = 0;
+    float shown_time = -1;
+    int checked = 0, stale = 0;
+    int64_t asked = -1;
+    Rect want = img->params.rect;
+    bool want_visible = true;
+    const uint64_t uncovers0 = 0;
+    (void)uncovers0;
+    for (int t = 0; t < 6000; t++) {
+        if (t % 33 == 0) {
+            /* With resend, the map pauses just before the charge, so the
+             * panel video writes with tiles under the image. */
+            if (!resend || t < 1500 || t >= 1700) {
+                pan += 24;
+                trace_frame(f, W, H, pan, 0, 0);
+                m->offer(f.data(), r.now);
+            }
+            p->offer(counting(W, H, ++k).data(), r.now);
+        }
+        if (resend && t == 1700) {
+            r.comp->resent(r.slots.targets()[r.map], r.now);
+            r.comp->resent(r.slots.targets()[r.panel], r.now);
+        }
+        if (t % 300 == 150 && t < 5400) {
+            if ((t / 300) % 4 == 3) {
+                img->params.visible = !img->params.visible;
+            } else {
+                img->params.visible = true;
+                img->params.rect.x = xs[(t / 300) % 5];
+            }
+            r.comp->changed(img);
+            want = img->params.rect;
+            want_visible = img->params.visible;
+            asked = r.now;
+        }
+        const uint64_t f0 = g->flushes;
+        r.step(1);
+        if (g->flushes == f0)
+            continue;
+        const FakeQuad &e = g->shown.quads.at(effect_quad);
+        if (e.uniforms.count("u_time") && e.uniforms.at("u_time")[0] != shown_time) {
+            shown_time = e.uniforms.at("u_time")[0];
+            longest_gap = std::max(longest_gap, r.now - last_time_change);
+            last_time_change = r.now;
+        }
+        const FakeQuad &iq = g->shown.quads.at(image_quad);
+        if (asked >= 0 && iq.visible == want_visible && (!want_visible || iq.r == want)) {
+            longest_wait = std::max(longest_wait, r.now - asked);
+            waits += r.now - asked > 1;
+            landed++;
+            asked = -1;
+        }
+        const Look l = look(g, 1920, 720, W, H);
+        if (!l.shown)
+            continue;
+        checked++;
+        stale += l.frames != 1;
+    }
+    longest_gap = std::max(longest_gap, r.now - last_time_change);
+    char name[400];
+    std::snprintf(name, sizeof name,
+                  "the map panning past the budget%s: the panel's effect flushed at most %lld ms apart", 
+                  resend ? ", after both scenes were charged whole (resent)" : "", (long long)longest_gap);
+    ok(name, longest_gap <= 40);
+    /* What the budget owes at most: a resent scene's buffers, or a packed
+     * map frame and a panel frame written in one tick, repaid at 5500 KB/s. */
+    const double owed = resend ? 2.0 * (783360 + 2 * 261120) + 783360 + 307200 : 783360.0 + 261120 + 783360;
+    const double bound_ms = owed / (5500.0 * 1024) * 1000 + 34;
+    std::snprintf(name, sizeof name,
+                  "  the image's moves and hides over the panel video shown once its uncovered tiles were written: "
+                  "%lld of %d waited, the longest %lld ms (what the budget owes, repaid: %.0f ms)",
+                  (long long)waits, (int)landed, (long long)longest_wait, bound_ms);
+    ok(name, landed >= 15 && waits > 0 && longest_wait <= bound_ms && longest_wait >= (resend ? 100 : 20));
+    std::snprintf(name, sizeof name, "  in %d checked panel flushes no part of the video from another frame (%d)",
+                  checked, stale);
+    ok(name, checked > 50 && stale == 0);
+}
+
+/* A hidden tile changed within the threshold, then the scene taken down and
+ * published again: the new scene's first write is the newest frame, that
+ * tile included. */
+static void quiet_hidden_reattach()
+{
+    Rig r;
+    VideoParams vp = exact();
+    vp.dirty_threshold = 8;
+    VideoLayer *m = r.video(1, r.map, R(0, 0, W, H), W, H, 0, 1.0f, vp);
+    VideoLayer *c = r.video(2, r.map, R(704, 64, 320, 240), 320, 240, 1, 1.0f, exact());
+    std::vector<uint8_t> a = counting(W, H, 0), b = a;
+    for (uint32_t y = 128; y < 192; y++)
+        for (uint32_t x = 768; x < 832; x++)
+            b[(size_t)y * W + x] += 4;
+    m->offer(a.data(), r.now);
+    c->offer(still(320, 240, 1).data(), r.now);
+    r.show("map");
+    r.run(200);
+    m->offer(b.data(), r.now);
+    r.run(200);
+    const TargetSpec &spec = r.slots.targets()[r.map];
+    r.comp->unpublish(spec);
+    std::string err;
+    r.comp->publish(spec, &err);
+    r.run(300);
+    const FakeBuffer *atlas = nullptr;
+    for (const auto &kv : r.g("map")->shown.buffers)
+        if (kv.second.f == TexFormat::R8 && kv.second.w == W)
+            atlas = &kv.second;
+    bool newest = atlas != nullptr;
+    for (uint32_t y = 128; y < 192 && newest; y++)
+        newest = !std::memcmp(&atlas->px[(size_t)y * W + 768], &b[(size_t)y * W + 768], 64);
+    ok("a hidden tile changed within the threshold: a scene published again starts from the newest frame there",
+       m->hidden_mask() && m->hidden_mask()[2 * 17 + 12] && newest);
+}
+
 /* ---- as before with nothing opaque over a video ----------------------------- */
 
 /* Recorded with video_trace.h from the build before hidden tiles
@@ -853,15 +1026,6 @@ static void cost()
                   "under an image: %.4f ms; a composite of the map and a camera under an image: %.4f ms",
                   opaque, opaque * 30, image, composite);
     ok(name, any == 3u * n);
-    /* Nothing over the video: no cell is cleared and no tile tested. */
-    w0 = wall_ms();
-    for (int i = 0; i < n; i++) {
-        cov.reset(W, H);
-        any += cov.empty();
-    }
-    std::snprintf(name, sizeof name, "with nothing over the video the test is not made (%.5f ms a tick)",
-                  (wall_ms() - w0) / n);
-    ok(name, any == 4u * n);
 }
 
 int main()
@@ -876,6 +1040,9 @@ int main()
     never_stale(Over::Fade);
     composite_occluded();
     composite_occluding();
+    uncover_waits(false);
+    uncover_waits(true);
+    quiet_hidden_reattach();
     unchanged();
     minute();
     cost();

@@ -291,12 +291,11 @@ static const uint64_t kMainJoinTrace[2][6] = {
 /* Two videos (video_trace.h two_video_trace), recorded the same way. On the
  * map the camera is opaque over the map, which leaves the 15 tiles wholly
  * under it unwritten (occlusion_test.cpp): that run is recorded from this
- * build, and main's is kMainOccluded. */
+ * build. */
 static const uint64_t kMainTwoTrace[2][6] = {
     {0x2b96bfc56be05ffaull, 3287, 40503808, 396, 4, 21},
     {0x8f0173ab738d414dull, 3146, 40896000, 507, 5, 0},
 };
-static const uint64_t kMainOccluded[6] = {0x5c8593e5bcc02a9eull, 3087, 40754688, 379, 4, 30};
 
 static void single_video()
 {
@@ -325,9 +324,9 @@ static void single_video()
             std::snprintf(name, sizeof name,
                           "two videos (a map and an opaque camera over it on the map): each draws itself, as "
                           "recorded with the tiles under the camera left unwritten (%llu calls, %llu KB, %llu "
-                          "flushes; before composites %llu KB)",
+                          "flushes)",
                           (unsigned long long)t.calls, (unsigned long long)(t.write_bytes / 1024),
-                          (unsigned long long)t.flushes, (unsigned long long)(kMainOccluded[2] / 1024));
+                          (unsigned long long)t.flushes);
         ok(name, t.hash == kMainTwoTrace[which][0] && t.calls == kMainTwoTrace[which][1] &&
                      t.write_bytes == kMainTwoTrace[which][2] && t.flushes == kMainTwoTrace[which][3] &&
                      t.failed_flushes == kMainTwoTrace[which][4] && t.failed_writes == kMainTwoTrace[which][5]);

@@ -99,11 +99,15 @@ UploadPlan UploadPlanner::plan(const uint8_t *shown, const uint8_t *cur, int64_t
             const uint32_t x0 = std::min(tx * tile_w_, w_);
             bool write = false;
             if (tx < cols_ && hidden && hidden[(size_t)ty * cols_ + tx]) {
-                /* Not seen: kept as the buffer holds it, and not quiet. */
+                /* Not seen: kept as the buffer holds it. A difference within
+                 * the threshold leaves it quiet, but not settling. */
                 const size_t i = (size_t)ty * cols_ + tx;
                 const uint32_t tw = std::min(tile_w_, w_ - x0);
+                const uint8_t d = tile_delta(shown, cur, stride, (size_t)x0 * bpp_, y0, (size_t)tw * bpp_, th);
                 if (held)
-                    held[i] = tile_delta(shown, cur, stride, (size_t)x0 * bpp_, y0, (size_t)tw * bpp_, th) > threshold_;
+                    held[i] = d > threshold_;
+                if (d > 0 && d <= threshold_)
+                    p.quiet_tiles++;
                 quiet_since_[i] = -1;
                 p.hidden_tiles++;
             } else if (tx < cols_) {

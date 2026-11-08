@@ -12,7 +12,6 @@
 #define CRS_VIDEO_TRACE_H
 
 #include <cstring>
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -26,10 +25,6 @@ namespace crs {
 struct Trace {
     uint64_t hash = 1469598103934665603ull;
     uint64_t calls = 0, write_bytes = 0, flushes = 0, failed_flushes = 0, failed_writes = 0;
-    /* Not hashed: the bytes written into buffers by their width, and copies
-     * of that a scenario takes as it goes. */
-    std::map<uint32_t, uint64_t> by_width;
-    std::vector<std::map<uint32_t, uint64_t>> marks;
     /* A scenario's first video's write statistics and status line. */
     WriteStats video;
     std::string video_stats;
@@ -75,7 +70,6 @@ public:
             const size_t n = (size_t)w * h * (it->second.f == TexFormat::R8 ? 1 : 4);
             t_->mix(px, n);
             t_->write_bytes += n;
-            t_->by_width[it->second.w] += n;
         }
         t_->failed_writes += !ok;
         return okv(ok);
@@ -624,8 +618,7 @@ inline Trace overlay_trace()
  * blocks), a slow pan, still again; a 320x240 camera changing every frame
  * at 30 fps over it at 704,64 at opacity (kind 0: 1, kind 1: 0.9), or
  * (kind 2) opaque, sliding 4 px a frame between x 64 and 704. The bytes
- * written are the trace's write_bytes, by_width as each stretch starts in
- * marks (the map's atlas is 1088 wide). */
+ * written are the trace's write_bytes. */
 inline Trace camera_minute_trace(int kind)
 {
     TraceRig r;
@@ -660,8 +653,6 @@ inline Trace camera_minute_trace(int kind)
         v->offer(f.data(), r.now);
         trace_frame(cf, 320, 240, k * 8, k, k);
         c->offer(cf.data(), r.now);
-        if (k % 180 == 0)
-            r.gpu.trace.marks.push_back(r.gpu.trace.by_width);
         if (kind == 2) {
             if (x + dx < 64 || x + dx > 704)
                 dx = -dx;

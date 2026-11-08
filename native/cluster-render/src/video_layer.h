@@ -36,8 +36,8 @@
  * faded, or this one moved), it must be written before any flush shows it.
  * The layer is then uncovering(): its next stage() plans and writes, its
  * frame clock notwithstanding, every visible tile that differs, held ones
- * included, and the compositor flushes the target only with that write
- * (compositor.h). While the packed quad shows, the atlas is not drawn and
+ * included, and until that write goes the compositor holds the change that
+ * uncovers them back (compositor.h). While the packed quad shows, the atlas is not drawn and
  * nothing is uncovered; the write that brings the atlas back is planned
  * with the tiles hidden then. A whole write (the first in a scene, or after
  * a failed one) writes hidden tiles too. With no tile hidden the layer
@@ -118,6 +118,10 @@ public:
     void occlude(Coverage *cov) override;
     /* Held tiles are no longer hidden: the next flush must carry them. */
     bool uncovering() const override;
+    /* The next stage() writes what uncovering() needs whatever the budget
+     * allows (charged as any write), for an uncover the compositor cannot
+     * hold back (compositor.h). */
+    void force(bool on) { force_ = on; }
     /* The tiles hidden this tick; null: none. */
     const uint8_t *hidden_mask() const { return hiding_ ? hidden_.data() : nullptr; }
 
@@ -220,7 +224,7 @@ private:
      * plan left unwritten under cover that differ from the frame past the
      * threshold (held_n_ of them); held_plan_ the last plan's. */
     std::vector<uint8_t> hidden_, held_, held_plan_;
-    bool hiding_ = false;
+    bool hiding_ = false, force_ = false;
     uint32_t held_n_ = 0;
     uint64_t hidden_tiles_ = 0, uncovers_ = 0;
     int64_t refine_due_ms_ = -1;

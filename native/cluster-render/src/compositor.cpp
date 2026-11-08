@@ -691,107 +691,123 @@ void Compositor::render(int64_t now_ms)
         sharing = sharing || (slots_->targets()[ti].share && slots_->requested(ti));
     }
     pacer_.set_share(sharing ? kSharePct : 0);
+    /* Released: nothing of a target is asked for. Parked: nothing of it is
+     * on screen, and the link carries the HMI's content too. It stages again
+     * once shown. Each target staging is told what covers its videos; one
+     * with held tiles to uncover goes first, so that its write takes the
+     * next allowance before other targets' writes. */
+    std::vector<int> order, later;
     for (size_t ti = 0; ti < targets_.size(); ti++) {
         Target &t = targets_[ti];
-        /* Released: nothing of it is asked for. Parked: nothing of it is
-         * on screen, and the link carries the HMI's content too. It stages
-         * again once shown. */
         if (!t.graph || !slots_->requested((int)ti) || slots_->status((int)ti).state == TargetState::Parked)
             continue;
-        /* Tiles a video left unwritten under opaque layers and a change
-         * uncovers go in the flush that uncovers them: until the budget
-         * allows that write, the target stages and flushes nothing. */
+        reapply((int)ti, t);
         occlude((int)ti, t);
-        const bool uncover = uncovers(t);
-        if (uncover && !pacer_for((int)ti).ready(now_ms))
-            continue;
-        /* A layer whose failed write left its buffer half written holds the
-         * target: only its whole rewrite stages, and nothing flushes until
-         * that goes, so the cluster keeps showing the last frame. */
-        const bool hold = holds(t);
-        std::vector<Layer *> staged;
-        std::vector<Asset *> staged_assets;
-        bool wrote = false, failed = false;
-        /* Assets first: the layers sampling them are drawn from them. A
-         * held target writes none: no flush would carry them. */
-        for (auto &kv : assets_) {
-            Asset &a = *kv.second.asset;
-            if (hold || a.target() != (int)ti || !a.attached())
-                continue;
-            const Stage s = a.stage(now_ms);
-            if (s == Stage::Idle)
-                continue;
-            staged_assets.push_back(&a);
-            wrote = wrote || s == Stage::Wrote;
-            failed = failed || s == Stage::Failed;
-        }
-        bool composite = false;
-        for (size_t pos = t.arr.order.size(); pos-- > 0;) {
-            auto it = layers_.find(t.arr.order[pos]);
-            if (it == layers_.end())
-                continue;
-            /* The composite stages at its top source's place: its sources'
-             * new frames composed first. */
-            Layer *l = it->second.layer.get();
-            if (it->second.composited) {
-                if (composite || !t.composite || !t.composite->attached())
-                    continue;
-                composite = true;
-                t.composite->compose(now_ms);
-                l = t.composite.get();
-            } else if (!l->attached()) {
-                continue;
-            }
-            if (hold && !l->holds_flush() && !l->uncovering())
-                continue;
-            const Stage s = l->stage(now_ms);
-            if (l == t.composite.get() && t.composite->placed_now())
-                t.dirty = true;   /* quads moved over a canvas the display holds */
-            if (s == Stage::Idle)
-                continue;
-            staged.push_back(l);
-            wrote = wrote || s == Stage::Wrote;
-            failed = failed || s == Stage::Failed;
-        }
-        if (!wrote && !failed && !t.dirty)
-            continue;
-        uint64_t bytes = 0;
-        for (const Layer *l : staged)
-            bytes += l->staged_bytes();
-        for (const Asset *a : staged_assets)
-            bytes += a->staged_bytes();
-        const TargetSpec &spec = slots_->targets()[ti];
-        if (!spec.share)
-            load(bytes, now_ms);
-        bool ok = false;
-        if (failed)
-            evidence(spec, Evidence::WriteRefused, now_ms, spec.name);
-        if (!failed && !holds(t) && !(uncover && uncovers(t))) {
-            const int64_t t0 = clock_us_();
-            ok = t.graph->flush(++t.tag);
-            const int64_t took = clock_us_() - t0;
-            if (!ok)
-                evidence(spec, Evidence::FlushFailure, now_ms, spec.name);
-            else if (took >= slow_flush_us_)
-                evidence(spec, Evidence::SlowFlush, now_ms, spec.name + " " + std::to_string(took / 1000) + " ms");
-            if (!ok && !t.flush_failing)
-                log_error("target %s: flush %llu refused", slots_->targets()[ti].name.c_str(),
-                          (unsigned long long)t.tag);
-            else if (ok && t.flush_failing)
-                log_info("target %s: flushing again from %llu", slots_->targets()[ti].name.c_str(),
-                         (unsigned long long)t.tag);
-            t.flush_failing = !ok;
-        }
-        for (Asset *a : staged_assets)
-            a->committed(ok);
-        for (Layer *l : staged)
-            l->committed(ok, now_ms);
-        /* What the layers undid for a flush that did not go goes with the
-         * next one. */
-        t.dirty = !ok;
+        (uncovers(t) ? order : later).push_back((int)ti);
     }
+    order.insert(order.end(), later.begin(), later.end());
+    for (int ti : order)
+        render_target(ti, targets_[ti], now_ms);
     if (governor_.tick(now_ms))
         pacer_.set_rate(governor_.cap());
+}
+
+void Compositor::render_target(int ti, Target &t, int64_t now_ms)
+{
+    /* Held tiles a change uncovers go in the flush that carries the change.
+     * While the budget does not allow that write, the change waits (the
+     * scene keeps what the last flush showed for it) and everything else
+     * on the target goes as usual. */
+    bool uncover = uncovers(t);
+    if (uncover && !pacer_for(ti).ready(now_ms))
+        uncover = !defer_uncover(ti, t);
+    /* A layer whose failed write left its buffer half written holds the
+     * target: only its whole rewrite stages, and nothing flushes until
+     * that goes, so the cluster keeps showing the last frame. */
+    const bool hold = holds(t);
+    std::vector<Layer *> staged;
+    std::vector<Asset *> staged_assets;
+    bool wrote = false, failed = false;
+    /* Assets first: the layers sampling them are drawn from them. A
+     * held target writes none: no flush would carry them. */
+    for (auto &kv : assets_) {
+        Asset &a = *kv.second.asset;
+        if (hold || a.target() != ti || !a.attached())
+            continue;
+        const Stage s = a.stage(now_ms);
+        if (s == Stage::Idle)
+            continue;
+        staged_assets.push_back(&a);
+        wrote = wrote || s == Stage::Wrote;
+        failed = failed || s == Stage::Failed;
+    }
+    bool composite = false;
+    for (size_t pos = t.arr.order.size(); pos-- > 0;) {
+        auto it = layers_.find(t.arr.order[pos]);
+        if (it == layers_.end())
+            continue;
+        /* The composite stages at its top source's place: its sources'
+         * new frames composed first. */
+        Layer *l = it->second.layer.get();
+        if (it->second.composited) {
+            if (composite || !t.composite || !t.composite->attached())
+                continue;
+            composite = true;
+            t.composite->compose(now_ms);
+            l = t.composite.get();
+        } else if (!l->attached()) {
+            continue;
+        }
+        if (hold && !l->holds_flush() && !l->uncovering())
+            continue;
+        const Stage s = l->stage(now_ms);
+        if (l == t.composite.get() && t.composite->placed_now())
+            t.dirty = true;   /* quads moved over a canvas the display holds */
+        if (s == Stage::Idle)
+            continue;
+        staged.push_back(l);
+        wrote = wrote || s == Stage::Wrote;
+        failed = failed || s == Stage::Failed;
+    }
+    if (!wrote && !failed && !t.dirty) {
+        settle(ti, t, false);
+        return;
+    }
+    uint64_t bytes = 0;
+    for (const Layer *l : staged)
+        bytes += l->staged_bytes();
+    for (const Asset *a : staged_assets)
+        bytes += a->staged_bytes();
+    const TargetSpec &spec = slots_->targets()[ti];
+    if (!spec.share)
+        load(bytes, now_ms);
+    bool ok = false;
+    if (failed)
+        evidence(spec, Evidence::WriteRefused, now_ms, spec.name);
+    if (!failed && !holds(t) && !(uncover && uncovers(t))) {
+        const int64_t t0 = clock_us_();
+        ok = t.graph->flush(++t.tag);
+        const int64_t took = clock_us_() - t0;
+        if (!ok)
+            evidence(spec, Evidence::FlushFailure, now_ms, spec.name);
+        else if (took >= slow_flush_us_)
+            evidence(spec, Evidence::SlowFlush, now_ms, spec.name + " " + std::to_string(took / 1000) + " ms");
+        if (!ok && !t.flush_failing)
+            log_error("target %s: flush %llu refused", slots_->targets()[ti].name.c_str(),
+                      (unsigned long long)t.tag);
+        else if (ok && t.flush_failing)
+            log_info("target %s: flushing again from %llu", slots_->targets()[ti].name.c_str(),
+                     (unsigned long long)t.tag);
+        t.flush_failing = !ok;
+    }
+    for (Asset *a : staged_assets)
+        a->committed(ok);
+    for (Layer *l : staged)
+        l->committed(ok, now_ms);
+    /* What the layers undid for a flush that did not go goes with the
+     * next one. */
+    t.dirty = !ok;
+    settle(ti, t, ok);
 }
 
 crk::UploadPacer &Compositor::pacer_for(int target)
@@ -860,21 +876,27 @@ void Compositor::occlude(int ti, Target &t)
     /* Only the layers from the top down to the lowest video matter; a
      * target with no video is not looked at. */
     CompositeVideo *cv = t.composite && t.composite->attached() ? t.composite.get() : nullptr;
-    size_t lowest = t.arr.order.size();
-    for (size_t pos = 0; pos < t.arr.order.size() && lowest == t.arr.order.size(); pos++) {
-        auto it = layers_.find(t.arr.order[pos]);
+    /* In the draw order the scene has: a layer held back keeps its old one. */
+    std::vector<uint32_t> ids = t.arr.order;
+    std::stable_sort(ids.begin(), ids.end(), [this](uint32_t a, uint32_t b) {
+        auto x = layers_.find(a), y = layers_.find(b);
+        return x != layers_.end() && y != layers_.end() && x->second.order < y->second.order;
+    });
+    size_t lowest = ids.size();
+    for (size_t pos = 0; pos < ids.size() && lowest == ids.size(); pos++) {
+        auto it = layers_.find(ids[pos]);
         if (it != layers_.end() && ((it->second.composited && cv) ||
                                     (it->second.layer->attached() && !std::strcmp(it->second.layer->kind(), "video"))))
             lowest = pos;
     }
-    if (lowest == t.arr.order.size())
+    if (lowest == ids.size())
         return;
     const TargetSpec &spec = slots_->targets()[ti];
     t.coverage.reset(spec.width, spec.height);
     if (cv)
         cv->begin_hidden();
-    for (size_t pos = t.arr.order.size(); pos-- > lowest;) {
-        auto it = layers_.find(t.arr.order[pos]);
+    for (size_t pos = ids.size(); pos-- > lowest;) {
+        auto it = layers_.find(ids[pos]);
         if (it == layers_.end())
             continue;
         if (it->second.composited) {
@@ -905,6 +927,171 @@ bool Compositor::uncovers(const Target &t) const
             return true;
     }
     return false;
+}
+
+Compositor::Look Compositor::look_of(const Entry &e)
+{
+    Look k;
+    const Layer &l = *e.layer;
+    k.drawn = l.attached() && e.drawn;
+    k.order = e.order;
+    k.rect = l.params.rect;
+    k.opacity = l.params.opacity;
+    k.rotate = l.params.rotate;
+    k.sx = l.params.sx;
+    k.sy = l.params.sy;
+    k.px = l.params.px;
+    k.py = l.params.py;
+    k.pivot_x = l.params.pivot_x;
+    k.pivot_y = l.params.pivot_y;
+    return k;
+}
+
+bool Compositor::same(const Look &a, const Look &b)
+{
+    return a.drawn == b.drawn && a.order == b.order && a.rect == b.rect && a.opacity == b.opacity &&
+           a.rotate == b.rotate && a.sx == b.sx && a.sy == b.sy && a.px == b.px && a.py == b.py &&
+           a.pivot_x == b.pivot_x && a.pivot_y == b.pivot_y;
+}
+
+/* The scene shows the layer as its last flush did (on), or as the client
+ * set it again (off). */
+void Compositor::revert(Entry &e, bool on)
+{
+    Layer &l = *e.layer;
+    if (on) {
+        const Look &f = e.flushed;
+        e.requested = l.params;
+        e.req_drawn = e.drawn;
+        e.req_order = e.order;
+        l.params.rect = f.rect;
+        l.params.opacity = f.opacity;
+        l.params.rotate = f.rotate;
+        l.params.sx = f.sx;
+        l.params.sy = f.sy;
+        l.params.px = f.px;
+        l.params.py = f.py;
+        l.params.pivot_x = f.pivot_x;
+        l.params.pivot_y = f.pivot_y;
+        l.place();
+        if (e.drawn != f.drawn || e.order != f.order) {
+            l.arrange(f.drawn, f.order);
+            e.drawn = f.drawn;
+            e.order = f.order;
+        }
+        e.reverted = true;
+        return;
+    }
+    l.params = e.requested;
+    l.place();
+    if (e.drawn != e.req_drawn || e.order != e.req_order) {
+        l.arrange(e.req_drawn, e.req_order);
+        e.drawn = e.req_drawn;
+        e.order = e.req_order;
+    }
+    e.reverted = false;
+}
+
+void Compositor::revert_fade(int ti, Target &t, bool on)
+{
+    const float f = on ? t.flushed_fade : t.applied;
+    for (auto &kv : layers_)
+        if (kv.second.layer->target() == ti)
+            kv.second.layer->set_fade(f);
+    if (t.composite)
+        t.composite->set_fade(f);
+    t.fade_reverted = on;
+}
+
+bool Compositor::defer_uncover(int ti, Target &t)
+{
+    /* What changed since the last flush that went: layers of their own
+     * whose look did, and the fade. */
+    std::vector<Entry *> changed;
+    for (auto &kv : layers_) {
+        Entry &e = kv.second;
+        if (e.layer->target() == ti && !e.composited && e.layer->attached() && !same(look_of(e), e.flushed))
+            changed.push_back(&e);
+    }
+    const bool fade = t.applied != t.flushed_fade;
+    for (Entry *e : changed)
+        revert(*e, true);
+    if (fade)
+        revert_fade(ti, t, true);
+    occlude(ti, t);
+    if (uncovers(t) && t.composite) {
+        t.composite->hold_moves(true);
+        occlude(ti, t);
+    }
+    if (!uncovers(t)) {
+        /* Of several changes, only those that uncover wait. */
+        if (changed.size() + fade > 1) {
+            for (Entry *e : changed) {
+                revert(*e, false);
+                occlude(ti, t);
+                if (uncovers(t))
+                    revert(*e, true);
+            }
+            if (fade) {
+                revert_fade(ti, t, false);
+                occlude(ti, t);
+                if (uncovers(t))
+                    revert_fade(ti, t, true);
+            }
+            occlude(ti, t);
+        }
+        return true;
+    }
+    /* Not held back by that (a layer removed, an animation started, an
+     * image hidden after a failed write, video objects made again): the
+     * changes go, and the uncovering videos write now. */
+    for (Entry *e : changed)
+        revert(*e, false);
+    if (fade)
+        revert_fade(ti, t, false);
+    if (t.composite)
+        t.composite->hold_moves(false);
+    occlude(ti, t);
+    if (t.composite && t.composite->attached() && t.composite->uncovering())
+        t.composite->force(true);
+    for (auto &kv : layers_)
+        if (kv.second.layer->target() == ti && kv.second.layer->attached() && kv.second.layer->uncovering())
+            static_cast<VideoLayer *>(kv.second.layer.get())->force(true);
+    return false;
+}
+
+void Compositor::settle(int ti, Target &t, bool ok)
+{
+    for (auto &kv : layers_) {
+        Entry &e = kv.second;
+        if (e.layer->target() != ti || e.composited)
+            continue;
+        if (ok && !e.reverted)
+            e.flushed = look_of(e);
+        if (e.reverted)
+            e.layer->params = e.requested;   /* the scene keeps the old look until reapply() */
+        if (!std::strcmp(e.layer->kind(), "video"))
+            static_cast<VideoLayer *>(e.layer.get())->force(false);
+    }
+    if (ok && !t.fade_reverted)
+        t.flushed_fade = t.applied;
+    t.fade_reverted = false;
+    if (t.composite) {
+        t.composite->force(false);
+        t.composite->hold_moves(false);
+    }
+}
+
+void Compositor::reapply(int ti, Target &t)
+{
+    for (auto &kv : layers_) {
+        Entry &e = kv.second;
+        if (e.layer->target() != ti || !e.reverted)
+            continue;
+        e.layer->place();
+        e.reverted = false;
+        t.dirty = true;
+    }
 }
 
 int64_t Compositor::wake_in_ms(int64_t now_ms) const
@@ -1014,6 +1201,13 @@ bool Compositor::publish(const TargetSpec &spec, std::string *err)
         return false;
     t.tag = 0;
     t.flush_failing = false;
+    /* A new scene shows nothing until its first flush. */
+    t.flushed_fade = t.applied;
+    for (auto &kv : layers_)
+        if (kv.second.layer->target() == ti) {
+            kv.second.flushed = Look();
+            kv.second.reverted = false;
+        }
     for (auto &kv : assets_)
         if (kv.second.asset->target() == ti)
             kv.second.asset->attach(t.graph.get());

@@ -82,10 +82,19 @@
  * the tiles wholly under that unwritten (video_layer.h). A video whose
  * unwritten tiles a change uncovers (a layer above moved, hidden, turned
  * translucent, faded or gone, or the video itself moved) writes them in the
- * flush that uncovers them: the target does not stage or flush until the
- * budget allows that write, which then goes whatever the video's frame
- * clock, with the rest of the target's changes. Until then the display
- * keeps showing the target as last flushed, the tiles still covered. */
+ * flush that carries the change, whatever its frame clock. Its target
+ * stages first in the tick, so that write takes the next positive
+ * allowance before other targets' writes. While the budget does not allow
+ * it, only the change waits: for each such tick the layers it concerns
+ * keep in the scene what the last flush that went showed of them (rect,
+ * turn, opacity, drawn, draw order), the fade its last flushed step, and
+ * the composite's sources their quads' places, and everything else on the
+ * target stages and flushes as usual (defer_uncover). The wait is the time
+ * the budget takes to repay what it owes, as for any write. A change that
+ * cannot be held back so (a layer removed, an animation started, an image
+ * hidden after a failed write, video objects made again) goes at once, and
+ * the video writes the tiles it uncovers in that flush whatever the budget
+ * allows, its bytes charged as any write's. */
 #ifndef CRS_COMPOSITOR_H
 #define CRS_COMPOSITOR_H
 
@@ -220,6 +229,15 @@ public:
     void resent(const TargetSpec &t, int64_t now_ms) override;
 
 private:
+    /* A layer as the scene shows it, for what it covers: drawn, its place
+     * in the draw order, its rect, turn and opacity. */
+    struct Look {
+        bool drawn = false;
+        int32_t order = -1;
+        Rect rect;
+        float opacity = 1, rotate = 0, sx = 1, sy = 1, px = 0, py = 0;
+        bool pivot_x = false, pivot_y = false;
+    };
     struct Entry {
         std::unique_ptr<Layer> layer;
         uint64_t owner = 0;
@@ -231,6 +249,13 @@ private:
         bool composited = false;   /* a video drawn by its target's composite */
         bool placed = false;       /* a video the plans have placed (reconcile) */
         bool composable = false;   /* a video's composability, as the last plan took it */
+        /* What its target's last flush that went shows of it (a layer of its
+         * own); while reverted, the scene shows that again for this tick and
+         * requested holds what the client set. */
+        Look flushed;
+        bool reverted = false, req_drawn = false;
+        int32_t req_order = -1;
+        LayerParams requested;
         std::map<std::pair<uint32_t, std::string>, uint32_t> binds;   /* (part, sampler) -> asset */
     };
     struct AssetEntry {
@@ -264,8 +289,12 @@ private:
         /* When a video last started or stopped being composited; when a
          * held change of a video's composability is due (-1: none is). */
         int64_t members_ms = INT64_MIN / 4, hold_ms = -1;
-        /* What the layers drawn above a point of its stack cover. */
+        /* What the layers drawn above a point of its stack cover; the fade
+         * its last flush that went carried, and whether this tick's is held
+         * back. */
         Coverage coverage;
+        float flushed_fade = 1.0f;
+        bool fade_reverted = false;
     };
     struct VideoSpec {
         uint32_t id = 0;
@@ -349,6 +378,23 @@ private:
     void occlude(int ti, Target &t);
     /* A video on the target is uncovering (Layer::uncovering). */
     bool uncovers(const Target &t) const;
+    /* One target's stage and flush (render()). */
+    void render_target(int ti, Target &t, int64_t now_ms);
+    /* The budget does not allow the uncovering write: holds back for this
+     * tick the changes that uncover held tiles, each layer's at what the
+     * last flush showed, the fade's and the composite's moves likewise, and
+     * lets the rest through. False when that does not keep the tiles
+     * covered: the uncovering videos then write now (VideoLayer::force). */
+    bool defer_uncover(int ti, Target &t);
+    void revert(Entry &e, bool on);
+    void revert_fade(int ti, Target &t, bool on);
+    /* After the target's flush (ok: it went): what it shows, taken; the
+     * reverted layers' params back to what the client set. */
+    void settle(int ti, Target &t, bool ok);
+    /* The reverted layers' requested look back into the scene. */
+    void reapply(int ti, Target &t);
+    static Look look_of(const Entry &e);
+    static bool same(const Look &a, const Look &b);
     void apply_binds(Entry &e);
     void drop_effects(Entry &e);
     /* Every asset the layer samples has pixels; and its buffer holds them. */

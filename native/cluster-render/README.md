@@ -534,10 +534,15 @@ Beside the layers:
   a mesh layer, an animated image, or anything turned, translucent or
   fading. A hidden tile that has changed goes in the flush that uncovers it
   (a layer above moved, hidden, made translucent, turned, faded or gone, or
-  the video moved): the target stages and flushes nothing until the budget
-  allows that write, which goes whatever the video's frame clock, so the
-  display keeps the tiles covered until they are current. With nothing
-  opaque over a video it writes as before, byte for byte.
+  the video moved), whatever the video's frame clock; its target stages
+  first, so the write takes the next positive allowance. Until the budget
+  allows it, only that change waits (the scene keeps the layers it concerns
+  as last flushed) and everything else on the target flushes as usual: the
+  wait is the time the budget takes to repay what it owes. A change that
+  cannot wait so (a layer removed, an animation started, an image hidden
+  after a failed write, video objects made again) goes at once with the
+  write, whatever the budget allows. With nothing opaque over a video it
+  writes as before, byte for byte.
 - **Turns**: video, image and effect quads rotate and scale about a pivot
   (a needle), each under two group nodes in the scene.
 - **Animations**: keys the renderer plays by itself (one real-time
@@ -975,7 +980,11 @@ The host tests:
   and a scaled map under a composite, moved, hidden, shown, made
   translucent and turned faster than a tight budget writes, with refused
   flushes and writes: no flush shows a part of a video from another frame
-  than the rest; with nothing opaque over a video, every renderer call and
+  than the rest; the map panning past the budget (and after resent's
+  charge) while an image over a panel video moves and hides: the panel's
+  other changes flush every tick, the image's change waits only for the
+  budget's debt; a hidden tile changed within the threshold kept across a
+  scene published again; with nothing opaque over a video, every renderer call and
   byte as before (a camera at 0.9 or turned, Waze on the cluster and the
   HUD, an overlay with transparent pixels); a minute's bytes under an
   opaque, a translucent and a moving camera, and the cost a tick, printed;

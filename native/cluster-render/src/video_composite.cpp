@@ -246,6 +246,14 @@ CompositeVideo::Source *CompositeVideo::find(uint32_t id)
     return nullptr;
 }
 
+const CompositeVideo::Source *CompositeVideo::find(uint32_t id) const
+{
+    for (const Source &s : src_)
+        if (s.id == id)
+            return &s;
+    return nullptr;
+}
+
 bool CompositeVideo::has(uint32_t id) const
 {
     for (const Source &s : src_)
@@ -391,7 +399,7 @@ Stage CompositeVideo::stage(int64_t now_ms)
     const Stage st = VideoLayer::stage(now_ms);
     /* A write carries the canvas; with none due, the display's buffer
      * holds it already. */
-    placed_now_ = g_ && (st == Stage::Wrote || (st == Stage::Idle && !waiting())) && place_composed();
+    placed_now_ = g_ && !hold_moves_ && (st == Stage::Wrote || (st == Stage::Idle && !waiting())) && place_composed();
     if (st != Stage::Wrote)
         placing_.clear();
     return st;
@@ -571,7 +579,7 @@ void CompositeVideo::see(const Source &s, const Coverage *cov)
     int n = 0;
     if (drawn_ && s.showing && s.placed.w)
         at[n++] = box_of(s.placed);
-    if (s.drawn && s.rect.w)
+    if (s.drawn && s.rect.w && !hold_moves_)
         at[n++] = box_of(s.rect);
     if (!n)
         return;
@@ -598,15 +606,12 @@ void CompositeVideo::see(const Source &s, const Coverage *cov)
 
 void CompositeVideo::occlude_source(uint32_t id, Coverage *cov) const
 {
-    const Source *s = nullptr;
-    for (const Source &x : src_)
-        if (x.id == id)
-            s = &x;
+    const Source *s = find(id);
     if (!s || !g_ || !drawn_ || !opaque_ || !s->showing || !s->drawn || !s->placed.w || s->opacity * fade_ < 1.0f)
         return;
     /* Where its quads are, and with a move waiting, where they may go too. */
     Box a = box_of(s->placed);
-    if (s->moved)
+    if (s->moved && !hold_moves_)
         a = intersect(a, box_of(s->rect));
     cov->add(a);
 }

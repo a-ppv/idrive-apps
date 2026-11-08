@@ -118,7 +118,8 @@ void VideoLayer::canvas_changed(int64_t now_ms)
 
 bool VideoLayer::due(int64_t now_ms)
 {
-    return (clock_.due(now_ms) || parked_ || uncovering()) && pacer_.ready(now_ms);
+    const bool uncover = uncovering();
+    return (clock_.due(now_ms) || parked_ || uncover) && (pacer_.ready(now_ms) || (force_ && uncover));
 }
 
 void VideoLayer::hide(const uint8_t *tiles)
@@ -342,7 +343,7 @@ Stage VideoLayer::stage(int64_t now_ms)
     const bool uncover = uncovering();
     if (!(front_pending_ || settle || refine || uncover) || (!clock_.due(now_ms) && !parked_ && !uncover))
         return Stage::Idle;
-    if (!pacer_.ready(now_ms)) {
+    if (!pacer_.ready(now_ms) && !(force_ && uncover)) {
         held_budget_++;
         return Stage::Idle;
     }

@@ -146,6 +146,9 @@ public:
     void see_source(uint32_t id, const Coverage &cov);
     void occlude_source(uint32_t id, Coverage *cov) const;
     void end_hidden();
+    /* Sources' moves and shows wait (no quad goes to a new place this tick),
+     * and occlusion takes the quads where they are. */
+    void hold_moves(bool on) { hold_moves_ = on; }
 
 protected:
     bool make_atlas_quads(Graph *g) override;
@@ -181,6 +184,7 @@ private:
     };
 
     Source *find(uint32_t id);
+    const Source *find(uint32_t id) const;
     /* rect on the target, in the canvas. */
     crk::PixelRect in_canvas(const Rect &r) const;
     void mark(const Rect &r);
@@ -207,7 +211,7 @@ private:
     /* Occlusion this tick: the canvas tiles a source shows, whether any
      * source had anything opaque above it, and the sources that had not. */
     std::vector<uint8_t> visible_;
-    bool covered_ = false;
+    bool covered_ = false, hold_moves_ = false;
     std::vector<uint32_t> clear_;
     bool scene_changed_ = false;
     uint64_t tiles_composed_ = 0;
