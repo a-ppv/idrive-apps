@@ -41,6 +41,9 @@ struct Shown {
     bool turned = false;
     float opacity = 1, fade = 1;
     bool animating = false;
+    /* The budget allows a write this tick: an image's pixels waiting to be
+     * written may reach the scene in it. */
+    bool budget_ready = true;
 };
 
 /* What a client sets on a layer, at any time. */
@@ -118,6 +121,17 @@ public:
     virtual const char *kind() const = 0;
 
     LayerParams params;
+    /* What the scene shows of the layer: params, or while a change of them
+     * waits (the compositor's defer_uncover) what its last flush showed. */
+    const LayerParams &drawn_params() const { return scene_held_ ? scene_params_ : params; }
+    /* p: the scene keeps showing p (null: params again); the caller places
+     * and arranges the layer then. */
+    void hold_scene(const LayerParams *p)
+    {
+        scene_held_ = p != nullptr;
+        if (p)
+            scene_params_ = *p;
+    }
 
     /* Plays a on part (0: the layer's quad, or a mesh layer's camera) by
      * the renderer, replacing anim of the same number; kept and started
@@ -225,6 +239,8 @@ protected:
     float fade_ = 1.0f;
     /* New animations wait for start_pending(). */
     bool defer_starts_ = false;
+    bool scene_held_ = false;
+    LayerParams scene_params_;
 
     /* Keeps a and starts it when attached; no limit (the service's own). */
     bool play(uint32_t anim, uint32_t part, const Animation &a, std::string *err);
@@ -311,8 +327,13 @@ private:
     bool opq_on_ = false, opq_buf_known_ = false;
     std::vector<uint8_t> opq_px_, opq_buf_;
     uint32_t opq_cols_ = 0, opq_rows_ = 0;
+    /* Whether every block, or none, is opaque in the buffer, and in the
+     * buffer and the pixels waiting: kept until either changes (opq_ver_). */
+    uint64_t opq_ver_ = 1, opq_sum_ver_ = 0;
+    bool opq_all_buf_ = false, opq_none_buf_ = true, opq_all_both_ = false, opq_none_both_ = true;
     void opq_changed(const crk::PixelRect &r);
     void opq_resolve();
+    void opq_summary();
     uint64_t writes_ = 0, bytes_ = 0, failed_ = 0, held_budget_ = 0;
 };
 

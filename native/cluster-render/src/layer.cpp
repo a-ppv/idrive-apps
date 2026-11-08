@@ -229,8 +229,10 @@ bool ImageLayer::update(const std::vector<crk::PixelRect> &rects, const uint8_t 
         whole_ = true;
         dirty_.clear();
         have_ = true;
-        if (opq_on_)
+        if (opq_on_) {
             std::fill(opq_px_.begin(), opq_px_.end(), 2);
+            opq_ver_++;
+        }
         return true;
     }
     size_t need = 0;
@@ -249,8 +251,10 @@ bool ImageLayer::update(const std::vector<crk::PixelRect> &rects, const uint8_t 
         for (uint32_t y = 0; y < r.h; y++)
             std::memcpy(&px_[((size_t)(r.y + y) * w_ + r.x) * 4], data + (size_t)y * r.w * 4, (size_t)r.w * 4);
         data += (size_t)r.w * r.h * 4;
-        if (opq_on_)
+        if (opq_on_) {
             opq_changed(r);
+            opq_ver_++;
+        }
         if (!whole_) {
             if (dirty_.size() >= kMaxRects) {
                 whole_ = true;
@@ -268,10 +272,10 @@ bool ImageLayer::attach(Graph *g, int64_t, std::string *err)
 {
     g_ = g;
     buf_ = g->buffer(TexFormat::RGBA8, w_, h_, sampling_);
-    quad_ = buf_ ? g->quad(effect_, params.rect) : 0;
-    const float op = params.opacity * fade_;
+    quad_ = buf_ ? g->quad(effect_, drawn_params().rect) : 0;
+    const float op = drawn_params().opacity * fade_;
     if (!quad_ || !g->texture(quad_, "u_image", buf_) || !g->uniform(quad_, "u_opacity", &op, 1) ||
-        !g->turn(quad_, params.turn()) || !g->show(quad_, false) || !g->order(quad_, order_)) {
+        !g->turn(quad_, drawn_params().turn()) || !g->show(quad_, false) || !g->order(quad_, order_)) {
         *err = "image buffer or quad refused";
         detach(true);
         return false;
@@ -279,6 +283,7 @@ bool ImageLayer::attach(Graph *g, int64_t, std::string *err)
     drawn_ = false;
     whole_ = true;   /* a new buffer holds nothing yet */
     opq_buf_known_ = false;
+    opq_ver_++;
     start_animations();
     return true;
 }
@@ -297,6 +302,7 @@ void ImageLayer::detach(bool drop)
     drawn_ = parked_ = hold_ = false;
     whole_ = true;
     opq_buf_known_ = false;
+    opq_ver_++;
 }
 
 void ImageLayer::arrange(bool drawn, int32_t order)
@@ -314,9 +320,9 @@ void ImageLayer::place()
 {
     if (!g_)
         return;
-    const float op = params.opacity * fade_;
-    g_->place(quad_, params.rect);
-    g_->turn(quad_, params.turn());
+    const float op = drawn_params().opacity * fade_;
+    g_->place(quad_, drawn_params().rect);
+    g_->turn(quad_, drawn_params().turn());
     g_->uniform(quad_, "u_opacity", &op, 1);
 }
 
@@ -324,7 +330,7 @@ void ImageLayer::faded()
 {
     if (!g_)
         return;
-    const float op = params.opacity * fade_;
+    const float op = drawn_params().opacity * fade_;
     g_->uniform(quad_, "u_opacity", &op, 1);
 }
 
@@ -370,9 +376,11 @@ void ImageLayer::committed(bool ok, int64_t now_ms)
             opq_resolve();
             opq_buf_ = opq_px_;
             opq_buf_known_ = true;
+            opq_ver_++;
         }
     } else {
         opq_buf_known_ = false;
+        opq_ver_++;
         /* The buffer may hold part of it unflushed: write it all again. An
          * exclusive image holds the target until then (the layers below it
          * are suspended, so hiding it would show nothing); any other is
@@ -415,6 +423,23 @@ void ImageLayer::opq_resolve()
         }
 }
 
+void ImageLayer::opq_summary()
+{
+    if (opq_sum_ver_ == opq_ver_)
+        return;
+    opq_resolve();
+    opq_all_buf_ = opq_all_both_ = true;
+    opq_none_buf_ = opq_none_both_ = true;
+    for (size_t b = 0; b < opq_px_.size(); b++) {
+        const bool buf = opq_buf_[b] != 0, both = buf && opq_px_[b] == 1;
+        opq_all_buf_ = opq_all_buf_ && buf;
+        opq_none_buf_ = opq_none_buf_ && !buf;
+        opq_all_both_ = opq_all_both_ && both;
+        opq_none_both_ = opq_none_both_ && !both;
+    }
+    opq_sum_ver_ = opq_ver_;
+}
+
 void ImageLayer::occlude(Coverage *cov, const Shown &s)
 {
     const Rect &r = s.rect;
@@ -433,13 +458,24 @@ void ImageLayer::occlude(Coverage *cov, const Shown &s)
             opq_resolve();
             opq_buf_ = opq_px_;
         }
+        opq_ver_++;
     }
     if (!opq_buf_known_)
         return;
-    opq_resolve();
+    opq_summary();
+    /* What the buffer holds shows in the next flush, and the pixels waiting
+     * too when the budget allows the image's write this tick; while it
+     * does not, they cannot reach the scene. */
+    const bool both = s.budget_ready;
+    if (both ? opq_none_both_ : opq_none_buf_)
+        return;
+    if (both ? opq_all_both_ : opq_all_buf_) {
+        cov->add(box_of(r));
+        defer_starts_ = true;
+        return;
+    }
     /* A target pixel samples about the image coordinate of its centre: the
-     * image pixels under it, one more each way for the filter. Opaque where
-     * both the buffer and the pixels waiting to be written are. */
+     * image pixels under it, one more each way for the filter. */
     defer_starts_ = cov->add_if(box_of(r), [&](const Box &c) {
         const int64_t ix0 = std::max<int64_t>(0, (int64_t)(c.x0 - r.x) * w_ / r.w - 1);
         const int64_t ix1 = std::min<int64_t>(w_, ((int64_t)(c.x1 - r.x) * w_ + r.w - 1) / r.w + 1);
@@ -448,7 +484,7 @@ void ImageLayer::occlude(Coverage *cov, const Shown &s)
         for (int64_t by = iy0 / kOpaqueBlock; by <= (iy1 - 1) / kOpaqueBlock; by++)
             for (int64_t bx = ix0 / kOpaqueBlock; bx <= (ix1 - 1) / kOpaqueBlock; bx++) {
                 const size_t b = (size_t)by * opq_cols_ + (size_t)bx;
-                if (opq_px_[b] != 1 || !opq_buf_[b])
+                if (!opq_buf_[b] || (both && opq_px_[b] != 1))
                     return false;
             }
         return true;
@@ -524,8 +560,8 @@ void EffectLayer::cluster_time()
 bool EffectLayer::attach(Graph *g, int64_t, std::string *err)
 {
     g_ = g;
-    quad_ = g->quad(effect_, params.rect);
-    if (!quad_ || !g->turn(quad_, params.turn()) || !g->show(quad_, false) || !g->order(quad_, order_)) {
+    quad_ = g->quad(effect_, drawn_params().rect);
+    if (!quad_ || !g->turn(quad_, drawn_params().turn()) || !g->show(quad_, false) || !g->order(quad_, order_)) {
         *err = "effect quad refused";
         detach(true);
         return false;
@@ -561,8 +597,8 @@ void EffectLayer::place()
 {
     if (!g_)
         return;
-    g_->place(quad_, params.rect);
-    g_->turn(quad_, params.turn());
+    g_->place(quad_, drawn_params().rect);
+    g_->turn(quad_, drawn_params().turn());
 }
 
 void EffectLayer::restore(uint32_t, const Animation &a)

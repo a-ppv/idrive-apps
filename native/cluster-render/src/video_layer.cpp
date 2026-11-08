@@ -228,8 +228,8 @@ bool VideoLayer::attach(Graph *g, int64_t now_ms, std::string *err)
 bool VideoLayer::make_atlas_quads(Graph *g)
 {
     const float size[2] = {(float)p_.w, (float)p_.h}, zero = 0.0f;
-    atlas_quad_ = g->quad(atlas_effect_, params.rect);
-    return atlas_quad_ && g->turn(atlas_quad_, params.turn()) && g->texture(atlas_quad_, "u_image", atlas_buf_) &&
+    atlas_quad_ = g->quad(atlas_effect_, drawn_params().rect);
+    return atlas_quad_ && g->turn(atlas_quad_, drawn_params().turn()) && g->texture(atlas_quad_, "u_image", atlas_buf_) &&
            g->uniform(atlas_quad_, "u_size", size, 2) && g->uniform(atlas_quad_, "u_opacity", &zero, 1) &&
            g->show(atlas_quad_, false) && g->order(atlas_quad_, order_);
 }
@@ -237,8 +237,8 @@ bool VideoLayer::make_atlas_quads(Graph *g)
 bool VideoLayer::make_block_quads(Graph *g)
 {
     const float size[2] = {(float)p_.w, (float)p_.h}, zero = 0.0f;
-    block_quad_ = g->quad(block_effect_, params.rect);
-    return block_quad_ && g->turn(block_quad_, params.turn()) && g->texture(block_quad_, "u_image", block_buf_[0]) &&
+    block_quad_ = g->quad(block_effect_, drawn_params().rect);
+    return block_quad_ && g->turn(block_quad_, drawn_params().turn()) && g->texture(block_quad_, "u_image", block_buf_[0]) &&
            g->uniform(block_quad_, "u_size", size, 2) && g->uniform(block_quad_, "u_opacity", &zero, 1) &&
            g->show(block_quad_, false) && g->order(block_quad_, order_ + 1);
 }
@@ -299,7 +299,7 @@ bool VideoLayer::bank_quads(int buf)
 
 void VideoLayer::set_opacity()
 {
-    const float a = opaque_ ? params.opacity * fade_ : 0.0f;
+    const float a = opaque_ ? drawn_params().opacity * fade_ : 0.0f;
     g_->uniform(atlas_quad_, "u_opacity", &a, 1);
     if (block_quad_)
         g_->uniform(block_quad_, "u_opacity", &a, 1);
@@ -321,11 +321,11 @@ void VideoLayer::place()
 {
     if (!g_)
         return;
-    g_->place(atlas_quad_, params.rect);
-    g_->turn(atlas_quad_, params.turn());
+    g_->place(atlas_quad_, drawn_params().rect);
+    g_->turn(atlas_quad_, drawn_params().turn());
     if (block_quad_) {
-        g_->place(block_quad_, params.rect);
-        g_->turn(block_quad_, params.turn());
+        g_->place(block_quad_, drawn_params().rect);
+        g_->turn(block_quad_, drawn_params().turn());
     }
     set_opacity();
 }
@@ -350,11 +350,21 @@ Stage VideoLayer::stage(int64_t now_ms)
         held_budget_++;
         return Stage::Idle;
     }
-    /* A forced write (compositor.h) hides nothing: every tile goes, the
-     * held ones with it. */
+    /* A forced write (compositor.h) hides nothing. With packed blocks it is
+     * the newest frame packed, the atlas hidden until a write the budget
+     * allows brings it back exact; without, every changed tile, the held
+     * ones with it. */
     forced_write_ = !paced;
-    if (forced_write_)
+    if (forced_write_) {
         hiding_ = false;
+        if (p_.pan_blocks && !first_) {
+            if (front_stale_) {
+                front_ = shown_;   /* the newest frame went whole: shown_ holds it */
+                front_stale_ = false;
+            }
+            return stage_blocks(now_ms, front_pending_);
+        }
+    }
     return stage_exact(now_ms, front_pending_);
 }
 

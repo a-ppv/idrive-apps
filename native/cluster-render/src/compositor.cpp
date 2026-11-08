@@ -204,6 +204,13 @@ void Compositor::attach(Entry &e, Target &t)
     std::string err;
     e.drawn = false;
     e.order = -1;   /* arranged again: shown and ordered in the same flush */
+    e.flushed = Look();
+    if (e.held) {
+        e.held = false;
+        t.held_n--;
+        e.layer->hold_scene(nullptr);
+    }
+    mark(e, e.layer->id(), t);
     if (!e.layer->attach(t.graph.get(), now_ms_, &err)) {
         e.error = err;
         log_error("layer %u (%s): %s", e.layer->id(), e.layer->kind(), err.c_str());
@@ -495,6 +502,17 @@ void Compositor::touch(Layer *l)
     Target &t = targets_[l->target()];
     if (t.graph)
         t.dirty = true;
+    auto it = layers_.find(l->id());
+    if (it != layers_.end())
+        mark(it->second, l->id(), t);
+}
+
+void Compositor::mark(Entry &e, uint32_t id, Target &t)
+{
+    if (e.touched)
+        return;
+    e.touched = true;
+    t.touched.push_back(id);
 }
 
 Layer *Compositor::layer(uint64_t owner, uint32_t id)
@@ -519,6 +537,8 @@ void Compositor::changed(Layer *l)
         if (t.graph)
             t.dirty = true;
     }
+    if (it != layers_.end())
+        mark(it->second, l->id(), t);
     if (std::string(l->kind()) == "video")
         reconcile();
 }
@@ -533,6 +553,8 @@ void Compositor::remove(uint64_t owner, uint32_t id)
     const bool video = std::string(it->second.layer->kind()) == "video";
     if (it->second.composited && t.composite)
         t.composite->remove(id);
+    if (it->second.held)
+        t.held_n--;
     it->second.layer->detach(true);
     if (t.graph)
         t.dirty = true;
@@ -594,6 +616,10 @@ void Compositor::arrange(int64_t now_ms)
         slots_->want((int)ti, t.arr.wanted, t.arr.contend, t.arr.guide_hold);
         if (!t.graph)
             continue;
+        const bool cv = t.composite && t.composite->attached();
+        t.videos = 0;
+        t.lowest = INT32_MAX;
+        t.top = INT32_MIN;
         for (size_t pos = 0; pos < t.arr.order.size(); pos++) {
             Entry &e = layers_[t.arr.order[pos]];
             if (!e.composited && !e.layer->attached())
@@ -602,6 +628,13 @@ void Compositor::arrange(int64_t now_ms)
                 std::find(t.arr.drawn.begin(), t.arr.drawn.end(), t.arr.order[pos]) != t.arr.drawn.end() &&
                 assets_clean(e);
             const int32_t order = (int32_t)pos * 4;
+            /* A composite not attached draws none of its sources. */
+            if (e.composited ? cv : !std::strcmp(e.layer->kind(), "video")) {
+                t.videos++;
+                t.lowest = std::min(t.lowest, order);
+            }
+            if (drawn && (!e.composited || cv))
+                t.top = std::max(t.top, order);
             if (e.composited) {
                 if (t.composite)
                     t.composite->arrange_source(t.arr.order[pos], drawn, order);
@@ -619,6 +652,7 @@ void Compositor::arrange(int64_t now_ms)
                 e.drawn = drawn;
                 e.order = order;
                 t.dirty = true;
+                mark(e, t.arr.order[pos], t);
             }
         }
         if (t.composite && t.composite->arranged())
@@ -709,16 +743,30 @@ void Compositor::render(int64_t now_ms)
      * once shown. Each target staging is told what covers its videos; one
      * with held tiles to uncover goes first, so that its write takes the
      * next allowance before other targets' writes. */
-    std::vector<int> order, later;
+    render_order_.clear();
+    render_later_.clear();
     for (size_t ti = 0; ti < targets_.size(); ti++) {
         Target &t = targets_[ti];
         if (!t.graph || !slots_->requested((int)ti) || slots_->status((int)ti).state == TargetState::Parked)
             continue;
-        occlude((int)ti, t);
-        (uncovers(t) ? order : later).push_back((int)ti);
+        t.uncover = false;
+        if (occluding(t)) {
+            occlude((int)ti, t);
+            t.uncover = uncovers(t);
+            t.quiet = t.quiet && !t.uncover && !t.held_n && !t.fade_held;
+            if (t.uncover && t.uncover_since < 0)
+                t.uncover_since = now_ms;
+            if (!t.uncover)
+                t.uncover_since = -1;
+        }
+        (t.uncover ? render_order_ : render_later_).push_back((int)ti);
     }
-    order.insert(order.end(), later.begin(), later.end());
-    for (int ti : order)
+    /* The target that has waited longest to uncover first: none waits
+     * behind another's uncovering more than once. */
+    std::stable_sort(render_order_.begin(), render_order_.end(),
+                     [this](int a, int b) { return targets_[a].uncover_since < targets_[b].uncover_since; });
+    render_order_.insert(render_order_.end(), render_later_.begin(), render_later_.end());
+    for (int ti : render_order_)
         render_target(ti, targets_[ti], now_ms);
     if (governor_.tick(now_ms))
         pacer_.set_rate(governor_.cap());
@@ -730,7 +778,7 @@ void Compositor::render_target(int ti, Target &t, int64_t now_ms)
      * While the budget does not allow that write, the change waits (the
      * scene keeps what the last flush showed for it) and everything else
      * on the target goes as usual. */
-    bool uncover = uncovers(t);
+    bool uncover = t.uncover;
     if (uncover && !pacer_for(ti).ready(now_ms))
         uncover = !defer_uncover(ti, t);
     commit(ti, t);
@@ -820,6 +868,8 @@ void Compositor::render_target(int ti, Target &t, int64_t now_ms)
     /* What the layers undid for a flush that did not go goes with the
      * next one. */
     t.dirty = !ok;
+    if (t.uncover_since >= 0 && !uncovers(t))
+        t.uncover_since = -1;
     settle(ti, t, ok);
 }
 
@@ -894,16 +944,24 @@ Shown Compositor::shown_of(const Entry &e, const Target &t) const
     s.opacity = k.opacity;
     s.fade = t.eval_fade_held ? t.flushed_fade : t.applied;
     s.animating = k.animating;
+    s.budget_ready = t.budget_ready;
     return s;
+}
+
+bool Compositor::occluding(const Target &t) const
+{
+    return !t.quiet || (t.videos && t.top > t.lowest);
 }
 
 void Compositor::occlude(int ti, Target &t)
 {
-    /* The lowest video's place in the draw order the next flush shows, and
-     * whether any layer is drawn above it. A target with no video, or with
-     * nothing above its lowest one, has nothing hidden: its videos are told
-     * so, and the walk is not made. */
+    /* A composite not attached draws none of its sources: they are neither
+     * seen nor cover anything. */
     CompositeVideo *cv = t.composite && t.composite->attached() ? t.composite.get() : nullptr;
+    t.budget_ready = pacer_for(ti).ready(now_ms_);
+    /* The lowest video's place in the draw order the next flush shows, and
+     * whether any layer is drawn above it. With none above, nothing is
+     * hidden: the videos are told so, and no walk is made. */
     int32_t lowest = INT32_MAX, top = INT32_MIN;
     bool videos = false;
     for (uint32_t id : t.arr.order) {
@@ -911,18 +969,18 @@ void Compositor::occlude(int ti, Target &t)
         if (it == layers_.end())
             continue;
         const Entry &e = it->second;
-        const bool video = e.composited ? cv != nullptr : e.layer->attached() && !std::strcmp(e.layer->kind(), "video");
-        if (!e.composited && !e.layer->attached())
+        if (e.composited ? !cv : !e.layer->attached())
             continue;
         const int32_t order = e.composited || !e.eval_held ? e.order : e.flushed.order;
         const bool drawn = e.composited || !e.eval_held ? e.drawn : e.flushed.drawn;
-        if (video) {
+        if (e.composited || !std::strcmp(e.layer->kind(), "video")) {
             videos = true;
             lowest = std::min(lowest, order);
         }
         if (drawn)
             top = std::max(top, order);
     }
+    t.quiet = true;
     if (!videos)
         return;
     const TargetSpec &spec = slots_->targets()[ti];
@@ -930,20 +988,28 @@ void Compositor::occlude(int ti, Target &t)
     if (top <= lowest) {
         for (uint32_t id : t.arr.order) {
             auto it = layers_.find(id);
-            if (it != layers_.end() && !it->second.composited && it->second.layer->attached() &&
-                !std::strcmp(it->second.layer->kind(), "video"))
-                it->second.layer->occluded(t.coverage, shown_of(it->second, t));
+            if (it == layers_.end() || it->second.composited || !it->second.layer->attached() ||
+                std::strcmp(it->second.layer->kind(), "video"))
+                continue;
+            VideoLayer *v = static_cast<VideoLayer *>(it->second.layer.get());
+            v->occluded(t.coverage, shown_of(it->second, t));
+            t.quiet = t.quiet && !v->holds_tiles();
         }
-        if (cv)
+        if (cv) {
             cv->hide(nullptr);
+            t.quiet = t.quiet && !cv->holds_tiles();
+        }
         return;
     }
+    t.quiet = false;
     t.walk.clear();
     for (uint32_t id : t.arr.order) {
         auto it = layers_.find(id);
-        if (it == layers_.end() || (!it->second.composited && !it->second.layer->attached()))
+        if (it == layers_.end())
             continue;
         const Entry &e = it->second;
+        if (e.composited ? !cv : !e.layer->attached())
+            continue;
         const int32_t order = e.composited || !e.eval_held ? e.order : e.flushed.order;
         if (order >= lowest)
             t.walk.push_back(std::make_pair(order, id));
@@ -1046,6 +1112,7 @@ bool Compositor::defer_uncover(int ti, Target &t)
     /* The changes since the last flush that went, as units that wait or go
      * together: each layer of its own whose look changed, the fade, the
      * composite's moves, shows and opacities. */
+    t.decided = true;
     struct Unit {
         std::vector<Entry *> layers;
         bool fade = false, composite = false, held = true;
@@ -1161,37 +1228,48 @@ bool Compositor::defer_uncover(int ti, Target &t)
 
 void Compositor::commit(int ti, Target &t)
 {
-    for (auto &kv : layers_) {
-        Entry &e = kv.second;
-        Layer &l = *e.layer;
-        if (l.target() != ti || e.composited || !l.attached())
-            continue;
-        if (e.eval_held && !e.held) {
-            /* The scene back to what the last flush showed; params stay
-             * what the client set. */
-            const LayerParams set = l.params;
-            const Look &f = e.flushed;
-            l.params.rect = f.rect;
-            l.params.opacity = f.opacity;
-            l.params.rotate = f.rotate;
-            l.params.sx = f.sx;
-            l.params.sy = f.sy;
-            l.params.px = f.px;
-            l.params.py = f.py;
-            l.params.pivot_x = f.pivot_x;
-            l.params.pivot_y = f.pivot_y;
-            l.place();
-            l.arrange(f.drawn, f.order);
-            l.params = set;
-            e.held = true;
-        } else if (!e.eval_held && e.held) {
-            l.place();
-            l.arrange(e.drawn, e.order);
-            e.held = false;
-            t.dirty = true;
+    if (t.decided || t.held_n) {
+        for (auto &kv : layers_) {
+            Entry &e = kv.second;
+            Layer &l = *e.layer;
+            if (l.target() != ti || e.composited || !l.attached())
+                continue;
+            if (e.eval_held && !e.held) {
+                /* The scene back to what the last flush showed, its fade
+                 * included; params stay what the client set. */
+                LayerParams p = l.params;
+                const Look &f = e.flushed;
+                p.rect = f.rect;
+                p.opacity = f.opacity;
+                p.rotate = f.rotate;
+                p.sx = f.sx;
+                p.sy = f.sy;
+                p.px = f.px;
+                p.py = f.py;
+                p.pivot_x = f.pivot_x;
+                p.pivot_y = f.pivot_y;
+                l.hold_scene(&p);
+                l.place();
+                l.arrange(f.drawn, f.order);
+                e.held = true;
+                t.held_n++;
+            } else if (!e.eval_held && e.held) {
+                l.hold_scene(nullptr);
+                l.place();
+                l.arrange(e.drawn, e.order);
+                e.held = false;
+                t.held_n--;
+                t.dirty = true;
+            }
+            if (!e.held && l.start_pending())
+                t.dirty = true;
         }
-        if (!e.held && l.start_pending())
-            t.dirty = true;
+    } else {
+        for (uint32_t id : t.touched) {
+            auto it = layers_.find(id);
+            if (it != layers_.end() && !it->second.composited && it->second.layer->start_pending())
+                t.dirty = true;
+        }
     }
     if (t.eval_fade_held != t.fade_held) {
         const float f = t.eval_fade_held ? t.flushed_fade : t.applied;
@@ -1209,25 +1287,43 @@ void Compositor::commit(int ti, Target &t)
 
 void Compositor::settle(int ti, Target &t, bool ok)
 {
-    for (auto &kv : layers_) {
-        Entry &e = kv.second;
-        if (e.layer->target() != ti || e.composited)
-            continue;
-        if (ok && !e.held) {
-            e.flushed = look_of(e);
-            e.flushed.animating = e.layer->animations_started();
+    if (t.decided) {
+        for (auto &kv : layers_) {
+            Entry &e = kv.second;
+            if (e.layer->target() != ti || e.composited)
+                continue;
+            e.eval_held = false;
+            if (!std::strcmp(e.layer->kind(), "video"))
+                static_cast<VideoLayer *>(e.layer.get())->force(false);
         }
-        e.eval_held = false;
-        if (!std::strcmp(e.layer->kind(), "video"))
-            static_cast<VideoLayer *>(e.layer.get())->force(false);
+        if (t.composite) {
+            t.composite->force(false);
+            t.composite->hold(false);
+        }
+        t.decided = false;
     }
-    if (ok && !t.fade_held)
-        t.flushed_fade = t.applied;
     t.eval_fade_held = false;
-    if (t.composite) {
-        t.composite->force(false);
-        t.composite->hold(false);
+    if (!ok)
+        return;
+    /* What the flush showed of the layers whose look changed: their look,
+     * but a held one's (it stays in the list). */
+    size_t kept = 0;
+    for (uint32_t id : t.touched) {
+        auto it = layers_.find(id);
+        if (it == layers_.end() || it->second.layer->target() != ti)
+            continue;
+        Entry &e = it->second;
+        if (e.held) {
+            t.touched[kept++] = id;
+            continue;
+        }
+        e.flushed = look_of(e);
+        e.flushed.animating = e.layer->animations_started();
+        e.touched = false;
     }
+    t.touched.resize(kept);
+    if (!t.fade_held)
+        t.flushed_fade = t.applied;
 }
 
 int64_t Compositor::wake_in_ms(int64_t now_ms) const
@@ -1340,11 +1436,8 @@ bool Compositor::publish(const TargetSpec &spec, std::string *err)
     /* A new scene shows nothing until its first flush. */
     t.flushed_fade = t.applied;
     t.fade_held = false;
-    for (auto &kv : layers_)
-        if (kv.second.layer->target() == ti) {
-            kv.second.flushed = Look();
-            kv.second.held = false;
-        }
+    t.quiet = false;
+    t.uncover_since = -1;
     for (auto &kv : assets_)
         if (kv.second.asset->target() == ti)
             kv.second.asset->attach(t.graph.get());

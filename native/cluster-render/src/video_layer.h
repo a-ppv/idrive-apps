@@ -121,10 +121,14 @@ public:
     bool uncovering() const override;
     /* The next stage() writes what uncovering() needs whatever the budget
      * allows (charged as any write), for an uncover the compositor cannot
-     * hold back (compositor.h). Such a write hides nothing, and the layer
-     * hides no tile again until a write the budget allowed (so from a
+     * hold back (compositor.h). Such a write hides nothing: with packed
+     * blocks it is the newest frame packed (the exact atlas comes back with
+     * a write the budget allows), without them every changed tile. The
+     * layer hides no tile again until a write the budget allowed (so from a
      * positive allowance: the forced write's debt repaid) has gone. */
     void force(bool on) { force_ = on; }
+    /* It hides tiles, or holds tiles a write left unwritten under cover. */
+    bool holds_tiles() const { return hiding_ || held_n_ > 0; }
     /* The tiles hidden this tick; null: none. */
     const uint8_t *hidden_mask() const { return hiding_ ? hidden_.data() : nullptr; }
 
