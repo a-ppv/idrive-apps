@@ -89,11 +89,12 @@ void Coverage::add(const Box &b)
         std::memset(&cells_[(size_t)cy * cw_ + c.x0], 1, (size_t)(c.x1 - c.x0));
 }
 
-bool Coverage::covers(const Box &b) const
+bool Coverage::covers(const Box &in) const
 {
+    const Box b = intersect(in, Box{0, 0, (int32_t)w_, (int32_t)h_});
     if (b.empty())
         return true;
-    if (!any_ || b.x0 < 0 || b.y0 < 0 || b.x1 > (int32_t)w_ || b.y1 > (int32_t)h_)
+    if (!any_)
         return false;
     const int32_t cx0 = b.x0 / kCell, cy0 = b.y0 / kCell;
     const int32_t cx1 = (b.x1 - 1) / kCell, cy1 = (b.y1 - 1) / kCell;

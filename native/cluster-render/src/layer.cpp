@@ -127,7 +127,9 @@ bool Layer::play(uint32_t anim, uint32_t part, const Animation &a, std::string *
     Played p;
     p.part = part;
     p.a = a;
-    if (g_) {
+    if (g_ && defer_starts_) {
+        p.pending = true;   /* the renderer's refusal is logged when it starts */
+    } else if (g_) {
         const int node = animated(part);
         p.handle = node ? g_->animate(node, a) : 0;
         if (!p.handle) {
@@ -144,7 +146,7 @@ bool Layer::stop(uint32_t anim)
     auto it = played_.find(anim);
     if (it == played_.end())
         return false;
-    if (g_ && it->second.handle) {
+    if (g_ && it->second.handle && !it->second.pending) {
         g_->stop(it->second.handle);
         restore(it->second.part, it->second.a);
     }
@@ -152,9 +154,34 @@ bool Layer::stop(uint32_t anim)
     return true;
 }
 
+bool Layer::animations_started() const
+{
+    for (const auto &kv : played_)
+        if (!kv.second.pending)
+            return true;
+    return false;
+}
+
+bool Layer::start_pending()
+{
+    bool any = false;
+    for (auto &kv : played_) {
+        if (!kv.second.pending || !g_)
+            continue;
+        kv.second.pending = false;
+        any = true;
+        const int node = animated(kv.second.part);
+        kv.second.handle = node ? g_->animate(node, kv.second.a) : 0;
+        if (!kv.second.handle)
+            log_warn("layer %u: animation %u refused by the renderer", id_, kv.first);
+    }
+    return any;
+}
+
 void Layer::start_animations()
 {
     for (auto &kv : played_) {
+        kv.second.pending = false;
         const int node = animated(kv.second.part);
         kv.second.handle = node ? g_->animate(node, kv.second.a) : 0;
         if (!kv.second.handle)
@@ -388,11 +415,11 @@ void ImageLayer::opq_resolve()
         }
 }
 
-void ImageLayer::occlude(Coverage *cov)
+void ImageLayer::occlude(Coverage *cov, const Shown &s)
 {
-    const Rect &r = params.rect;
-    if (!g_ || !drawn_ || parked_ || animating() || params.opacity * fade_ < 1.0f || !unturned(params.turn()) ||
-        !r.w || !r.h)
+    const Rect &r = s.rect;
+    defer_starts_ = false;
+    if (!g_ || !s.drawn || parked_ || s.animating || s.opacity * s.fade < 1.0f || s.turned || !r.w || !r.h)
         return;
     if (!opq_on_) {
         opq_on_ = true;
@@ -413,7 +440,7 @@ void ImageLayer::occlude(Coverage *cov)
     /* A target pixel samples about the image coordinate of its centre: the
      * image pixels under it, one more each way for the filter. Opaque where
      * both the buffer and the pixels waiting to be written are. */
-    cov->add_if(box_of(r), [&](const Box &c) {
+    defer_starts_ = cov->add_if(box_of(r), [&](const Box &c) {
         const int64_t ix0 = std::max<int64_t>(0, (int64_t)(c.x0 - r.x) * w_ / r.w - 1);
         const int64_t ix1 = std::min<int64_t>(w_, ((int64_t)(c.x1 - r.x) * w_ + r.w - 1) / r.w + 1);
         const int64_t iy0 = std::max<int64_t>(0, (int64_t)(c.y0 - r.y) * h_ / r.h - 1);

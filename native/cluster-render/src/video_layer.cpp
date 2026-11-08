@@ -125,31 +125,33 @@ bool VideoLayer::due(int64_t now_ms)
 void VideoLayer::hide(const uint8_t *tiles)
 {
     hiding_ = false;
-    if (!tiles)
+    shown_drawn_ = g_ && drawn_;
+    if (!tiles || no_hide_)
         return;
     hidden_.assign(tiles, tiles + planner_.tiles());
     hiding_ = std::find(hidden_.begin(), hidden_.end(), 1) != hidden_.end();
 }
 
-void VideoLayer::occluded(const Coverage &cov)
+void VideoLayer::occluded(const Coverage &cov, const Shown &s)
 {
-    if (!g_ || !drawn_ || cov.empty() || !unturned(params.turn())) {
+    shown_drawn_ = g_ && s.drawn;
+    if (!shown_drawn_ || cov.empty() || s.turned || no_hide_) {
         hiding_ = false;
         return;
     }
-    hiding_ = hidden_tiles(cov, p_.w, p_.h, params.rect, &hidden_);
+    hiding_ = hidden_tiles(cov, p_.w, p_.h, s.rect, &hidden_);
 }
 
-void VideoLayer::occlude(Coverage *cov)
+void VideoLayer::occlude(Coverage *cov, const Shown &s)
 {
     /* Drawn at u_opacity, 0 until its first frame is written. */
-    if (g_ && drawn_ && opaque_ && params.opacity * fade_ >= 1.0f && unturned(params.turn()))
-        cov->add(box_of(params.rect));
+    if (g_ && s.drawn && opaque_ && s.opacity * s.fade >= 1.0f && !s.turned)
+        cov->add(box_of(s.rect));
 }
 
 bool VideoLayer::uncovering() const
 {
-    if (!held_n_ || !g_ || !drawn_ || blocks_shown_)
+    if (!held_n_ || !g_ || !shown_drawn_ || blocks_shown_)
         return false;
     if (!hiding_)
         return true;
@@ -197,7 +199,7 @@ bool VideoLayer::attach(Graph *g, int64_t now_ms, std::string *err)
     planner_.reset();
     held_.assign(planner_.tiles(), 0);
     held_n_ = 0;
-    hiding_ = false;
+    hiding_ = shown_drawn_ = false;
     buffer_stale_ = true;
     opaque_ = false;
     blocks_shown_ = parked_ = false;
@@ -266,7 +268,7 @@ void VideoLayer::detach(bool drop)
     if (blocks_shown_)
         front_pending_ = true;
     g_ = nullptr;
-    hiding_ = false;
+    hiding_ = shown_drawn_ = forced_write_ = false;
     atlas_buf_ = atlas_quad_ = block_quad_ = 0;
     block_buf_[0] = block_buf_[1] = 0;
     blocks_shown_ = parked_ = false;
@@ -343,10 +345,16 @@ Stage VideoLayer::stage(int64_t now_ms)
     const bool uncover = uncovering();
     if (!(front_pending_ || settle || refine || uncover) || (!clock_.due(now_ms) && !parked_ && !uncover))
         return Stage::Idle;
-    if (!pacer_.ready(now_ms) && !(force_ && uncover)) {
+    const bool paced = pacer_.ready(now_ms);
+    if (!paced && !(force_ && uncover)) {
         held_budget_++;
         return Stage::Idle;
     }
+    /* A forced write (compositor.h) hides nothing: every tile goes, the
+     * held ones with it. */
+    forced_write_ = !paced;
+    if (forced_write_)
+        hiding_ = false;
     return stage_exact(now_ms, front_pending_);
 }
 
@@ -479,6 +487,19 @@ void VideoLayer::committed(bool ok, int64_t now_ms)
 {
     const Staged s = staged_;
     staged_ = Staged();
+    const bool forced = forced_write_;
+    forced_write_ = false;
+    if (s.kind != Kind::None && ok) {
+        /* After a forced write nothing is hidden until a write the budget
+         * allowed has gone: it started from a positive allowance, so the
+         * forced write's debt was repaid. */
+        if (forced) {
+            no_hide_ = true;
+            forced_++;
+        } else {
+            no_hide_ = false;
+        }
+    }
     if (s.kind == Kind::None)
         return;
     /* A failed update is retried with the newest frame: packed blocks at the
@@ -585,8 +606,8 @@ std::string VideoLayer::stats() const
     if (!hidden_tiles_)
         return b;
     char h[96];
-    std::snprintf(h, sizeof h, ", %llu tiles left hidden, %llu uncovered", (unsigned long long)hidden_tiles_,
-                  (unsigned long long)uncovers_);
+    std::snprintf(h, sizeof h, ", %llu tiles left hidden, %llu uncovered (%llu forced)",
+                  (unsigned long long)hidden_tiles_, (unsigned long long)uncovers_, (unsigned long long)forced_);
     return std::string(b) + h;
 }
 

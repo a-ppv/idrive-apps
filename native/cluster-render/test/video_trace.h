@@ -25,9 +25,10 @@ namespace crs {
 struct Trace {
     uint64_t hash = 1469598103934665603ull;
     uint64_t calls = 0, write_bytes = 0, flushes = 0, failed_flushes = 0, failed_writes = 0;
-    /* A scenario's first video's write statistics and status line. */
-    WriteStats video;
-    std::string video_stats;
+    /* A scenario's first and second videos' write statistics and status
+     * lines. */
+    WriteStats video, camera;
+    std::string video_stats, camera_stats;
 
     void mix(const void *p, size_t n)
     {
@@ -617,8 +618,10 @@ inline Trace overlay_trace()
  * position marker moving (a changing 64x64 patch), a fast pan (packed
  * blocks), a slow pan, still again; a 320x240 camera changing every frame
  * at 30 fps over it at 704,64 at opacity (kind 0: 1, kind 1: 0.9), or
- * (kind 2) opaque, sliding 4 px a frame between x 64 and 704. The bytes
- * written are the trace's write_bytes. */
+ * (kind 2) opaque, sliding 4 px a frame between x 64 and 704; or an opaque
+ * camera as large as the map at 0,0 (kind 3) or 800x480 at 0,0 (kind 4),
+ * changing everywhere every frame. The bytes written are the trace's
+ * write_bytes. */
 inline Trace camera_minute_trace(int kind)
 {
     TraceRig r;
@@ -632,14 +635,15 @@ inline Trace camera_minute_trace(int kind)
     LayerParams cp;
     cp.contend = true;
     cp.z = 1;
-    cp.rect.x = 704;
-    cp.rect.y = 64;
-    cp.rect.w = 320;
-    cp.rect.h = 240;
+    const uint32_t cw = kind == 3 ? 1088 : kind == 4 ? 800 : 320, ch = kind >= 3 ? 480 : 240;
+    cp.rect.x = kind >= 3 ? 0 : 704;
+    cp.rect.y = kind >= 3 ? 0 : 64;
+    cp.rect.w = cw;
+    cp.rect.h = ch;
     cp.opacity = kind == 1 ? 0.9f : 1.0f;
     VideoParams cvp;
-    cvp.w = 320;
-    cvp.h = 240;
+    cvp.w = cw;
+    cvp.h = ch;
     VideoLayer *c = static_cast<VideoLayer *>(r.comp->layer(2, r.comp->add_video(2, 0, cp, cvp, r.now, &err)));
     std::vector<uint8_t> f, cf;
     int pan = 0, x = 704, dx = -4;
@@ -651,7 +655,7 @@ inline Trace camera_minute_trace(int kind)
             pan += 4;
         trace_frame(f, 1088, 480, pan, phase == 1 ? k : 0, k);
         v->offer(f.data(), r.now);
-        trace_frame(cf, 320, 240, k * 8, k, k);
+        trace_frame(cf, cw, ch, k * 8, k, k);
         c->offer(cf.data(), r.now);
         if (kind == 2) {
             if (x + dx < 64 || x + dx > 704)
@@ -668,6 +672,8 @@ inline Trace camera_minute_trace(int kind)
     }
     r.gpu.trace.video = v->write_stats();
     r.gpu.trace.video_stats = v->stats();
+    r.gpu.trace.camera = c->write_stats();
+    r.gpu.trace.camera_stats = c->stats();
     r.comp->remove_owner(2);
     r.comp->remove_owner(1);
     r.step(11);

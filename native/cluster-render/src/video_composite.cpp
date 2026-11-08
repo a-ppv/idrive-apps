@@ -282,7 +282,7 @@ void CompositeVideo::add(uint32_t id, VideoLayer *src)
     Source s;
     s.id = id;
     s.layer = src;
-    s.opacity = src->params.opacity;
+    s.opacity = s.quad_opacity = src->params.opacity;
     src_.push_back(s);
     if (g_) {
         Source &n = src_.back();
@@ -363,8 +363,8 @@ void CompositeVideo::arrange_source(uint32_t id, bool drawn, int32_t order)
         if (s->block_quad)
             g_->order(s->block_quad, order + 1);
     }
-    if (faded)
-        source_opacity(*s);
+    /* The quads take the new opacity in the target's next flush
+     * (show_opacity), unless that is held (hold). */
     scene_changed_ = scene_changed_ || faded || reorder;
 }
 
@@ -399,7 +399,7 @@ Stage CompositeVideo::stage(int64_t now_ms)
     const Stage st = VideoLayer::stage(now_ms);
     /* A write carries the canvas; with none due, the display's buffer
      * holds it already. */
-    placed_now_ = g_ && !hold_moves_ && (st == Stage::Wrote || (st == Stage::Idle && !waiting())) && place_composed();
+    placed_now_ = g_ && !hold_ && (st == Stage::Wrote || (st == Stage::Idle && !waiting())) && place_composed();
     if (st != Stage::Wrote)
         placing_.clear();
     return st;
@@ -579,7 +579,7 @@ void CompositeVideo::see(const Source &s, const Coverage *cov)
     int n = 0;
     if (drawn_ && s.showing && s.placed.w)
         at[n++] = box_of(s.placed);
-    if (s.drawn && s.rect.w && !hold_moves_)
+    if (s.drawn && s.rect.w && !hold_)
         at[n++] = box_of(s.rect);
     if (!n)
         return;
@@ -604,16 +604,41 @@ void CompositeVideo::see(const Source &s, const Coverage *cov)
         }
 }
 
-void CompositeVideo::occlude_source(uint32_t id, Coverage *cov) const
+void CompositeVideo::occlude_source(uint32_t id, Coverage *cov, float fade) const
 {
     const Source *s = find(id);
-    if (!s || !g_ || !drawn_ || !opaque_ || !s->showing || !s->drawn || !s->placed.w || s->opacity * fade_ < 1.0f)
+    if (!s)
+        return;
+    const float opacity = hold_ ? s->quad_opacity : s->opacity;
+    if ( !g_ || !drawn_ || !opaque_ || !s->showing || !s->drawn || !s->placed.w || opacity * fade < 1.0f)
         return;
     /* Where its quads are, and with a move waiting, where they may go too. */
     Box a = box_of(s->placed);
-    if (s->moved && !hold_moves_)
+    if (s->moved && !hold_)
         a = intersect(a, box_of(s->rect));
     cov->add(a);
+}
+
+bool CompositeVideo::show_opacity()
+{
+    bool any = false;
+    for (Source &s : src_) {
+        if (s.quad_opacity == s.opacity)
+            continue;
+        s.quad_opacity = s.opacity;
+        if (g_)
+            source_opacity(s);
+        any = true;
+    }
+    return any;
+}
+
+bool CompositeVideo::held_changes() const
+{
+    for (const Source &s : src_)
+        if ((s.moved && s.drawn) || s.quad_opacity != s.opacity)
+            return true;
+    return false;
 }
 
 void CompositeVideo::end_hidden()
@@ -639,6 +664,7 @@ bool CompositeVideo::make_quad(Graph *g, Source &s, bool blocks, int bank)
     s.placed = s.rect;
     s.showing = s.drawn;
     s.moved = s.composed = false;
+    s.quad_opacity = s.opacity;
     q = g->quad(blocks ? block_effect_ : atlas_effect_, s.rect.w ? s.rect : clip_);
     if (!q || !g->texture(q, "u_image", blocks ? bank : atlas_buf_) ||
         !g->uniform(q, "u_size", size, 2) || !g->uniform(q, "u_opacity", &zero, 1) || !g->show(q, false) ||
@@ -716,7 +742,7 @@ bool CompositeVideo::bank_quads(int buf)
 
 void CompositeVideo::source_opacity(Source &s)
 {
-    const float a = opaque_ ? s.opacity * fade_ : 0.0f;
+    const float a = opaque_ ? s.quad_opacity * fade_ : 0.0f;
     if (s.atlas_quad)
         g_->uniform(s.atlas_quad, "u_opacity", &a, 1);
     if (s.block_quad)

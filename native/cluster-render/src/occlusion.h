@@ -10,7 +10,8 @@
  * only when every pixel of it is under one layer's opaque area, so the
  * coverage never claims a pixel that shows anything below.
  *
- * What counts as opaque (Layer::occlude):
+ * What counts as opaque (Layer::occlude), drawn as the next flush shows it
+ * (Shown), and only for the layers drawn strictly below it:
  * - a video layer drawn unturned, at its params.opacity times its target's
  *   fade at least 1, once its first frame is written: its whole rect (the
  *   video shaders' alpha is u_opacity);
@@ -25,8 +26,9 @@
  *
  * A tile of a video's 4:2:0 atlas is hidden when every target pixel it can
  * change is covered (tile_footprint): its luma rows, and its chroma rows
- * through the bilinear upsampling, each widened by the filters' reach. A
- * tile of a turned video is never hidden. */
+ * through the bilinear upsampling, each widened by the filters' reach.
+ * Pixels off the target are never seen and do not count. A tile of a turned
+ * video is never hidden. */
 #ifndef CRS_OCCLUSION_H
 #define CRS_OCCLUSION_H
 
@@ -54,24 +56,28 @@ public:
     bool empty() const { return !any_; }
     /* Every cell wholly inside b. */
     void add(const Box &b);
-    /* Every cell wholly inside b for which opaque(cell) holds. */
-    template <class F> void add_if(const Box &b, F opaque)
+    /* Every cell wholly inside b for which opaque(cell) holds; whether any
+     * was not covered before. */
+    template <class F> bool add_if(const Box &b, F opaque)
     {
         Box c;
         if (!cells_inside(b, &c))
-            return;
+            return false;
+        bool added = false;
         prepare();
         for (int32_t cy = c.y0; cy < c.y1; cy++)
             for (int32_t cx = c.x0; cx < c.x1; cx++) {
                 uint8_t &v = cells_[(size_t)cy * cw_ + cx];
                 if (!v && opaque(cell(cx, cy))) {
                     v = 1;
-                    any_ = true;
+                    added = any_ = true;
                     clean_ = false;
                 }
             }
+        return added;
     }
-    /* Every pixel of b is covered; false when part of it is off the target. */
+    /* Every pixel of b on the target is covered (pixels off it are never
+     * seen). */
     bool covers(const Box &b) const;
 
 private:
@@ -94,8 +100,6 @@ int tile_footprint(uint32_t tx, uint32_t ty, uint32_t vw, uint32_t vh, const Rec
  * cov covers its footprint. Returns whether any is. */
 bool hidden_tiles(const Coverage &cov, uint32_t vw, uint32_t vh, const Rect &r, std::vector<uint8_t> *hidden);
 
-/* Whether a layer's turn leaves it as its rect. */
-inline bool unturned(const Turn &t) { return t.rotate == 0 && t.sx == 1 && t.sy == 1; }
 
 }  // namespace crs
 

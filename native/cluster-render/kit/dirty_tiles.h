@@ -111,7 +111,7 @@ private:
     uint32_t w_, h_, bpp_, tile_w_, tile_h_, cols_, rows_, threshold_;
     int64_t settle_ms_;
     std::vector<int64_t> quiet_since_;   /* per tile; -1: equal to what is shown */
-    uint32_t quiet_ = 0;                 /* tiles with quiet_since_ set */
+    uint32_t quiet_ = 0;                 /* tiles the last plan left quiet, hidden ones within the threshold included */
     int64_t settle_due_ms_ = -1;
 };
 

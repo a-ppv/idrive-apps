@@ -532,17 +532,23 @@ Beside the layers:
   written; an image likewise, only where its pixels, both those its buffer
   holds and those waiting to be written, have alpha 255; never an effect or
   a mesh layer, an animated image, or anything turned, translucent or
-  fading. A hidden tile that has changed goes in the flush that uncovers it
-  (a layer above moved, hidden, made translucent, turned, faded or gone, or
-  the video moved), whatever the video's frame clock; its target stages
-  first, so the write takes the next positive allowance. Until the budget
-  allows it, only that change waits (the scene keeps the layers it concerns
-  as last flushed) and everything else on the target flushes as usual: the
-  wait is the time the budget takes to repay what it owes. A change that
-  cannot wait so (a layer removed, an animation started, an image hidden
-  after a failed write, video objects made again) goes at once with the
-  write, whatever the budget allows. With nothing opaque over a video it
-  writes as before, byte for byte.
+  fading; and only for layers drawn strictly below it. A tile counts as
+  hidden when every on-screen pixel it can change is covered, chroma tiles
+  and the grid's edge tiles included, so a camera as large as the map hides
+  all of it. A hidden tile that has changed goes in the flush that uncovers
+  it (a layer above moved, hidden, made translucent, turned, faded,
+  animated or gone, or the video moved or shown), whatever the video's
+  frame clock; its target stages first, so the write takes the next
+  positive allowance. Until the budget allows it, only that change waits
+  (the scene keeps the layer it concerns as last flushed, its new
+  animations not started), with an exclusive layer and the layers it
+  suspends together, and everything else on the target flushes as usual:
+  the wait is the time the budget takes to repay what it owes. A change
+  that cannot wait so (a layer removed, an image hidden after a failed
+  write, video objects made again) goes at once with the write, whatever
+  the budget allows, and the video then hides no tile until a write the
+  budget allowed has gone, so such writes never come back to back. With
+  nothing opaque over a video it writes as before, byte for byte.
 - **Turns**: video, image and effect quads rotate and scale about a pivot
   (a needle), each under two group nodes in the scene.
 - **Animations**: keys the renderer plays by itself (one real-time
@@ -984,7 +990,14 @@ The host tests:
   charge) while an image over a panel video moves and hides: the panel's
   other changes flush every tick, the image's change waits only for the
   budget's debt; a hidden tile changed within the threshold kept across a
-  scene published again; with nothing opaque over a video, every renderer call and
+  scene published again; a camera as large as the map hiding every map
+  tile (the map writing nothing while covered, the camera the budget),
+  moved aside, back and removed with nothing stale; an 800x480 camera
+  hiding exactly the tiles it covers, chroma ones included; an exclusive
+  alert dismissed during a pan, made before or after the video, never
+  showing neither; an image animated and stopped every tick, no write
+  going while the budget is in debt; an image removed and made again,
+  writes past the budget never back to back; with nothing opaque over a video, every renderer call and
   byte as before (a camera at 0.9 or turned, Waze on the cluster and the
   HUD, an overlay with transparent pixels); a minute's bytes under an
   opaque, a translucent and a moving camera, and the cost a tick, printed;
