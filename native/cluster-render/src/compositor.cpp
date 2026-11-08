@@ -754,11 +754,14 @@ void Compositor::render(int64_t now_ms)
             occlude((int)ti, t);
             t.uncover = uncovers(t);
             t.quiet = t.quiet && !t.uncover && !t.held_n && !t.fade_held;
-            if (t.uncover && t.uncover_since < 0)
-                t.uncover_since = now_ms;
-            if (!t.uncover)
-                t.uncover_since = -1;
         }
+        /* Since when its uncover has waited: kept while what the client set
+         * still uncovers tiles (its changes held back), until the write that
+         * carries them goes (render_target). */
+        if (!t.uncover)
+            t.uncover_since = -1;
+        else if (t.uncover_since < 0)
+            t.uncover_since = now_ms;
         (t.uncover ? render_order_ : render_later_).push_back((int)ti);
     }
     /* The target that has waited longest to uncover first: none waits
@@ -868,7 +871,9 @@ void Compositor::render_target(int ti, Target &t, int64_t now_ms)
     /* What the layers undid for a flush that did not go goes with the
      * next one. */
     t.dirty = !ok;
-    if (t.uncover_since >= 0 && !uncovers(t))
+    /* The uncover went with this flush: a later one waits from its own
+     * start. */
+    if (uncover && ok)
         t.uncover_since = -1;
     settle(ti, t, ok);
 }
@@ -1854,6 +1859,14 @@ void Compositor::reconcile_drop(int ti, VideoPlan &pl)
                 }
                 v->to_source();
                 t.members_ms = now_ms_;
+                /* Drawn by the composite from now: its own held look goes
+                 * with its objects, and the composite's deferred moves
+                 * place its quads from what the client set. */
+                if (e.held) {
+                    e.held = false;
+                    t.held_n--;
+                    v->hold_scene(nullptr);
+                }
                 /* Its own objects' refusal goes with them. */
                 e.error.clear();
                 e.drawn = false;

@@ -161,6 +161,30 @@ bool VideoLayer::uncovering() const
     return false;
 }
 
+bool VideoLayer::held_differ()
+{
+    const uint32_t T = crk::kTileSize, cols = (p_.w + T - 1) / T;
+    bool any = false;
+    for (size_t i = 0; i < held_.size(); i++) {
+        if (!held_[i] || (hiding_ && hidden_[i]))
+            continue;
+        const uint32_t x0 = (uint32_t)(i % cols) * T, y0 = (uint32_t)(i / cols) * T;
+        const uint32_t w = std::min(T, p_.w - x0), h = std::min(T, atlas_h_ - y0);
+        bool differs = false;
+        for (uint32_t y = y0; y < y0 + h && !differs; y++) {
+            const size_t off = (size_t)y * p_.w + x0;
+            differs = crk::max_abs_diff(&front_[off], &shown_[off], w) > p_.dirty_threshold;
+        }
+        if (differs) {
+            any = true;
+        } else {
+            held_[i] = 0;
+            held_n_--;
+        }
+    }
+    return any;
+}
+
 void VideoLayer::planned_hidden(bool whole)
 {
     if (!held_n_ && !hiding_)
@@ -356,14 +380,15 @@ Stage VideoLayer::stage(int64_t now_ms)
      * ones with it. */
     forced_write_ = !paced;
     if (forced_write_) {
-        hiding_ = false;
-        if (p_.pan_blocks && !first_) {
-            if (front_stale_) {
-                front_ = shown_;   /* the newest frame went whole: shown_ holds it */
-                front_stale_ = false;
-            }
-            return stage_blocks(now_ms, front_pending_);
+        /* Held tiles the newest frame no longer differs from past the
+         * threshold are as the planner leaves quiet ones: no write. */
+        if (!held_differ()) {
+            forced_write_ = false;
+            return Stage::Idle;
         }
+        hiding_ = false;
+        if (p_.pan_blocks && !first_)
+            return stage_blocks(now_ms, front_pending_);
     }
     return stage_exact(now_ms, front_pending_);
 }

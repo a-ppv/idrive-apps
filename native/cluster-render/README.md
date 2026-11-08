@@ -553,7 +553,8 @@ Beside the layers:
   another place in the draw order. The video they uncover writes in that
   flush whatever the budget allows: with packed blocks its newest frame
   packed (the exact atlas follows within the budget), without them every
-  changed tile; it then hides no tile until a write the budget allowed has
+  changed tile, and nothing when no tile it uncovers differs from its
+  newest frame past the threshold; it then hides no tile until a write the budget allowed has
   gone, so such writes never come back to back. With nothing opaque over a
   video, every tile is planned and written by the dirty-tile rules alone.
 - **Turns**: video, image and effect quads rotate and scale about a pivot

@@ -123,7 +123,9 @@ public:
      * allows (charged as any write), for an uncover the compositor cannot
      * hold back (compositor.h). Such a write hides nothing: with packed
      * blocks it is the newest frame packed (the exact atlas comes back with
-     * a write the budget allows), without them every changed tile. The
+     * a write the budget allows), without them every changed tile; and it
+     * does not go when no tile it uncovers differs from the newest frame
+     * past the threshold. The
      * layer hides no tile again until a write the budget allowed (so from a
      * positive allowance: the forced write's debt repaid) has gone. */
     void force(bool on) { force_ = on; }
@@ -201,6 +203,9 @@ private:
     Stage stage_blocks(int64_t now_ms, bool fresh);
     void show_blocks(bool on);
     void drop_objects();
+    /* Whether a held tile no longer hidden differs from the newest frame past
+     * the threshold; those that do not are held no more. */
+    bool held_differ();
     /* After a plan with the tiles hidden_: what the buffer will hold. */
     void planned_hidden(bool whole);
 

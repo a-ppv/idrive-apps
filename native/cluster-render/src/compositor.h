@@ -103,7 +103,12 @@
  * only when it is held or released; a held layer's fade applies to its last
  * flushed opacity. The wait is the time the budget takes to repay what it
  * owes, and at most one write of another target that has waited longer:
- * targets with tiles to uncover stage longest-waiting first. An image's
+ * targets with tiles to uncover stage longest-waiting first. A target's wait
+ * starts at the first tick what its client set uncovers tiles and lasts,
+ * however often the target flushes its other changes meanwhile, until the
+ * flush carrying the uncovering write goes. A held layer that becomes a
+ * composite's source is held no more: the composite's own deferred moves
+ * place it. An image's
  * pixels waiting to be written count for coverage only while the budget
  * allows the image's write, so pixels turning transparent never uncover
  * before they can show.
@@ -116,7 +121,9 @@
  * hiding nothing: with packed blocks the newest frame packed (at most one
  * packed frame, about a third of an exact one, past the budget's debt; the
  * exact atlas comes back with a write the budget allows), without them
- * every changed tile. It then hides no tile until a write the budget
+ * every changed tile; when none of the tiles it uncovers differs from its
+ * newest frame past the threshold, nothing. It then hides no tile until a
+ * write the budget
  * allowed has gone (so the debt was repaid), so such writes never come one
  * after the other.
  *
@@ -226,6 +233,11 @@ public:
 
     LayerState state(uint32_t id, std::string *reason) const;
     Governor &governor() { return governor_; }
+    /* The target's layers whose change waits to uncover a video's tiles
+     * (defer_uncover). */
+    uint32_t held_layers(int target) const { return targets_[target].held_n; }
+    /* Since when the target's uncover has waited; -1: none waits. */
+    int64_t uncover_waiting_since(int target) const { return targets_[target].uncover_since; }
     /* The byte budget the targets without the HUD's share write from. */
     const crk::UploadPacer &pacer() const { return pacer_; }
     const Governor &governor() const { return governor_; }

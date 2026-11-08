@@ -41,6 +41,10 @@
  *   frame;
  * - a hole made transparent in an image under a saturated budget: never a
  *   forced write;
+ * - a waiting panel busy flushing its other changes keeps its wait's start;
+ * - a video whose move waits composed with a joining camera: held no more;
+ * - a forced write skipped when the newest frame no longer differs from
+ *   the held tiles;
  * - with no opaque layer over a video, everything the renderer gets is
  *   what the build before hidden tiles sent (video_trace.h: a camera at 0.9
  *   or turned over the map, Waze on the cluster and the HUD, the map under
@@ -1286,7 +1290,7 @@ static unsigned long long count_of(const std::string &st, const char *name)
     return std::strtoull(st.c_str() + b, nullptr, 10);
 }
 
-/* ---- round-4 cases ----------------------------------------------------------- */
+/* ---- refused composites, fades, fair uncovers, forced writes ---------------- */
 
 /* A scaled map (buffers of its own) under two cameras its target composes,
  * the composite's objects refused by the renderer: the cameras show an
@@ -1377,38 +1381,52 @@ static void held_opacity_fade()
     ok(name, fades == 10 && checked > 100 && stale == 0);
 }
 
-/* A camera over the map while the map pans past the budget, sliding 4 px a
- * frame (camera_minute_trace kind 2) or (jump) jumping between two places
- * every tick, so the map has tiles to uncover again and again, and on the panel an image over a video. In each 2.5 s cycle
+/* An opaque camera picture over the map while the map pans past the budget, sliding 4 px a
+ * frame (camera_minute_trace kind 2) or jumping between two places every
+ * tick, the latter also with the panel busy (an effect it flushes every
+ * tick while its uncover waits, its hide made with the budget in debt), so
+ * the map has tiles to uncover again and again, and on the panel an image over a video. In each 2.5 s cycle
  * the map pauses while the panel video writes a frame under the image,
  * then pans with the camera sliding, and the image is hidden: the panel
  * shows it gone once the budget has repaid what it owed then and written
  * at most one map frame. */
-static void fair_uncovers(bool jump)
+enum class Slide { Slide, Jump, JumpBusy };
+
+static void fair_uncovers(Slide how)
 {
+    const bool busy = how == Slide::JumpBusy, jump = how == Slide::Jump || busy;
     const uint64_t budget = 5500 * 1024;
     Rig r(budget);
     std::string err;
     VideoParams whole;
     whole.pan_blocks = false;   /* the map's writes exact: the budget saturated */
     VideoLayer *m = r.video(1, r.map, R(0, 0, W, H), W, H, 0, 1.0f, whole);
-    VideoLayer *c = r.video(2, r.map, R(704, 64, 320, 240), 320, 240, 1);
+    /* The camera an opaque picture (an image): two videos, each its own
+     * buffers, so the map's tiles under it are hidden. */
+    ImageLayer *c = r.image(2, r.map, R(704, 64, 320, 240), 320, 240, 30);
     VideoLayer *v = r.video(3, r.panel, R(416, 120, W, H), W, H, 0, 1.0f, exact());
     ImageLayer *img = r.image(4, r.panel, R(800, 200, 320, 240), 320, 240, 30);
-    std::vector<uint8_t> px((size_t)320 * 240 * 4, 255), f, cf;
+    std::vector<uint8_t> px((size_t)320 * 240 * 4, 255), f;
     img->update({}, px.data(), px.size(), &err);
+    c->update({}, px.data(), px.size(), &err);
+    if (busy) {
+        LayerParams ep;
+        ep.rect = R(1600, 40, 200, 60);
+        ep.klass = Klass::Overlay;
+        r.comp->add_effect(5, r.panel, ep, kQuadVertexShader, kClockFs, 1000, r.now, &err);
+    }
     int k = 0, kv = 0, pan = 0, x = 704;
     trace_frame(f, W, H, pan, 0, 0);
     m->offer(f.data(), r.now);
-    trace_frame(cf, 320, 240, 0, 0, 0);
-    c->offer(cf.data(), r.now);
     v->offer(counting(W, H, kv).data(), r.now);
     r.show("map");
     r.show("panel");
     r.run(1000);
     FakeGraph *g = r.g("panel");
     int64_t asked = -1, bound = 0, worst = 0, worst_bound = 0;
-    int over = 0, landed = 0, waited = 0, stale = 0;
+    int over = 0, landed = 0, waited = 0, stale = 0, since_moved = 0;
+    int64_t first_since = -1;
+    bool hide_due = false, sampled = false;
     for (int t = 0; t < 25000; t++) {
         const int p = t % 2500;
         if (p == 100)
@@ -1418,8 +1436,6 @@ static void fair_uncovers(bool jump)
             pan += 24;
             trace_frame(f, W, H, pan, 0, k);
             m->offer(f.data(), r.now);
-            trace_frame(cf, 320, 240, k * 8, k, k);
-            c->offer(cf.data(), r.now);
         }
         if (p >= 800 && (jump || t % 33 == 0)) {
             if (jump)
@@ -1429,10 +1445,17 @@ static void fair_uncovers(bool jump)
             c->params.rect.x = x;
             r.comp->changed(c);
         }
-        if (p == 1600 || p == 2400) {
+        /* With the panel busy, the hide is made with the budget in debt, so
+         * that it waits. */
+        if (p == 1600)
+            hide_due = true;
+        const bool hide_now = hide_due && (!busy || r.comp->pacer().allowance() <= -200000 || p == 2300);
+        if (hide_now || p == 2400) {
             img->params.visible = p == 2400;
             r.comp->changed(img);
-            if (p == 1600) {
+            if (hide_now) {
+                hide_due = false;
+                sampled = false;
                 asked = r.now;
                 /* What the budget owes now, and one map frame written. */
                 const int64_t owed = std::max<int64_t>(0, -r.comp->pacer().allowance());
@@ -1441,9 +1464,19 @@ static void fair_uncovers(bool jump)
         }
         const uint64_t f0 = g->flushes;
         r.step(1);
+        const FakeQuad *iq = quad_of(g, TexFormat::RGBA8, 320);
+        /* While its hide waits, the panel's wait keeps its start, however
+         * often the panel flushes meanwhile. */
+        const int64_t since = r.comp->uncover_waiting_since(r.panel);
+        if (asked >= 0 && !(iq && !iq->visible)) {
+            if (!sampled)
+                first_since = since;
+            else
+                since_moved += since < 0 || since != first_since;
+            sampled = true;
+        }
         if (g->flushes == f0)
             continue;
-        const FakeQuad *iq = quad_of(g, TexFormat::RGBA8, 320);
         if (asked >= 0 && iq && !iq->visible) {
             const int64_t w = r.now - asked;
             waited += w > 1;
@@ -1458,13 +1491,13 @@ static void fair_uncovers(bool jump)
         const Look l = look(g, 1920, 720, W, H);
         stale += l.shown && l.frames > 1;
     }
-    char name[300];
+    char name[600];
     std::snprintf(name, sizeof name,
                   "a camera %s over the map panning past the budget, an image over a panel video hidden: %d "
                   "hides (%d waited), each within the debt and one map frame (%d over; the longest %lld ms, its bound %lld ms), "
-                  "nothing stale (%d)",
-                  jump ? "jumping every tick" : "sliding 4 px a frame", landed, waited, over, (long long)worst, (long long)worst_bound, stale);
-    ok(name, landed == 10 && waited >= 5 && over == 0 && stale == 0);
+                  "the wait's start kept (%d moves), nothing stale (%d)",
+                  busy ? "jumping every tick, the panel busy" : jump ? "jumping every tick" : "sliding 4 px a frame", landed, waited, over, (long long)worst, (long long)worst_bound, since_moved, stale);
+    ok(name, landed == 10 && waited >= 5 && over == 0 && since_moved == 0 && stale == 0);
 }
 
 /* The map panning with a camera as large as it over it, the camera's
@@ -1590,6 +1623,142 @@ static void transparent_pixels()
                   "saturated: %llu uncovering writes, none forced (%llu), nothing stale in %d flushes (%d)",
                   toggles, up, forced, checked, stale);
     ok(name, up >= 5 && forced == 0 && stale == 0 && checked > 50);
+}
+
+/* The map panning past the budget, and on the panel a video under an opaque
+ * image, moved while the budget is in debt so that its move waits; then a
+ * camera joins the panel (the map's pan stopping) and the display's two
+ * video buffers make the panel compose the video and the camera: the video is drawn by the
+ * composite, no layer of the panel is held, and no flush shows part of the
+ * video from another frame. */
+static void source_held()
+{
+    Rig r(5500 * 1024);
+    std::string err;
+    VideoLayer *m = r.video(1, r.map, R(0, 0, W, H), W, H);
+    VideoLayer *v = r.video(2, r.panel, R(416, 120, W, H), W, H, 0, 1.0f, exact());
+    ImageLayer *img = r.image(3, r.panel, R(800, 200, 320, 240), 320, 240, 30);
+    std::vector<uint8_t> px((size_t)320 * 240 * 4, 255), f;
+    img->update({}, px.data(), px.size(), &err);
+    int k = 0, pan = 0;
+    bool panning = true;
+    auto tick = [&](int t) {
+        if (t % 33 == 0) {
+            if (panning) {
+                pan += 24;
+                trace_frame(f, W, H, pan, 0, 0);
+                m->offer(f.data(), r.now);
+            }
+            v->offer(counting(W, H, ++k).data(), r.now);
+        }
+    };
+    trace_frame(f, W, H, pan, 0, 0);
+    m->offer(f.data(), r.now);
+    v->offer(counting(W, H, k).data(), r.now);
+    r.show("map");
+    r.show("panel");
+    for (int t = 0; t < 1500; t++) {
+        tick(t);
+        r.step(1);
+    }
+    /* Moved at a tick with the budget in debt, till its move is held. */
+    uint32_t held = 0;
+    for (int t = 0; t < 3000 && !held; t++) {
+        tick(t);
+        if (r.comp->pacer().allowance() <= 0 && t % 7 == 0) {
+            v->params.rect.x = v->params.rect.x == 416 ? 352 : 416;
+            r.comp->changed(v);
+        }
+        r.step(1);
+        held = r.comp->held_layers(r.panel);
+    }
+    VideoLayer *c = r.video(4, r.panel, R(1560, 440, 320, 240), 320, 240, 1, 1.0f, exact());
+    c->offer(still(320, 240, 1).data(), r.now);
+    panning = false;   /* the panel's composite then has the budget */
+    FakeGraph *g = r.g("panel");
+    int checked = 0, stale = 0;
+    for (int t = 0; t < 3000; t++) {
+        tick(t);
+        if (t % 33 == 0)
+            c->repeat(r.now);
+        const uint64_t f0 = g->flushes;
+        r.step(1);
+        if (g->flushes == f0)
+            continue;
+        const Look l = look(g, 1920, 720, W, H);
+        if (l.shown && l.frames) {
+            checked++;
+            stale += l.frames > 1;
+        }
+    }
+    char name[300];
+    std::snprintf(name, sizeof name,
+                  "a video whose move waits (%u held) composed with a camera joining: drawn by the composite, "
+                  "nothing held (%u), none stale in %d flushes (%d)",
+                  held, r.comp->held_layers(r.panel), checked, stale);
+    ok(name, held == 1 && v->source() && r.comp->composite(r.panel) && r.comp->held_layers(r.panel) == 0 &&
+                 checked > 10 && stale == 0);
+}
+
+/* A video with tiles held under an opaque image, its newest frame back to
+ * what those tiles hold, the image removed with the budget in debt: no
+ * write past the budget, and the uncovered tiles show the newest frame. */
+static void forced_skipped()
+{
+    Rig r(5500 * 1024);
+    std::string err;
+    VideoLayer *m = r.video(1, r.map, R(0, 0, W, H), W, H);
+    VideoLayer *v = r.video(2, r.panel, R(416, 120, W, H), W, H, 0, 1.0f, exact());
+    std::vector<uint8_t> px((size_t)320 * 240 * 4, 255), f;
+    const std::vector<uint8_t> a = counting(W, H, 7), b = counting(W, H, 8);
+    int pan = 0;
+    auto pan_map = [&](int t) {
+        if (t % 33 == 0) {
+            pan += 24;
+            trace_frame(f, W, H, pan, 0, 0);
+            m->offer(f.data(), r.now);
+        }
+    };
+    trace_frame(f, W, H, pan, 0, 0);
+    m->offer(f.data(), r.now);
+    v->offer(a.data(), r.now);
+    r.show("map");
+    r.show("panel");
+    r.run(1000);
+    ImageLayer *img = r.image(3, r.panel, R(800, 200, 320, 240), 320, 240, 30);
+    img->update({}, px.data(), px.size(), &err);
+    for (int t = 0; t < 1000; t++) {
+        pan_map(t);
+        r.step(1);
+    }
+    v->offer(b.data(), r.now);   /* written around the image: its tiles held */
+    for (int t = 0; t < 1500; t++) {
+        pan_map(t);
+        r.step(1);
+    }
+    bool gone = false;
+    for (int t = 0; t < 3000 && !gone; t++) {
+        pan_map(t);
+        if (r.comp->pacer().allowance() <= -200000) {
+            v->offer(a.data(), r.now);
+            r.comp->remove(3, img->id());
+            gone = true;
+        }
+        r.step(1);
+    }
+    const FakeBuffer *atlas = nullptr;
+    for (const auto &kv : r.g("panel")->shown.buffers)
+        if (kv.second.f == TexFormat::R8 && kv.second.w == W)
+            atlas = &kv.second;
+    /* Map pixel 900,300 under where the image was: panel 484,180 of the video. */
+    const bool newest = atlas && atlas->px[(size_t)180 * W + 484] == luma(484, 180, 7);
+    const std::string st = v->stats();
+    char name[300];
+    std::snprintf(name, sizeof name,
+                  "a video's newest frame back to what its held tiles hold, the image over them removed in debt: "
+                  "%llu writes past the budget, the uncovered tiles the newest frame",
+                  count_of(st, " forced)"));
+    ok(name, gone && st.find("tiles left hidden") != std::string::npos && count_of(st, " forced)") == 0 && newest);
 }
 
 /* ---- as before with nothing opaque over a video ----------------------------- */
@@ -1761,8 +1930,11 @@ int main()
     removal_forced();
     refused_composite();
     held_opacity_fade();
-    fair_uncovers(false);
-    fair_uncovers(true);
+    fair_uncovers(Slide::Slide);
+    fair_uncovers(Slide::Jump);
+    fair_uncovers(Slide::JumpBusy);
+    source_held();
+    forced_skipped();
     full_slot_disconnect(false);
     full_slot_disconnect(true);
     transparent_pixels();
