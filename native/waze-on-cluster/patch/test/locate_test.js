@@ -247,8 +247,8 @@ try {
     });
 
     /* A file with carplay 22.28.3's build-id whose map URL ranges are not
-     * there: that edit is left alone, the four located edits apply as ever
-     * (from our backup of it). */
+     * there: that edit is left alone and the build is patchable, and as it is
+     * not the shipped file a backup of it is refused. */
     var b2228 = Buffer.from(orig);
     Buffer.from('5de62156575d737391ea42254e778a97dbbb51f8', 'hex').copy(b2228, b2228.indexOf(Buffer.from(at.buildId, 'hex')));
     fs.writeFileSync(tgt, b2228);

@@ -221,8 +221,8 @@ sends AVAILABLE; it is inert either way, and these messages never reach the
 phone. Both guards make it one-shot per session. Every mode applies it.
 
 The stream thus starts with the session, before any navigation app draws on
-the cluster, and the phone sends a blank picture until one does (on the car
-about 100 blank frames in the first 2 s, then a pause). The render keeps the
+the cluster. Without Edit 5 the phone sends a blank picture until one does
+(on the car about 100 blank frames in the first 2 s, then a pause). The render keeps the
 stock map up until the first non-blank picture (README).
 
 **Found by** name. setStreamStatus, requestStream and onSuggestUi are the
@@ -363,9 +363,12 @@ loads the URL after it:
 `stock` list). It is written only when the file has that build-id and both
 ranges read stock or both read patched; the first edit also needs the
 whole file to be the shipped one, and later ones our backup of it. On any
-other build (21.27.4 included), and on a 22.28.3 file whose bytes there read
-as neither, `status` shows `mapurl: NOT APPLIED (…)`, the edit is left alone
-and Edits 1–4 apply and revert as they do without it. Every mode and both
+other build (21.27.4 included), and on a 22.28.3 file whose bytes there are
+not ours, `status` shows `mapurl: NOT APPLIED (…)`, the edit is left alone
+and Edits 1–4 apply and revert as they do without it. One range patched and
+the other not (a write cut short) reads as unrecognised (`map URL: partly
+patched`), as a located site that reads as neither does: `apply` refuses it
+and `revert` writes the whole backup. Every mode and both
 panels apply it. An apply over a patch without it (an earlier release's)
 adds only these ranges; `verify` and `patchd` call such a patch complete,
 since the map still comes with a route.
@@ -560,7 +563,7 @@ same build as the target (size, build-id and every site). The stock geometry
 `revert` needs no locator to trust the backup: its SHA-256 and GNU build-id
 must be the recorded ones (each when recorded). The target is the backup's
 build when both have the same build-id and size, or, when either has no
-build-id, the same size and at most 200 bytes apart (twice the edits'
+build-id, the same size and at most 200 bytes apart (twice Edits 1–4's
 bytes). When the locator recognises the target and the backup as the same
 build, `revert` restores only the edits' regions, so another tool's change
 elsewhere stays, and confirms every edit reads original. Otherwise, over
@@ -1331,8 +1334,8 @@ repository carries no BMW binary.
   both panels, the sink inside its slot, the call retarget, region-bounded
   diffs, idempotence, partial patches (an Edit-1-only binary among them), the
   geometry and safe area, Edit 5 (its bytes, the app's patch as tested on
-  the car, an earlier release's patch brought up to date, half an edit left
-  as found, a revert without the backup, and an apply adding it to a patch
+  the car, an earlier release's patch brought up to date, half an edit
+  refused and restored whole, another tool's bytes there left as found, a revert without the backup, and an apply adding it to a patch
   that ran healthy without it on trial), byte-exact revert, a binary of the backup's build
   the locator does not recognise restored whole, another build over the backup
   refused unless `--force`, a build outside the proven list, a backup of

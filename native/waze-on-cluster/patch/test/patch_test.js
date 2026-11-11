@@ -344,22 +344,38 @@ try {
     r = run(['revert', '--target', e1234, '--yes']);
     ok('pre-map-URL patch: revert restores byte-exact stock', r.code === 0 && sha256(e1234) === ORIG_SHA, r.out);
 
-    /* One map URL range patched and the other stock (bytes neither stock
-     * nor this patch): the edit is left alone, the other edits apply and
-     * revert as ever, and those bytes stay. */
+    /* One map URL range patched and the other stock (a write of ours cut
+     * short): unrecognised, as a located site that reads as neither; apply
+     * refuses it and revert writes the whole backup. */
     var half = Buffer.from(SRCBUF);
     Buffer.from(MAPURL[1][2], 'hex').copy(half, MAPURL[1][0]);
     fs.writeFileSync(e1234, half);
     r = run(['status', '--target', e1234]);
-    ok('half a map URL edit: NOT APPLIED, the build still known', /^mapurl:\s+NOT APPLIED \(its bytes read as neither stock nor this patch\)$/m.test(r.out) &&
+    ok('half a map URL edit: not known, restorable', /^mapurl:\s+UNKNOWN \(map URL: partly patched\)$/m.test(r.out) &&
+        /known:\s+NO — map URL: partly patched/.test(r.out) && /^restorable:\s+yes$/m.test(r.out), r.out);
+    r = run(['apply', '--target', e1234, '--panel', 'high', '--yes']);
+    ok('half a map URL edit: apply refuses, no write', r.code !== 0 && /refusing: map URL: partly patched/.test(r.out) && fs.readFileSync(e1234).equals(half), r.out);
+    r = run(['verify', '--target', e1234]);
+    ok('half a map URL edit: verify fails', r.code !== 0 && /map URL: partly patched/.test(r.out), r.out);
+    r = run(['revert', '--target', e1234, '--yes']);
+    ok('half a map URL edit: revert writes the whole backup', r.code === 0 && sha256(e1234) === ORIG_SHA, r.out);
+
+    /* Another tool's bytes in the log string (neither stock nor ours): the
+     * edit is left alone, the other edits apply and revert as ever, and
+     * those bytes stay. */
+    var foreign = Buffer.from(SRCBUF);
+    foreign[MAPURL[0][0] + 4] ^= 0x20;
+    fs.writeFileSync(e1234, foreign);
+    r = run(['status', '--target', e1234]);
+    ok('foreign map URL bytes: NOT APPLIED, the build still known', /^mapurl:\s+NOT APPLIED \(its bytes read as neither stock nor this patch\)$/m.test(r.out) &&
         /known:\s+yes, modified build/.test(r.out), r.out);
     r = run(['apply', '--target', e1234, '--panel', 'high', '--yes']);
-    ok('half a map URL edit: the other edits apply, the map URL bytes as found', r.code === 0 && /patched OK/.test(r.out) && !/map URL ->/.test(r.out) &&
-        JSON.stringify(mapUrlBytes(fs.readFileSync(e1234))) === JSON.stringify(mapUrlBytes(half)), r.out);
+    ok('foreign map URL bytes: the other edits apply, those bytes as found', r.code === 0 && /patched OK/.test(r.out) && !/map URL ->/.test(r.out) &&
+        JSON.stringify(mapUrlBytes(fs.readFileSync(e1234))) === JSON.stringify(mapUrlBytes(foreign)), r.out);
     r = run(['verify', '--target', e1234]);
-    ok('half a map URL edit: verify passes, map URL n/a', r.code === 0 && /map URL n\/a/.test(r.out), r.out);
+    ok('foreign map URL bytes: verify passes, map URL n/a', r.code === 0 && /map URL n\/a/.test(r.out), r.out);
     r = run(['revert', '--target', e1234, '--yes']);
-    ok('half a map URL edit: revert restores the other edits and keeps those bytes', r.code === 0 && fs.readFileSync(e1234).equals(half), r.out);
+    ok('foreign map URL bytes: revert restores the other edits and keeps those bytes', r.code === 0 && fs.readFileSync(e1234).equals(foreign), r.out);
 
     /* Panel switch high -> mid restores the stock geometry, and a custom
      * --res lands in the immediates at the same physical size. */

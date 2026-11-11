@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Robert Nisipeanu
-/* carplay_patch.js — four reversible edits to the CarPlay binary that,
+/* carplay_patch.js — five reversible edits to the CarPlay binary that,
  * together, put the CarPlay instrument-cluster ("alternate screen") H.264 where
  * this tool can read it, at the size this tool displays (PATCH.md).
  *
@@ -45,9 +45,10 @@
  *            build (MAPURL_2228): a log-only string rewritten to a shorter log
  *            text followed by the URL, and the `lea rsi` that builds the
  *            initial URL repointed from "" to it. Applied in every mode on a
- *            build that has it; a build without it (or whose bytes there read
- *            as neither stock nor this patch) gets the other four edits as
- *            before.
+ *            build that has it; a build without it, or whose bytes there are
+ *            not this patch's in part or whole, gets the other four edits
+ *            only. One range of it written and not the other reads as
+ *            unrecognised, like a located edit that reads as neither.
  *
  * The other four sites are found in each build by carplay_locate.js; a build
  * where any of them is not found, or reads as neither stock nor this patch, is
@@ -95,13 +96,6 @@ var headUnit = require('./head_unit.js');
 var record = require('./patch_record.js');
 var fileMode = require('./file_mode.js');
 
-/* Builds proven as shipped, by GNU build-id. A first edit of one needs the
- * whole file to be the shipped one, and anything else counts as modified. A
- * first edit of any other build needs --unproven: its sites pass the
- * locator's checks, but no car has run it patched. stock: the shipped bytes
- * at every offset any version of this tool writes in it, for a revert
- * without the backup; the rebuilt file is kept only when its SHA-256 is the
- * shipped one, so a list that lacks an offset rebuilds nothing. */
 function latin1(s) { return Buffer.from(s, 'latin1').toString('hex'); }
 
 /* The URL the map URL edit gives the cluster display. */
@@ -118,6 +112,14 @@ var MAPURL_2228 = [
     [0x7b533, '488d3559922100', '488d3515c31d00'],
 ];
 
+/* Builds proven as shipped, by GNU build-id. A first edit of one needs the
+ * whole file to be the shipped one, and anything else counts as modified. A
+ * first edit of any other build needs --unproven: its sites pass the
+ * locator's checks, but no car has run it patched. stock: the shipped bytes
+ * at every offset any version of this tool writes in it, for a revert
+ * without the backup; the rebuilt file is kept only when its SHA-256 is the
+ * shipped one, so a list that lacks an offset rebuilds nothing. mapurl: the
+ * map URL edit's ranges, in a build that has it. */
 var PROVEN = {
     '5de62156575d737391ea42254e778a97dbbb51f8': {
         version: 'carplay 22.28.3+gitr624+993efc1-r0.14',
@@ -215,14 +217,19 @@ function sinkState(buf, s) {
 function mapUrlSites(loc) { var p = PROVEN[loc.buildId]; return (p && p.mapurl) || null; }
 
 /* 'original' or 'patched' when every range reads stock or every range reads
- * patched; else 'absent' with why (the build lacks the edit, or its bytes
- * there are neither): the edit is then left alone. */
+ * patched; 'unknown' when some but not all read patched (a write of ours cut
+ * short), which only the whole backup restores; else 'absent' with why (the
+ * build lacks the edit, or its bytes there are neither): the edit is then
+ * left alone. */
 function mapUrlState(buf, loc) {
     var sites = mapUrlSites(loc);
     if (!sites) return { state: 'absent', reason: 'not known in this build' };
-    function reads(i) { return sites.every(function (s) { return s[0] + s[i].length / 2 <= buf.length && buf.toString('hex', s[0], s[0] + s[i].length / 2) === s[i]; }); }
-    return reads(1) ? { state: 'original', sites: sites } : reads(2) ? { state: 'patched', sites: sites }
-        : { state: 'absent', reason: 'its bytes read as neither stock nor this patch' };
+    function at(s, i) { return s[0] + s[i].length / 2 <= buf.length && buf.toString('hex', s[0], s[0] + s[i].length / 2) === s[i]; }
+    function reads(i) { return sites.every(function (s) { return at(s, i); }); }
+    if (reads(1)) return { state: 'original', sites: sites };
+    if (reads(2)) return { state: 'patched', sites: sites };
+    if (sites.some(function (s) { return at(s, 2); })) return { state: 'unknown', reason: 'map URL: partly patched' };
+    return { state: 'absent', reason: 'its bytes read as neither stock nor this patch' };
 }
 
 function selfstartState(buf, s) {
@@ -275,7 +282,7 @@ function classify(buf) {
  * and reads as stock or as this patch. */
 function unrecognised(c) {
     if (!c.ok) return [c.reason];
-    return EDITS.filter(function (e) { return c[e].state === 'unknown'; }).map(function (e) { return c[e].reason; });
+    return EDITS.concat(['mapurl']).filter(function (e) { return c[e].state === 'unknown'; }).map(function (e) { return c[e].reason; });
 }
 function brief(reasons) { return reasons[0] + (reasons.length > 1 ? ' (+' + (reasons.length - 1) + ' more)' : ''); }
 
@@ -292,7 +299,7 @@ function notPristine(c, buf) {
 
 function oursIn(c) {
     return c.ok && (c.variant.state === 'patched' || c.sink.state === 'redirected' || c.selfstart.state === 'patched' || c.res.state === 'patched' ||
-        c.mapurl.state === 'patched');
+        c.mapurl.state === 'patched' || c.mapurl.state === 'unknown');
 }
 
 function label(c) {
