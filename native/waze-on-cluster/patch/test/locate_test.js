@@ -8,8 +8,10 @@
  * cross-check or a relocation over an edit refused with the reason; apply
  * (only with --unproven), verify, probe and revert on a build outside the
  * proven list, byte-exact; a file with carplay 21.27.4's build-id but not its
- * shipped bytes proven yet refused. With CARPLAY_BIN, the reference build's
- * sites are the documented offsets.
+ * shipped bytes proven yet refused; the map URL edit left alone where a
+ * build lacks it, and its carplay 22.28.3 bytes checked against the lea they
+ * repoint. With CARPLAY_BIN, the reference build's sites are the documented
+ * offsets.
  *
  *   node locate_test.js
  */
@@ -235,16 +237,54 @@ try {
     ok('carplay 21.27.4 build-id: probe reads it proven and patchable', r.code === 0 && /proven:\s+yes, carplay 21\.27\.4/.test(r.out) &&
         /patchable:\s+yes/.test(r.out), r.out);
     r = run(['status', '--target', tgt]);
-    ok('carplay 21.27.4 build-id: status proven, a modified build', /^proven:\s+yes$/m.test(r.out) && /known:\s+yes, modified build/.test(r.out), r.out);
+    ok('carplay 21.27.4 build-id: status proven, a modified build, no map URL edit', /^proven:\s+yes$/m.test(r.out) && /known:\s+yes, modified build/.test(r.out) &&
+        /^mapurl:\s+NOT APPLIED \(not known in this build\)$/m.test(r.out), r.out);
     [[], ['--unproven']].forEach(function (extra) {
         r = run(['apply', '--target', tgt, '--panel', 'high', '--yes'].concat(extra));
         ok('carplay 21.27.4 build-id, not its shipped file: apply ' + (extra[0] ? extra[0] + ' ' : '') + 'refuses, no write, no backup', r.code !== 0 &&
             /first edit requires the pristine build: sha256 fb5d6b179ad4f62a968697d21e84dbb80adc1ad8e618a6f02c6a9a0467aca1ac, got /.test(r.out) &&
             fs.readFileSync(tgt).equals(b2127) && !fs.existsSync(tgt + '.woc-orig'), r.out);
     });
+
+    /* A file with carplay 22.28.3's build-id whose map URL ranges are not
+     * there: that edit is left alone, the four located edits apply as ever
+     * (from our backup of it). */
+    var b2228 = Buffer.from(orig);
+    Buffer.from('5de62156575d737391ea42254e778a97dbbb51f8', 'hex').copy(b2228, b2228.indexOf(Buffer.from(at.buildId, 'hex')));
+    fs.writeFileSync(tgt, b2228);
+    r = run(['probe', tgt]);
+    ok('carplay 22.28.3 build-id without its map URL bytes: probe patchable, the map URL edit not applied', r.code === 0 &&
+        /proven:\s+yes, carplay 22\.28\.3/.test(r.out) && /patchable:\s+yes/.test(r.out) &&
+        /^mapurl:\s+NOT APPLIED \(its bytes read as neither stock nor this patch\)$/m.test(r.out), r.out);
+    fs.writeFileSync(tgt + '.woc-orig', b2228);
+    r = run(['apply', '--target', tgt, '--panel', 'high', '--yes']);
+    ok('carplay 22.28.3 build-id without its map URL bytes: apply from a backup of it refuses as not the shipped file', r.code !== 0 &&
+        /is not a pristine original \(sha256 ddb33e33/.test(r.out) && fs.readFileSync(tgt).equals(b2228), r.out);
+    fs.unlinkSync(tgt + '.woc-orig');
 } finally {
     cp.execFileSync('rm', ['-rf', dir]);
 }
+
+/* carplay 22.28.3's map URL edit: each range the same length stock and
+ * patched; the string a 55-byte log text, patched a shorter one with the URL
+ * after it; the lea rsi at 0x7b533 loading "" (0x294793) stock and the URL
+ * patched (file offset is the address there); the stock bytes on the list a
+ * revert without the backup writes. */
+(function () {
+    var cpp = require('../carplay_patch.js'), p = cpp.PROVEN['5de62156575d737391ea42254e778a97dbbb51f8'], m = p && p.mapurl;
+    function lea(at, to) { var b = Buffer.from('488d3500000000', 'hex'); b.writeInt32LE(to - (at + 7), 3); return b.toString('hex'); }
+    var url = 'maps:/car/instrumentcluster/map', text = 'Head-Unit: no AltDisp.\0';
+    var str = m && m[0], ins = m && m[1];
+    ok('carplay 22.28.3 map URL: two ranges, each as long stock as patched', !!m && m.length === 2 && m.every(function (r) { return r[1].length === r[2].length; }), json(m));
+    ok('carplay 22.28.3 map URL: the log string at 0x257838 holds a shorter text and the URL', !!str && str[0] === 0x257838 &&
+        Buffer.from(str[1], 'hex').toString('latin1') === 'Head-Unit does not support Alternate Displays feature.\0' &&
+        Buffer.from(str[2], 'hex').toString('latin1') === text + url + '\0', json(str));
+    ok('carplay 22.28.3 map URL: the lea at 0x7b533 loads "" stock and the URL patched', !!ins && ins[0] === 0x7b533 &&
+        ins[1] === lea(0x7b533, 0x294793) && ins[2] === lea(0x7b533, 0x257838 + text.length), json(ins));
+    ok('carplay 22.28.3 map URL: its stock bytes on the stock list', !!m && m.every(function (r) {
+        return p.stock.some(function (s) { return s[0] === r[0] && s[1] === r[1]; }); }), json(p && p.stock));
+    ok('carplay 21.27.4: no map URL edit', !cpp.PROVEN['389c1d0536f8cc9283c156410f2f2634a9f952c0'].mapurl);
+})();
 
 /* carplay 21.27.4's stock bytes agree with its probe: the stock sink in the
  * sink slot, the call to setStreamStatus (0x1800d0) at 0x1802dc, and IC_HIGH
