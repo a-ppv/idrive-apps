@@ -446,9 +446,13 @@ cluster is offered, and what differs is in "iDrive 8".
 ### Upload budget
 
 Every layer of every client writes within one budget (`src/governor.h`,
-`kit/upload_pacer.h`). Its ceiling, `upload_kb_per_s`, is 5500 KB/s: on the
-car the cluster flashed black at 8000 KB/s, and once removed a shown map
-after a minute averaging 5774 KB/s. The cap follows what the link shows while writes go (64 KB
+`kit/upload_pacer.h`). Its ceiling, `upload_kb_per_s`, is `auto` by
+default: 5500 KB/s on iDrive 8, where the cluster flashed black at
+8000 KB/s and once removed a shown map after a minute averaging 5774 KB/s;
+3500 KB/s on iDrive 7, whose KOMBI removed shown scenes at 4500-5500 KB/s
+while a map moved and acknowledged the link's data at only ~3.5-4 MB/s
+(more queued on the wire, not more drawn). A number sets it on either.
+The cap follows what the link shows while writes go (64 KB
 or more written within the last second, whether or not the flush went);
 evidence at other times is logged, not counted:
 
@@ -471,7 +475,8 @@ evidence at other times is logged, not counted:
   one not answered is arbitration, not evidence.
 - The cap steps back up 500 KB/s after each minute of healthy upload (at
   least 64 KB a second written, nothing in the window), to the run's
-  ceiling: `upload_kb_per_s` (5500) less any level a removal barred (below).
+  ceiling: `upload_kb_per_s` (3500 or 5500) less any level a removal barred
+  (below).
   Idle time neither counts nor resets that minute.
 - A step down within a minute of a step up doubles the minute (up to
   10 min); 10 min without a step down restores it.

@@ -258,7 +258,7 @@ void define_keys(cld::Config *cfg)
     };
     cfg->define("drop_ins", "/var/opt/cluster-render/conf.d/*.conf /var/opt/*/current/cluster-render.d/*.conf");
     cfg->define("fade_ms", "250");
-    cfg->define("upload_kb_per_s", "5500");
+    cfg->define("upload_kb_per_s", "auto");   /* 3500 on iDrive 7, 5500 on iDrive 8 (service_config) */
     cfg->define("upload_floor_kb_per_s", "2000");
     cfg->define("upload_step_kb_per_s", "500");
     cfg->define("upload_burst_ms", "250");

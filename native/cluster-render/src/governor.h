@@ -4,7 +4,8 @@
  * (upload_pacer.h), steered by what the link to the display shows
  * (README.md "Upload budget").
  *
- * The cap starts at the ceiling (upload_kb_per_s, 5500 KB/s). Evidence of
+ * The cap starts at the ceiling (upload_kb_per_s: auto is 3500 KB/s on
+ * iDrive 7, 5500 on iDrive 8). Evidence of
  * the link falling behind the writes scores points in a sliding window, but
  * only while writes go (within kActiveMs of activity(), which the
  * compositor reports from 64 KB a second written); at other times it is

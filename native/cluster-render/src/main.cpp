@@ -61,7 +61,12 @@ bool crs::service_config(const cld::Config &cfg, int generation, ServiceConfig *
         cld::log('W', "%s: not removed: %s", kOldStateFile, strerror(errno));
     if (!load_targets(cfg, generation, &sc.targets, err))
         return false;
-    const long max_kb = cfg.num("upload_kb_per_s"), step_kb = cfg.num("upload_step_kb_per_s");
+    /* auto: the generation's ceiling. iDrive 7's KOMBI removed shown scenes at
+     * 4500-5500 KB/s while a map moved and took the link's data in at only
+     * ~3.5-4 MB/s, so 3500 there; iDrive 8 keeps 5500. A number overrides. */
+    const long max_kb = cfg.str("upload_kb_per_s") == "auto" ? (generation == 8 ? 5500 : 3500)
+                                                             : cfg.num("upload_kb_per_s");
+    const long step_kb = cfg.num("upload_step_kb_per_s");
     long floor_kb = cfg.num("upload_floor_kb_per_s");
     if (max_kb < 0 || max_kb > 1048576 || floor_kb < 0 || step_kb < 1 || cfg.num("upload_burst_ms") < 1 ||
         cfg.num("upload_burst_ms") > 1000 || cfg.num("fps") < 1 || cfg.num("fps") > 60 ||

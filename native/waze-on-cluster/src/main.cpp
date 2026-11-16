@@ -524,8 +524,8 @@ void define_keys(Config *cfg)
     cfg->define("blank_ms", "10000");
     cfg->define("alt_screen_port", "6031");
     cfg->define("alt_screen_uid", "13002");
-    cfg->define("target_fps", "30");
-    cfg->define("picture_fps", "0");
+    cfg->define("target_fps", "25");
+    cfg->define("picture_fps", "25");
     cfg->define("pan_blocks", "1");
     cfg->define("tex_level_bits", "2");
     cfg->define("gpu_copy", "1");

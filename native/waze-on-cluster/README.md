@@ -688,14 +688,14 @@ street names and icons readable). The next update the budget covers, or a
 quarter second later, brings the exact picture back. `waze-on-cluster
 bench-pack <I420 file>` times the packing on the unit.
 
-**Rate.** `target_fps` (30) is a ceiling on an exact grid; only the newest
+**Rate.** `target_fps` (25) is a ceiling on an exact grid; only the newest
 frame waits, so the map skips ahead and never shows a backlog, and the
 decoder skips the pictures of frames it is behind on ("Losses"). Real Waze
 sent up to about 16 frames a second on the car.
 
 **Pictures.** Every frame is decoded, but its picture (VPP, the copy to
 system memory, the packing) is the CPU's cost, and a moving map changes
-nearly every picture. `picture_fps` (0: every frame) makes at most that
+nearly every picture. `picture_fps` (25; 0: every frame) makes at most that
 many pictures a second, one in each 1000 / `picture_fps` ms slot of a fixed
 grid; the frames between are decoded without one. Set it to `target_fps`
 when that is below the phone's rate (a G-series car saw CarPlay at 30
@@ -708,7 +708,7 @@ stops moving shows the phone's last picture. The minute line counts the
 frames that stay without one ("without one for picture_fps").
 
 **Upload budget.** The budget belongs to cluster-render and is shared by all
-its clients: a 5500 KB/s ceiling, stepping down by 500 KB/s to 2000 KB/s on
+its clients: a 3500 KB/s ceiling on iDrive 7 and 5500 KB/s on iDrive 8, stepping down by 500 KB/s to 2000 KB/s on
 sustained congestion and recovering slowly. Set it with `upload_kb_per_s` in
 `/var/opt/cluster-render/cluster-render.local.conf`. This tool's own
 `upload_kb_per_s` and `upload_burst_ms` keys are accepted and ignored with a
