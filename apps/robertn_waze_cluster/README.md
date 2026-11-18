@@ -38,9 +38,9 @@ Android Auto. The app's **Status** for each tells you.
 No. Leave them alone unless something is wrong.
 
 - Press **Patch** when that phone type's **Status** says `Not patched`,
-  `Update needed`, `Removed — head unit kept restarting` or `Removed —
-  Android Auto crashed`. For any other
-  Status, see [If the map doesn't show](#if-the-map-doesnt-show).
+  `Update needed`, `Removed — head unit kept restarting` or
+  `Removed — Android Auto crashed`. For any other Status, see
+  [If the map doesn't show](#if-the-map-doesnt-show).
 - **Remove patch** turns the map off for that phone type. Use it only if
   you want the map off, or to troubleshoot. It stays off, also after
   updates, until you press **Patch**.
