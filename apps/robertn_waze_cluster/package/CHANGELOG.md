@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+When the Android Auto patch is removed because Android Auto crashed with it,
+Android Auto's Status reads `Removed — Android Auto crashed`.
+
 ## 0.6.12
 
 The cluster's safe area is back to 504x368 at (286, 72); a smaller area made

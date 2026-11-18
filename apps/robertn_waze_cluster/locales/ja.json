@@ -24,6 +24,7 @@
     "Connecting…": "接続中…",
     "Removed after restart": "再起動後に解除",
     "Removed — head unit kept restarting": "解除 — ヘッドユニットが再起動を繰り返しました",
+    "Removed — Android Auto crashed": "解除 — Android Auto がクラッシュしました",
     "Patched after restart": "再起動後に適用",
     "Removing patch…": "パッチ解除中…",
     "Patching…": "パッチ適用中…",

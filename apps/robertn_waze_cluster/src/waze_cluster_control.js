@@ -45,6 +45,8 @@
  *                        many failed head-unit starts); also in aa
  *                       aa: Android Auto's patch, {"state":"original"|"patched"|
  *                        "unknown"|"absent"|"busy"|"error","reason","conflict",
+ *                        "recovered","recoveredWhy" ("crash": removed after the
+ *                        patched aapd crashed; else after failed head-unit starts),
  *                        "pending","aapd","dpi","diskCard","runDpi","runCard","density",
  *                        "card","densities":[min,max,step],"changeAt","error"}
  *                        (dpi and diskCard on disk; runDpi and runCard what runs
@@ -837,7 +839,7 @@ class WazeClusterControl extends EventEmitter {
             return aa.pending === 'revert' ? t('Removed after restart') : t('Patched after restart');
         }
         if (aa.recovered && aa.state !== 'patched' && !headUnitRefused(aa.conflict)) {
-            return t('Removed — head unit kept restarting');
+            return aa.recoveredWhy === 'crash' ? t('Removed — Android Auto crashed') : t('Removed — head unit kept restarting');
         }
         /* A conflict patchd refuses changes for is named also while patched,
          * since it greys Zoom and the turn card. */
