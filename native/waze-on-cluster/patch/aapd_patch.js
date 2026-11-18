@@ -15,9 +15,13 @@
  *              apply refuses unless the coding is the proven 7.
  *   selfstart  onNewNavigationStatus()'s call of setNaviStreamStatus
  *              retargeted to requestStream() (same `this`), and
- *              requestStream()'s `je` on a StreamCommandChanged field that is
- *              never set made a `jmp`: aapd starts the cluster stream itself
- *              once navigation is active.
+ *              requestStream()'s opening test, `not streaming && focus mode
+ *              native`, made `cluster display ready && not streaming`: aapd
+ *              starts the cluster stream itself on the phone's navigation
+ *              status, once the phone has set up its cluster display. Its
+ *              SetVideoFocus() throws on a Cinemo error, and nothing catches
+ *              that, so the request must wait for the display as the car's
+ *              own request does.
  *   screen     the KombiVariant -> screen-size helper's fall-through: class 2
  *              reads 12.3 as class 0 does, so aapd uses aapd.conf's 12.3
  *              geometry instead of its built-in 800x480 default.
@@ -32,6 +36,7 @@
  * unit that refuses our parts (head_unit.js); revert works on any.
  *
  *   aapd_patch.js status [--target <aapd>] [--conf <aapd.conf>] [--coding <shm>]
+ *   aapd_patch.js probe [<file>] [--target <aapd>]
  *   aapd_patch.js apply  [--dpi <n>] [--card shown|hidden] [--target ...] [--conf ...] [--coding ...] [--unproven] [--yes]
  *   aapd_patch.js revert [--target ...] [--conf ...] [--yes] [--force] [--drop-backup]
  *
@@ -61,16 +66,22 @@ var PROVEN = {
     '2dfb9881706bff435b05f621486e8eb8b6c55984': {
         version: 'aapd 22.39.3+gitrAUTOINC+d5a1db18c4-r0',
         sha256: '6880f54c3abba40c1368f2bf254c77bd4a169323c0d4cab8f9662a7c912dcf89',
-        stock: [[0x998bd, '83bb1c02000001'], [0x1d43eb, 'e800f8ffff'], [0x1d3f5d, '0f848d000000'], [0x15b440, '660fefc0ebe1662e0f1f840000000000']],
+        stock: [[0x998bd, '83bb1c02000001'], [0x1d43eb, 'e800f8ffff'], [0x1d3f53, '837b3802740a837b44020f848d000000'], [0x15b440, '660fefc0ebe1662e0f1f840000000000']],
     },
 };
 
 /* The locator's edits and their names on the status lines. */
 var EDITS = [['gate', 'gate'], ['call', 'selfstart call'], ['guard', 'selfstart guard'], ['screen', 'screen']];
 /* The most bytes aapd may differ in from its backup and still be its build:
- * the edits' bytes (gate 7, call 5, guard 6, screen at most 16), twice
+ * the edits' bytes (gate 7, call 5, guard 16, screen at most 16), twice
  * over. */
-var SAME_BUILD_MAX_DIFF = 2 * (7 + 5 + 6 + 16);
+var SAME_BUILD_MAX_DIFF = 2 * (7 + 5 + 16 + 16);
+/* The patch's revision, kept in the patch record. Boot recovery copies it
+ * into its record when it removes a patch, and an install applies again a
+ * patch boot recovery removed only when this revision is newer than the
+ * removed one (patchd.js plan). 2: requestStream goes ahead only while the
+ * phone's cluster display is set up. */
+var PATCH_REV = 2;
 
 /* /dev/shm/rawcodingdata, the coding image CodingShmApp publishes: a 0x2c
  * byte header (flags at 0x28, 0x09 = valid coding) and the blocks. aapd's
@@ -190,7 +201,7 @@ function restorePlan(b, cur, isBin) {
     return { out: out, other: other };
 }
 
-function oursIn(c) { return EDITS.some(function (e) { return c.loc[e[0]].ok && c.loc[e[0]].state === 'patched'; }); }
+function oursIn(c) { return EDITS.some(function (e) { return c.loc[e[0]].ok && (c.loc[e[0]].state === 'patched' || c.loc[e[0]].state === 'outdated'); }); }
 
 /* Each file's undo as it stands, aapd then aapd.conf: { file, cur, b (its
  * backup), p (the restore plan), floor (the bits aapd.service's user needs,
@@ -334,6 +345,38 @@ function cmdStatus(t) {
         (fs.existsSync(backupPath(t.conf)) ? ', ' + backupPath(t.conf) : ''));
 }
 
+/* What the locator reads at each site of the file (aapd by default), for
+ * Save logs: its build, every edit's offset, bytes on disk, stock and
+ * patched forms and state, or why it is not found; and the files beside it
+ * (the backup, the running copy patchd keeps linked, the patch record). It
+ * never writes. */
+function cmdProbe(t, file) {
+    var f = file || t.target, buf = readOr(f);
+    if (!buf) die('cannot read ' + f);
+    var c = classify(buf);
+    line('file', f);
+    line('size', buf.length);
+    line('sha256', c.sha256);
+    line('build-id', c.loc.buildId || 'none');
+    line('version', c.loc.version || 'unknown');
+    line('proven', PROVEN[c.loc.buildId] ? 'yes' : 'no');
+    line('patch-rev', String(PATCH_REV));
+    line('patchable', c.bad.length ? 'no (' + c.bad.join('; ') + ')' : 'yes');
+    EDITS.forEach(function (e) {
+        var s = c.loc[e[0]], k = e[1].replace(' ', '-');
+        if (!s || !s.ok) { line(k, 'not found (' + (s ? s.reason : 'not located') + ')'); return; }
+        line(k, s.state + ' at 0x' + s.offset.toString(16) + ', ' + s.len + ' bytes: ' + buf.toString('hex', s.offset, s.offset + s.len) +
+            ' (stock ' + (s.stock || '?') + ', patched ' + s.patched + ')' + (s.readyFlag !== undefined ? ', ready flag +0x' + s.readyFlag.toString(16) : ''));
+    });
+    [[backupPath(t.target), 'backup'], [t.target + '.woc-running', 'running']].forEach(function (x) {
+        var b = readOr(x[0]);
+        line(x[1], b ? x[0] + ' sha256 ' + sha256(b) + ', build-id ' + (buildId(b) || 'none') : 'none');
+    });
+    var rec = null;
+    try { rec = fs.readFileSync(record.recordPath(t.target), 'utf8').trim(); } catch (e) {}
+    line('record', rec || 'none');
+}
+
 function cmdApply(t, dpi, card, yes, unproven) {
     var hu = headUnit.refused();
     if (hu) die('refusing: ' + hu);
@@ -371,7 +414,7 @@ function cmdApply(t, dpi, card, yes, unproven) {
         die('refusing: the edited aapd does not verify; no change made');
     var outConf = Buffer.from(conf.transform(origText.toString('utf8'), dpi, card), 'utf8');
     var binChange = !outBin.equals(buf), confChange = !outConf.equals(text);
-    var rec = { patched: true, proven: !!PROVEN[c.loc.buildId] };
+    var rec = { patched: true, proven: !!PROVEN[c.loc.buildId], rev: PATCH_REV };
     if (!binChange && !confChange) {
         repairModes([[t.target, fileMode.EXEC], [t.conf, fileMode.READ]], yes);
         process.stdout.write('nothing to do; already in the requested state\n'); record.ensure(t.target, rec); return;
@@ -441,11 +484,12 @@ function main() {
     }
     var t = { target: a.target || '/usr/bin/aapd', conf: a.conf || '/etc/aapd.conf', coding: a.coding || '/dev/shm/rawcodingdata' };
     if (a._[0] === 'status') { cmdStatus(t); line('end', 'complete'); }
+    else if (a._[0] === 'probe') cmdProbe(t, a._[1]);
     else if (a._[0] === 'apply') cmdApply(t, a.dpi === undefined ? conf.DEFAULT_DPI : Number(a.dpi), a.card || conf.DEFAULT_CARD, a.yes, a.unproven);
     else if (a._[0] === 'revert') cmdRevert(t, a.yes, a.force, a['drop-backup']);
-    else { process.stderr.write('usage: aapd_patch.js status|apply|revert [--target <aapd>] [--conf <aapd.conf>] [--coding <shm>] [--dpi <n>] [--card shown|hidden] [--unproven] [--yes] [--force] [--drop-backup]\n'); process.exit(2); }
+    else { process.stderr.write('usage: aapd_patch.js status|probe [<file>]|apply|revert [--target <aapd>] [--conf <aapd.conf>] [--coding <shm>] [--dpi <n>] [--card shown|hidden] [--unproven] [--yes] [--force] [--drop-backup]\n'); process.exit(2); }
 }
 
-module.exports = { CODING: CODING, PROVEN: PROVEN, trusted: trusted, binOther: binOther, readCoding: readCoding, codingRefusal: codingRefusal };
+module.exports = { CODING: CODING, PROVEN: PROVEN, PATCH_REV: PATCH_REV, trusted: trusted, binOther: binOther, readCoding: readCoding, codingRefusal: codingRefusal };
 
 if (require.main === module) main();

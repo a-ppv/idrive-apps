@@ -13,6 +13,9 @@
 # tools and of carplay (what the journal still holds), the list of boots,
 # the carplay patch probe (where its edit sites are in this carplay), the
 # tools' folders, their local settings, the time and the uptime,
+# this boot's journal of aapd and the Android Auto boot step, the aapd
+# patch's site report (aapd_patch.js probe: each edit's offset and bytes,
+# the backup's and the running copy's SHA-256, the patch record),
 # wifi.txt: CarPlay's Wi-Fi band as patchd last read it, each P2P
 # interface's /proc/net/dev counters and the kernel's last 802.1X and DHCP
 # lines for them, the aapd patch's status (aapd_patch.js status: its build,
@@ -89,7 +92,7 @@ done
 if command -v journalctl >/dev/null 2>&1; then
     for unit in cluster-render waze-on-cluster waze-on-cluster-patchd waze-on-cluster-boot waze-on-cluster-recovery \
             waze-on-cluster-capture waze-on-cluster-journal waze-on-cluster-journal.timer waze-on-cluster-logs \
-            waze-on-cluster-logs-fw carplay; do
+            waze-on-cluster-logs-fw waze-on-cluster-aa-boot carplay aapd; do
         journalctl -b -o short-precise --no-pager -u "$unit" 2>/dev/null |
             grep -v -E '\] (Intercepting function|Blocked function|Notice in function: findThreadByName)' > "$DIR/journal-$unit.txt"
     done
@@ -103,6 +106,7 @@ if [ -f "$HERE/carplay_patch.js" ]; then
 fi
 if [ -f "$HERE/aapd_patch.js" ]; then
     "$NODE" "$HERE/aapd_patch.js" status > "$DIR/aapd-status.txt" 2>&1
+    "$NODE" "$HERE/aapd_patch.js" probe > "$DIR/aapd-probe.txt" 2>&1
 fi
 if [ -f "$HERE/logs_extra.js" ]; then
     "$NODE" "$HERE/logs_extra.js" report "$DIR" > /dev/null 2>&1

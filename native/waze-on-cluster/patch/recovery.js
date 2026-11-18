@@ -68,8 +68,12 @@
  * up at BOOT_BOUND_MS whatever hangs and exits by BOOT_EXIT_MS, after one
  * bounded try to put / back read-only. It never kills, restarts or reboots
  * anything; the only start is `systemctl start` of the service after a
- * crash or a SIGKILL patchd did not send, never stop or restart, bounded by
- * START_DELAYS_MS per boot.
+ * crash or a SIGKILL patchd did not send, never stop or restart: carplay's
+ * bounded by START_DELAYS_MS per boot, aapd's after every end of it, a
+ * clean exit too, spaced by AA_START_DELAYS_MS. A crash of the patched aapd
+ * restores its original at once (crashThreshold), before that start, so
+ * Android Auto comes back stock and stays so until its Patch button or an
+ * update with a newer patch revision applies the patch again.
  *
  * Node 8.16.2 on the unit. No dependencies.
  */
@@ -87,6 +91,12 @@ var fileMode = require('./file_mode.js');
 
 /* ExecMainCode of a main process a signal ended without a core dump. */
 var CLD_KILLED = '2';
+
+/* aapd's starts after its ends, by the ends in a row with no healthy run
+ * between (the last delay repeats; a healthy run starts the row again):
+ * quick at first, never more often than once a minute after that, and with
+ * no limit, so Android Auto comes back whenever aapd can run. */
+var AA_START_DELAYS_MS = [2000, 5000, 15000, 30000, 60000];
 
 /* What is watched and restored, per service. state: the counter; mark:
  * written by shutdown_mark.sh; restart: patchd's record of a restart the
@@ -141,6 +151,10 @@ function targets(o) {
             mark: path.join(dir, 'shutdown-aapd'), restart: restart, restartInfo: restartInfo,
             pending: path.join(shm, 'aa-pending'), killed: path.join(shm, 'aapd-killed'), running: o.aapd + '.woc-running',
             killedRun: function (i) { return (i.state === 'failed' || i.state === 'inactive') && i.result === 'signal' && i.code === CLD_KILLED && i.status === '9'; },
+            /* Android Auto must not stay down: a crash of the patched aapd
+             * restores the original at once, and every end of aapd is
+             * followed by a start (AA_START_DELAYS_MS), a clean exit too. */
+            crashThreshold: 1, startDelays: AA_START_DELAYS_MS, restartOnExit: true,
         },
     };
     t.carplay.other = t.aapd;
@@ -353,7 +367,7 @@ function endOf(t, arm) {
  * count one, so a loop that leaves no record is still caught. */
 function tally(count, arm, end) {
     var crashes = arm.crashes || (end.state === 'failed' ? 1 : 0);
-    if (crashes) return { fails: count.fails + crashes, unknown: 0, why: 'saw ' + crashes + ' crash' + (crashes === 1 ? '' : 'es') + ' of the service' };
+    if (crashes) return { fails: count.fails + crashes, unknown: 0, own: true, why: 'saw ' + crashes + ' crash' + (crashes === 1 ? '' : 'es') + ' of the service' };
     if (arm.confirmed) return { fails: 0, unknown: 0, why: 'ran healthy' };
     if (end.neverRan) return { fails: count.fails, unknown: count.unknown, why: 'ended before the service ran' };
     if (end.explained) return { fails: count.fails, unknown: 0, why: 'ended for the other service\'s crash' };
@@ -475,7 +489,7 @@ function repairModes(t, waitMs, cb) {
  * and the target run by processes there is no name left to keep the target
  * linked, so the restore waits for the next boot. Without the lock (patchd
  * writes) it defers: the counter stays, so a later try restores. */
-function restoreTarget(t, onlyIfRunning, fails, cb, waitMs) {
+function restoreTarget(t, onlyIfRunning, fails, cb, waitMs, why) {
     var plans = t.files.map(function (f, i) { return restorePlan(t, i); });
     var bin = plans[0];
     if (!bin) { cb(new Error('no backup of ' + t.target)); return; }
@@ -484,7 +498,7 @@ function restoreTarget(t, onlyIfRunning, fails, cb, waitMs) {
     plans.slice(1).forEach(function (p, i) { if (p && (p.err || p.other)) log(t.files[i + 1] + ' left as it is: ' + (p.err || 'another file than its backup: ' + p.other)); });
     var writes = [];
     plans.forEach(function (p, i) { if (p && p.out) writes.push({ file: t.files[i], buf: p.out, want: p.want }); });
-    var rec = record.current(t.target);
+    var rec = record.current(t.target), rev = rec && rec.rev || 1;
     /* On a head unit that refuses our parts nothing is remounted only to
      * correct the record. */
     var refused = headUnit.refused();
@@ -504,7 +518,7 @@ function restoreTarget(t, onlyIfRunning, fails, cb, waitMs) {
                 }
                 writes.forEach(function (w) { fileMode.replace(w.file, w.buf, w.want); });
                 record.write(t.target, !writes.length ? { patched: false } : refused ? { patched: false, by: 'refused', at: new Date().toISOString() }
-                    : { patched: false, by: 'recovery', at: new Date().toISOString(), fails: fails });
+                    : { patched: false, by: 'recovery', at: new Date().toISOString(), fails: fails, why: why || 'boot', rev: rev });
                 try { fs.unlinkSync(t.pending); } catch (e) {}   /* the pending patch is gone */
             } catch (e) { wErr = e; }
             remountRo(RO_TRIES, function (roErr) {
@@ -583,6 +597,7 @@ function parseShow(text) {
         result: get('Result'),
         code: get('ExecMainCode'),
         status: get('ExecMainStatus'),
+        started: !!start && start !== '0',
     };
 }
 
@@ -612,7 +627,7 @@ function newArm(id, patch) { return { boot: id, at: Date.now(), patch: patch, cr
 function normArm(a) {
     if (!a || typeof a !== 'object') return null;
     return { boot: a.boot, at: a.at || 0, patch: a.patch || 'unknown', crashes: a.crashes || 0, ran: !!a.ran, confirmed: !!(a.confirmed || a.state === 'confirmed'),
-        clean: !!(a.clean || a.state === 'clean') };
+        clean: !!(a.clean || a.state === 'clean'), own: !!a.own };
 }
 
 function Recovery(opts) {
@@ -621,7 +636,7 @@ function Recovery(opts) {
     this.statePath = t.state;
     this.healthyMs = opts.healthyMs || HEALTHY_MS;
     this.bootId = opts.bootId || boot.bootId();
-    this._restore = opts.restore || function (fails, cb) { restoreTarget(t, false, fails, cb); };
+    this._restore = opts.restore || function (fails, cb, why) { restoreTarget(t, false, fails, cb, 0, why); };
     this._repairModes = opts.repairModes || function (cb) { repairModes(t, 0, cb); };
     /* Whether a process runs the target's own file: the run is of the file
      * the record describes, not of one a change replaced. */
@@ -652,6 +667,7 @@ function Recovery(opts) {
     this._ended = '';
     this._crashes = 0;
     this._starts = 0;
+    this._pendingRun = null;    /* aapd: the run patchd's pending marker was written under */
 }
 
 /* read: the state file was read, or there is none. */
@@ -738,6 +754,7 @@ Recovery.prototype._decide = function (cb) {
         st.fails = r.fails;
         st.unknown = r.unknown;
         st.prev = st.arm;
+        st.prev.own = !!r.own;
         st.arm = null;
         tallied = true;
         this._log(t.name + ': failed patched boots and crashes ' + st.fails + ' (was ' + was + '): the last patched boot ' + r.why +
@@ -751,14 +768,21 @@ Recovery.prototype._decide = function (cb) {
     }
     if (!st.arm) st.arm = newArm(this.bootId, kind);
     var saved = this._save(st);
-    if (saved && st.fails < THRESHOLD[kind]) { cb({ action: 'armed', patch: kind, fails: st.fails }); return; }
-    this._restoreWith(st.fails, saved, cb);
+    /* A service with a crash threshold of its own (aapd) is restored at it
+     * when the last patched boot counted saw the service itself crash (also
+     * when the watcher retries a restore the boot step did not finish). */
+    var own = !!st.prev && !!st.prev.own && st.fails > 0;
+    var limit = own && t.crashThreshold ? Math.min(THRESHOLD[kind], t.crashThreshold) : THRESHOLD[kind];
+    if (saved && st.fails < limit) { cb({ action: 'armed', patch: kind, fails: st.fails }); return; }
+    /* why: 'crash' for a service its own crash restores (aapd), else
+     * 'boot' (failed head-unit starts). */
+    this._restoreWith(st.fails, saved, cb, undefined, own && t.crashThreshold ? 'crash' : 'boot');
 };
 
 /* Restore at the threshold, (saved false) because the count could not be
  * saved, or (refused: why) on a head unit that refuses our parts; the
  * counter clears once the binary is not ours to protect. */
-Recovery.prototype._restoreWith = function (fails, saved, cb, refused) {
+Recovery.prototype._restoreWith = function (fails, saved, cb, refused, why) {
     var self = this, n = this.target.name, t0 = this._now();
     this._log(refused ? refused + '; restoring the original ' + n
         : saved ? 'restoring the original ' + n + ' after ' + fails + ' failed patched boots or crashes'
@@ -772,7 +796,8 @@ Recovery.prototype._restoreWith = function (fails, saved, cb, refused) {
             self._log('boot recovery restore failed: ' + err.message + '; ' + n + ' starts as it is');
             r = { action: 'restore-failed', fails: fails, error: err.message };
         } else {
-            self._log(outcome === 'restored' ? 'restored the original ' + n + ' in ' + Math.round(self._now() - t0) + ' ms; its patch is off until its Patch button applies it'
+            self._log(outcome === 'restored' ? 'restored the original ' + n + ' in ' + Math.round(self._now() - t0) + ' ms; its patch is off until its Patch button applies it' +
+                    (self.target.crashThreshold ? ' or an update brings a newer patch' : '')
                 : outcome === 'other' ? n + ' is another build than our backup (a firmware update): not ours to restore'
                 : n + ' is the original already');
             self._clear();
@@ -780,7 +805,7 @@ Recovery.prototype._restoreWith = function (fails, saved, cb, refused) {
         }
         cb(r);
         self._restored.splice(0).forEach(function (f) { f(); });
-    });
+    }, why);
 };
 
 Recovery.prototype._clear = function () {
@@ -808,7 +833,7 @@ Recovery.prototype.whenRestored = function (cb) {
  * patchd killed it, which starts it itself, the service is started again
  * like after a crash. A run continuously active for HEALTHY_MS confirms the
  * boot. cb(result) for tests; result.action is 'skip' | 'watch' |
- * 'confirmed' | 'crash' | 'killed' | 'started' | 'start-skipped'. */
+ * 'confirmed' | 'crash' | 'killed' | 'exited' | 'started' | 'start-skipped'. */
 Recovery.prototype.tick = function (cb) {
     cb = cb || function () {};
     var self = this;
@@ -820,6 +845,13 @@ Recovery.prototype.tick = function (cb) {
     this._busy = true;
     this._probe(function (info) {
         self._lastProbe = now;
+        /* patchd writes its pending marker only while a run is up, which
+         * keeps the file it replaced: the run of the first probe that sees
+         * the marker. */
+        if (self.target.restartOnExit) {
+            if (!exists(self.target.pending)) self._pendingRun = null;
+            else if (self._pendingRun === null) self._pendingRun = info.run || '-';
+        }
         if (info.state === 'active') {
             if (info.run !== self._run) { self._run = info.run; self._activeSince = now; self._ran(); }
             self._pid = info.pid;
@@ -830,13 +862,15 @@ Recovery.prototype.tick = function (cb) {
         }
         var killed = self.target.killedRun(info);
         var ended = !killed && (info.state === 'failed' || (info.state === 'inactive' && !!info.result && info.result !== 'success'));
-        if (!(ended || killed) || !info.run || self._handled(info.run)) { self._busy = false; cb({ action: self._healthy(now) }); return; }
+        var exited = !killed && !ended && !!self.target.restartOnExit && info.state === 'inactive' && info.result === 'success' && info.started;
+        if (!(ended || killed || exited) || !info.run || self._handled(info.run)) { self._busy = false; cb({ action: self._healthy(now) }); return; }
         self._markHandled(info.run);
         if (info.run === readText(self.target.killed).trim()) { self._busy = false; cb({ action: 'watch' }); return; }
         self._systemState(function (sys) {
             /* An end while the head unit shuts down, its mark already written, is no crash. */
             if (sys === 'stopping' || markOf(self.target, self.bootId)) { self._busy = false; cb({ action: 'watch' }); return; }
             if (killed) { self._onKill(info, cb); return; }
+            if (exited) { self._onExit(info, cb); return; }
             self._onCrash(info, cb);
         });
     });
@@ -866,6 +900,12 @@ Recovery.prototype._ran = function () {
 Recovery.prototype._healthy = function (now) {
     if (this._activeSince === null || now - this._activeSince < this.healthyMs || this._settled === this._run) return 'watch';
     var st = this._load(), action = 'watch', settled = st.read;
+    /* aapd: a healthy run makes its next start after an end quick again. */
+    if (this.target.startDelays && this._startsThisBoot() > 0) {
+        this._starts = 0;
+        st.starts = { boot: this.bootId, n: 0 };
+        settled = this._save(st) && settled;
+    }
     if (this._armed(st) && !st.arm.confirmed) {
         st.arm.confirmed = true;
         settled = this._save(st);
@@ -928,6 +968,14 @@ Recovery.prototype._onCrash = function (info, cb) {
         return true;
     }
     this._log(t.name + ' (run ' + info.run + ') ended: ' + info.result);
+    /* The run patchd's pending marker was written under ran the file that
+     * change replaced: its crash tells nothing of the file on disk, which
+     * the start runs, so nothing is counted or restored. */
+    if (this._pendingRun && info.run === this._pendingRun) {
+        this._log(t.name + ' ran the file a change replaced: not counted; the start runs ' + t.target + ' as it is now');
+        next();
+        return;
+    }
     this._crashes++;
     var st = this._load();
     if (this._armed(st)) { st.arm.crashes = Math.max(st.arm.crashes + 1, this._crashes); saved = this._save(st); }
@@ -941,10 +989,10 @@ Recovery.prototype._onCrash = function (info, cb) {
     if (kind === 'none' || kind === 'original') { this._clear(); next(); return; }
     if (!this._armed(st)) { st.arm = newArm(this.bootId, kind); st.arm.crashes = this._crashes; saved = this._save(st); }
     if (goingDown()) return;
-    var total = st.fails + Math.max(st.arm.crashes, this._crashes);
+    var total = st.fails + Math.max(st.arm.crashes, this._crashes), limit = Math.min(THRESHOLD[kind], t.crashThreshold || Infinity);
     this._log(t.name + ' crashes while patched: ' + total);
-    if (saved && total < THRESHOLD[kind]) { next({ fails: total }); return; }
-    this._restoreWith(total, saved, function (r) { next({ fails: total, restore: r.action }); });
+    if (saved && total < limit) { next({ fails: total }); return; }
+    this._restoreWith(total, saved, function (r) { next({ fails: total, restore: r.action }); }, undefined, t.crashThreshold ? 'crash' : 'boot');
 };
 
 /* A SIGKILL that was not patchd's (the OOM killer, a shell): the service is
@@ -957,18 +1005,33 @@ Recovery.prototype._onKill = function (info, cb) {
     cb({ action: 'killed' });
 };
 
+/* A clean exit of a service that must not stay down (aapd): started again
+ * where recmgr loaded its entry (without it, recmgr restarts the head
+ * unit for the exit). */
+Recovery.prototype._onExit = function (info, cb) {
+    this._log(this.target.name + ' (run ' + info.run + ') exited');
+    if (this._recmgrLoaded(this.target.name)) this._scheduleStart();
+    this._busy = false;
+    cb({ action: 'exited' });
+};
+
 Recovery.prototype._startsThisBoot = function () {
     var s = this._load().starts;
     return Math.max(this._thisBoot(s) ? s.n : 0, this._starts);
 };
 
+/* The next start after an end: carplay's at most START_DELAYS_MS.length
+ * times per boot, aapd's (startDelays) after every end, its delay growing
+ * with the starts since its last healthy run. */
 Recovery.prototype._scheduleStart = function () {
-    var n = this._startsThisBoot();
-    if (n >= START_DELAYS_MS.length) {
+    var n = this._startsThisBoot(), d = this.target.startDelays;
+    if (!d && n >= START_DELAYS_MS.length) {
         this._log(this.target.name + ' stays down: started ' + n + ' times this boot already');
         return;
     }
-    this._startAt = this._now() + START_DELAYS_MS[n];
+    var delay = d ? d[Math.min(n, d.length - 1)] : START_DELAYS_MS[n];
+    if (d) this._log('starting ' + this.target.name + ' in ' + delay / 1000 + ' s');
+    this._startAt = this._now() + delay;
 };
 
 /* The scheduled start: only while the service is down, the system is not
@@ -989,10 +1052,11 @@ Recovery.prototype._startDue = function (cb) {
             st.starts = { boot: self.bootId, n: n };
             self._save(st);
             self._startAt = null;
-            self._log('starting ' + self.target.name + ' (start ' + n + ' this boot)');
+            self._log('starting ' + self.target.name + ' (start ' + n + (self.target.startDelays ? ' since its last healthy run' : ' this boot') + ')');
             self._start(function (err) {
                 self._lock.release();
                 if (err) self._log('starting ' + self.target.name + ' failed: ' + err.message);
+                if (err && self.target.startDelays) self._scheduleStart();
                 self._lastProbe = -Infinity;   /* probe the new run at the next tick */
                 done('started');
             });
@@ -1041,7 +1105,7 @@ function runBoot(name) {
             if (kept) log('kept ' + kept + ' restart record' + (kept === 1 ? '' : 's') + ' in ' + RECORDS);
         } catch (e) { log('restart records not kept: ' + e.message); }
     }
-    var rec = new Recovery({ target: t, restore: function (fails, cb) { restoreTarget(t, true, fails, cb, BOOT_LOCK_WAIT_MS); },
+    var rec = new Recovery({ target: t, restore: function (fails, cb, why) { restoreTarget(t, true, fails, cb, BOOT_LOCK_WAIT_MS, why); },
         repairModes: function (cb) { repairModes(t, BOOT_LOCK_WAIT_MS, cb); } });
     rec.startBoot(function (r) {
         log(t.name + ' boot check: ' + r.action + (r.patch ? ' (' + r.patch + ' patch, ' + r.fails + ' failed)' : '') +

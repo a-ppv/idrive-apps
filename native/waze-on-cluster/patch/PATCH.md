@@ -800,7 +800,18 @@ start), a site a dynamic relocation covers refused. A build where a site is
 not found, is found more than once or fails a check is refused with the
 reason; `patchd` reports it as `not patchable: <reason>` (`Status: Not
 supported on this car` in the app's Android Auto section). Each check has a
-name in `aapd_locate.js` (`CHECKS`).
+name in `aapd_locate.js` (`CHECKS`), and `aapd_locate_test.js` shows for
+each one a changed build that it alone refuses. The checks tie the sites to
+each other, not to a build: the gate's kept result must be the flag that
+turns the cluster display code on, the self-start's fields must be those
+the session start and end set, and its opening test must read the object
+its function was called with. No list of builds decides it: a build of
+another version patches when its code has the same shape. Before writing,
+`apply` locates its own edited copy again, and writes nothing unless every
+site reads patched at the same offsets. `aapd_patch.js probe [<file>]`
+prints each site's offset, its bytes on disk and both forms, or why it is
+not found, the backup's and the running copy's SHA-256 and the patch
+record; Save logs includes it (`aapd-probe.txt`).
 
 **Proven builds**, listed by build-id in `aapd_patch.js`: the first edit
 needs the whole file to be the shipped one. Another build counts as
@@ -847,7 +858,7 @@ In the proven build:
 |---|---|---|---|
 | gate | `0x998bd` | `83bb1c020000 01` (`cmp dword [rbx+0x21c],1`) | `…02` |
 | selfstart call | `0x1d43eb` | `e800f8ffff` (`call setNaviStreamStatus`) | `e840fbffff` (`call requestStream`) |
-| selfstart guard | `0x1d3f5d` | `0f848d000000` (`je 0x1d3ff0`) | `e98e00000090` (`jmp 0x1d3ff0 ; nop`) |
+| selfstart guard | `0x1d3f53` | `837b3802 740a 837b4402 0f848d000000` (`cmp dword [rbx+0x38],2 ; je L1 ; cmp dword [rbx+0x44],2 ; je 0x1d3ff0`) | `807b4100 740a 837b3802 0f858d000000` (`cmp byte [rbx+0x41],0 ; je L1 ; cmp dword [rbx+0x38],2 ; jne 0x1d3ff0`) |
 | screen | `0x15b440` | `660fefc0 ebe1 662e0f1f840000000000` | `83f802 740b 660fefc0 ebdc 0f1f440000` |
 
 - **gate.** `Application::secondVideoEnabled()` returns `featureFlag &&
@@ -858,10 +869,27 @@ In the proven build:
   then waits for a `ProjectedModeRequestStreamCommand` the car never sends,
   as CarPlay waits for NavController. `onNewNavigationStatus()`'s shared
   tail calls `requestStream(this)` instead of `setNaviStreamStatus(this,
-  status)` (the extra argument is unused), and `requestStream()` no longer
-  waits on the `[rbx+0x44] == 2` a `StreamCommandChanged` event would set;
-  its own check that it is not streaming already (`[rbx+0x38] != 2`) stays,
-  and it still calls `setNaviStreamStatus(STREAMING)`. The two go together.
+  status)` (the extra argument is unused), on every status but rerouting
+  and active while streaming. `requestStream()` sets the stream status to
+  STREAMING and calls the cluster display's
+  `SetVideoFocus(PROJECTED, unsolicited)`, whose error
+  `throwOnCinemoError` throws and nothing catches: aapd aborts. Cinemo
+  refuses that call until the phone has set the cluster display up
+  (`Unable to SetVideoFocus() without active player or correct
+  configuration!`), as before a session, before the phone's display is
+  ready, after the session ends or with a phone that offers no cluster
+  display. Stock, the call can come only from the car's request, to which
+  aapd subscribes in `onAlternateVideoReady()`. So the edit replaces
+  requestStream's opening test, not streaming (`[rbx+0x38] != 2`) and the
+  focus mode native (`[rbx+0x44] == 2`), with: the cluster display ready
+  (`[rbx+0x41]`, which `onAlternateVideoReady()` sets and `onEndSession()`
+  clears) and not streaming. Before that, it logs `Ignoring event. Already
+  streaming...` and returns; the next navigation status after the display
+  is ready starts the stream. The focus mode test goes, so a stream the
+  phone's main-display focus change marked ERROR starts again at the next
+  status. The two go together. Releases up to 0.10.10 made the focus test
+  a `jmp` and kept no readiness test; the locator reads that guard as
+  `outdated`, and an install replaces it with this one.
 - **screen.** `loadKombiDisplayDefinition()` turns the class into the screen
   size it looks up in aapd.conf (`0x15b400`: 0 → 12.3, 1 → 10.25, else
   0.0); with 0.0 it skips aapd.conf and sends an 800x480 stream with the UI
@@ -891,12 +919,21 @@ In the proven build:
   its result as a byte of its object. No other code compares the field with
   1 or 2.
 - *selfstart*: `requestStream()`, which `onStreamCommandChanged()` calls,
-  opens with `cmp [this+A],2 ; je +10 ; cmp [this+B],2 ; je Ldo` (or the
-  patched `jmp Ldo ; nop`); before `Ldo` it logs `Ignoring event. Already
-  streaming...`, after it `Request Stream Command event received`, calls
-  `setNaviStreamStatus(STREAMING)` (2) and sets `B` to 1.
+  copies `rdi` (its `this`) into the register its opening test reads and
+  opens with `cmp [this+A],2 ; je +10 ; cmp [this+B],2 ; je Ldo`, or the
+  patched `cmp byte [this+F],0 ; je +10 ; cmp [this+A],2 ; jne Ldo`, or
+  the outdated `... ; jmp Ldo ; nop`; before `Ldo` it logs `Ignoring
+  event. Already streaming...`, after it `Request Stream Command event
+  received`, calls `setNaviStreamStatus(STREAMING)` (2) and sets `B` to 1.
+  `onAlternateVideoReady()` sets one byte field `F` to 1 and calls
+  `subscribeEvents()`; `onEndSession()` sets `F` to 0, `A` to 0 and `B`
+  to 2; the patched test must read that `F`, and in the patched form `B` is
+  the field set to 1 after the call that `onEndSession()` sets to 2.
   `setNaviStreamStatus` copies its argument's value (`[rsi+X]`) into `A`;
   where the build has its name string, it is the function loading it.
+  The gate's kept result (a byte of the Application) is tested by
+  `initAlternateDisplays()`, which builds the cluster display, and before
+  every branch into `onNewNavigationStatus()` (within 0x40 bytes of it).
   `onNewNavigationStatus()` calls `setNaviStreamStatus` (stock) or
   `requestStream` (patched) exactly once: that call. On every path to it,
   `rsi` holds `rsp+B`, its value followed through the function by
@@ -988,7 +1025,7 @@ needs 2 x 7.4 MB free on `/` (the backup and the temporary copy) plus 1 MiB,
 read with `df`, or it refuses.
 
 `revert` needs no locator. aapd is restored over a file of the backup's
-build (the same size and build-id, or at most 68 bytes apart without one):
+build (the same size and build-id, or at most 88 bytes apart without one):
 the edits' bytes only when the locator reads it and the pristine backup as
 the same build at the same sites, else the whole backup.
 aapd.conf is restored whole over a file that differs from the backup only in
@@ -1127,6 +1164,32 @@ starts aapd again as after a crash. The shutdown record writes such an end
 as `stopped`, so the boot step does not count it either. The watcher
 follows aapd only on a unit that has it.
 
+Android Auto differs in what follows an end, so that it is never left down
+and a failing patch is not tried again:
+
+- **A crash of the patched aapd restores the original at once**, the
+  first one, proven build or not: the watcher, where the head unit stays
+  up, then starts the original; the boot step, where the crash restarted
+  the head unit (the watcher saw it, or the shutdown record says
+  `failed`), before aapd starts. A failed start with no crash of aapd
+  recorded counts against the thresholds below, as for CarPlay. A crash of
+  the run that was up when a change waiting for the next start
+  (`aa-pending`) replaced its file is not counted: the start runs the file
+  on disk, and a crash of that run counts.
+- **aapd is started again after every end** the watcher sees where recmgr
+  loaded its entry this boot: a crash, a SIGKILL `patchd` did not send, and
+  a clean exit of a run that started (`ExecMainStartTimestampMonotonic`
+  above 0), 2 s, 5 s, 15 s and 30 s after the first four ends in a row,
+  then 60 s after each one, with no limit. A run active 60 s makes the
+  next start 2 s again. A start that fails is tried again the same way.
+- **The patch stays off** while the patch record names the restore: an
+  install leaves it off, unless its patch revision (`aapd_patch.js`
+  `PATCH_REV`, kept in the patch record as `rev`, 1 when there is none) is
+  newer than the removed patch's; Android Auto's Patch button applies it
+  again. `patchd` reports the restore as `recovered` with
+  `recoveredWhy`: `crash` (the patched aapd crashed) or `boot` (failed
+  head-unit starts).
+
 **What is recorded.**
 
 - The patch record, `<target>.woc-patch.json` (`patch_record.js`), beside
@@ -1135,7 +1198,8 @@ follows aapd only on a unit that has it.
   with nothing to write when the file has changed since the record was
   written, or there is none), by the watcher when a patch on trial ran
   healthy (below), by the restore below with `by: "recovery"`,
-  `at` and `fails` after failed starts, or `by: "refused"` and `at` on a
+  `at`, `fails`, `why` (`crash` or `boot`) and `rev` (the removed patch's
+  revision) after failed starts or a crash, or `by: "refused"` and `at` on a
   head unit that refuses our parts, and removed with the backup. It describes the target while its inode, size and
   modification time are the recorded ones. For aapd `proven` is whether
   the build is its one known build. For carplay it is true only for a
@@ -1390,7 +1454,7 @@ the next start. Where recmgr loaded its `carplay` entry this boot and the
 head unit stays up, for a patch at `fails` plus this start's crashes at the
 threshold the watcher restores the original, then starts CarPlay with
 `systemctl start carplay.service`, 5 s, 15 s and 60 s after a crash, at
-most three times per head-unit start, only while CarPlay is down, the
+most three times per head-unit start (aapd: after every end, above), only while CarPlay is down, the
 system is not stopping and `patchd` does not hold the remount lock. The run
 it starts is probed at the next tick. The watcher also runs the boot step's
 logic at its own start, so a start whose boot step did not run or finish is

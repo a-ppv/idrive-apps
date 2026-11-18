@@ -82,10 +82,11 @@ RELEASES.forEach(function (v) {
     READS_FEATURES[v] = hits.trim();
 });
 /* The releases that would refuse to start with this local conf, each with
- * the line it refuses. */
+ * the line it refuses. A release reads a local conf when its shipped conf
+ * sets local_conf; one that does not cannot refuse it. */
 function refusing(text) {
     var out = [];
-    RELEASES.forEach(function (v) {
+    RELEASES.filter(function (v) { return KNOWN[v].indexOf('local_conf') >= 0; }).forEach(function (v) {
         var bad = lines(text).filter(function (kv) { return kv[0] === null || KNOWN[v].indexOf(kv[0]) < 0; });
         if (bad.length) out.push(v + ' (' + (bad[0][0] || bad[0][1]) + ')');
     });

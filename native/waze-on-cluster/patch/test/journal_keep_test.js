@@ -157,7 +157,7 @@ async function until(what, fn) {
     assert(/PRIORITY/.test(args.join(' ')) && /_SOURCE_MONOTONIC_TIMESTAMP/.test(args.join(' ')), 'the kernel line\'s priority and time since boot');
     ['waze-on-cluster.service', 'waze-on-cluster-patchd.service', 'waze-on-cluster-boot.service',
         'waze-on-cluster-recovery.service', 'cluster-render.service', 'carplay.service', 'recmgr.service',
-        'crashhandler.service'].forEach(function (u) { assert(jk.UNITS.indexOf(u) >= 0, u); });
+        'crashhandler.service', 'aapd.service', 'waze-on-cluster-aa-boot.service'].forEach(function (u) { assert(jk.UNITS.indexOf(u) >= 0, u); });
     console.log('ok   lines: time, unit, identifier[pid]; kernel; systemd\'s about a unit; LINE_MAX; three match groups');
 })();
 

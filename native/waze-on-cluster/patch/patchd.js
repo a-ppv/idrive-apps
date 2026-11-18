@@ -103,7 +103,9 @@
  *                    failed: refused, stayed or error), reason, possibleAt
  *                    (while the restart limit holds: when one is taken again)}
  *                    recovered: n, while the original boot recovery restored
- *                    after n failed head-unit starts is on disk (also in aa)
+ *                    after n failed head-unit starts is on disk (also in aa,
+ *                    with recoveredWhy: crash when the patched aapd
+ *                    crashed, boot for failed head-unit starts)
  *                    wifi: {band: "5" | "2.4", iface, freq (MHz)} while
  *                    CarPlay runs over Wi-Fi and its band is known, else
  *                    null (wifi_band.js); a status goes out when it changes
@@ -824,6 +826,16 @@ function recovered(target) {
     return rec && rec.by === 'recovery' ? rec.fails || 1 : null;
 }
 
+/* Why boot recovery restored the original aapd on disk now: 'crash' (the
+ * patched aapd crashed) or 'boot' (failed head-unit starts), and the patch
+ * revision it removed
+ * (aapd_patch.js PATCH_REV, 1 for a record without one); null otherwise. */
+function recoveredAa() {
+    var rec = record.current(AAPD);
+    return rec && rec.by === 'recovery' ? { why: rec.why === 'crash' ? 'crash' : 'boot', rev: rec.rev || 1 } : null;
+}
+var AA_PATCH_REV = require('./aapd_patch.js').PATCH_REV;
+
 /* The Android Auto patch as aapd_patch.js status reads it: { state:
  * original | patched | unknown | absent, reason, conflict, pending, dpi (the
  * density on disk), density (the chosen one), restorable, backup, known,
@@ -858,7 +870,9 @@ function readAaState(cb, fresh) {
             done(st);
             return;
         }
-        var edits = ['gate', 'selfstart-call', 'selfstart-guard', 'screen'].map(get), geom = get('geometry');
+        /* OUTDATED: an edit of ours as an earlier release wrote it, which
+         * an apply brings up to date. */
+        var edits = ['gate', 'selfstart-call', 'selfstart-guard', 'screen'].map(get).map(function (e) { return e === 'OUTDATED' ? 'PATCHED' : e; }), geom = get('geometry');
         st.ours = edits.indexOf('PATCHED') >= 0 || /^PATCHED/.test(geom);
         var dpi = /^PATCHED \((\d+) dpi, card (\w+)/.exec(geom), coding = /^KI_KOMBI_VARIANT (\d+)$/.exec(get('coding'));
         var backup = get('backup') !== 'none', known = !/^NO/.test(get('known')), pristine = /^yes, pristine/.test(get('known'));
@@ -883,6 +897,8 @@ function readAaState(cb, fresh) {
             : confWhy && !backup ? 'aapd.conf not usable: ' + confWhy[1]
             : foreignStart(AA) || (!backup && !proven ? 'untested aapd build' : null));
         st.recovered = recovered(AAPD);
+        var ra = recoveredAa();
+        if (ra) { st.recoveredWhy = ra.why; st.recoveredRev = ra.rev; }
         var pending = readPending(AA);
         if (pending) {
             st.state = 'unknown'; st.reason = pending.reason; st.aapd = 'deferred'; st.pending = pending.action || 'apply'; st.pendingBy = pending.by;
@@ -921,7 +937,7 @@ function aaMsg(st) {
     var m = { state: busy === 'aa' ? 'busy' : st.state, density: st.density, card: st.card, densities: [aapdConf.DENSITY_MIN, aapdConf.DENSITY_MAX, aapdConf.DENSITY_STEP],
               removable: !!st.restorable };
     /* While a change runs, the line says so; the values on disk stay. */
-    if (busy !== 'aa') ['reason', 'conflict', 'aapd', 'recovered'].forEach(function (k) { if (st[k]) m[k] = st[k]; });
+    if (busy !== 'aa') ['reason', 'conflict', 'aapd', 'recovered', 'recoveredWhy'].forEach(function (k) { if (st[k]) m[k] = st[k]; });
     ['pending', 'dpi', 'diskCard'].forEach(function (k) { if (st[k]) m[k] = st[k]; });
     if (st.pending && st.run !== undefined) { m.runDpi = st.run ? st.run.dpi : null; m.runCard = st.run ? st.run.card : null; }
     if (lastDensityAt + DENSITY_SPACING_MS > Date.now()) m.changeAt = lastDensityAt + DENSITY_SPACING_MS;
@@ -1922,7 +1938,8 @@ function ensureDir(dir) {
  * a patch of ours, any configuration of it, which the patcher brings up to
  * date or leaves as it is; an original with our backup was reverted by the
  * user and stays so (reset applies it: highfReset), a patch boot recovery
- * removed stays so whatever is left of it, as does a pending change other
+ * removed stays so whatever is left of it (an Android Auto patch of an
+ * older revision than this release's is applied again), as does a pending change other
  * than a removal's revert. After a removal's revert an install patches a proven build again;
  * a build outside the proven list, its backup dropped, stays reverted (a
  * conflict). deactivate reverts a patch of ours, a pending one too, also one
@@ -1934,12 +1951,16 @@ function plan(which, st, name, reset) {
         return { why: 'a change already waits for the next head-unit start' };
     }
     if (which === 'deactivate' && st.restorable) return { op: 'revert' };
-    if (which === 'activate' && st.recovered) {
-        return { why: 'boot recovery removed the patch after ' + st.recovered + ' failed head-unit start' + (st.recovered === 1 ? '' : 's') + '; its Patch button applies it' };
+    /* Android Auto's: also a crash of the patched aapd; an install with a
+     * newer patch revision than the removed one applies it again. */
+    var retry = which === 'activate' && !!st.recovered && !!st.recoveredRev && st.recoveredRev < AA_PATCH_REV;
+    if (which === 'activate' && st.recovered && !retry) {
+        return { why: st.recoveredWhy === 'crash' ? 'boot recovery removed the patch after the patched aapd crashed; its Patch button applies it'
+            : 'boot recovery removed the patch after ' + st.recovered + ' failed head-unit start' + (st.recovered === 1 ? '' : 's') + '; its Patch button applies it' };
     }
     if (st.conflict && (which === 'activate' || !st.known || st.otherBuild)) return { conflict: st.conflict };
     if (which === 'deactivate') return st.binary === 'original' && !st.backup ? { why: name + ' is the original' } : { op: 'revert' };
-    if (st.binary === 'original' && st.backup) return reset ? { op: 'apply', reset: true } : { why: 'the patch was turned off; its Patch button applies it' };
+    if (st.binary === 'original' && st.backup) return reset ? { op: 'apply', reset: true } : retry ? { op: 'apply' } : { why: 'the patch was turned off; its Patch button applies it' };
     return { op: 'apply' };
 }
 

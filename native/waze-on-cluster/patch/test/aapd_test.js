@@ -1167,7 +1167,7 @@ function fakeRec(opts) {
     var now = 0, ev = [], info = opts.info || { state: 'active', run: 'r1', pid: 1 };
     var rec = new recovery.Recovery({
         target: t, bootId: opts.boot || 'B1', healthyMs: 60000,
-        restore: function (f, cb) { ev.push('restore'); cb(null, 'restored'); },
+        restore: function (f, cb) { ev.push('restore'); cb(opts.restoreFails ? new Error('remount lock held; deferring') : null, 'restored'); },
         probe: function (cb) { cb(rec.info); }, systemState: function (cb) { cb('running'); },
         start: function (cb) { ev.push('start'); cb(null); },
         alive: function () { return false; },
@@ -1205,11 +1205,73 @@ async function recoveryTests() {
         await tick(b);
     }
     var starts = b.ev.filter(function (e) { return e === 'start'; }).length;
-    ok('aapd crashes: each run counted once, restored at the second, before more starts', crashes === 5 && b.ev.indexOf('restore') >= 0 &&
-        b.ev.indexOf('restore') < b.ev.lastIndexOf('start'), b.ev.join(','));
-    ok('aapd crashes: started again at most three times a boot', starts === 3, String(starts));
+    ok('aapd crashes: each run counted once, restored at the first, before its start', crashes === 5 &&
+        b.ev.indexOf('restore') >= 0 && b.ev.indexOf('restore') < b.ev.indexOf('start'), b.ev.join(','));
+    ok('aapd crashes: started again after every one, no limit a boot', starts === 5, String(starts));
     var st = JSON.parse(fs.readFileSync(b.statePath, 'utf8'));
-    ok('aapd crashes: the boot\'s starts are on disk', st.starts && st.starts.n === 3, JSON.stringify(st));
+    ok('aapd crashes: the starts since the last healthy run are on disk', st.starts && st.starts.n === 5, JSON.stringify(st));
+
+    /* The delays: 2, 5, 15, 30 s, then 60 s each time; a healthy run makes
+     * the next one quick again. A clean exit is followed by a start too. */
+    var w = fakeRec({});
+    await new Promise(function (r) { w.startBoot(r); });
+    async function endAndWait(run, how) {
+        w.info = how === 'exit' ? { state: 'inactive', result: 'success', code: '1', status: '0', run: run, pid: 0, started: true }
+            : { state: 'failed', result: 'core-dump', code: '3', status: '11', run: run, pid: 0 };
+        w.advance(1000);
+        await tick(w);
+        var before = w.ev.filter(function (e) { return e === 'start'; }).length, waited = 0;
+        while (w.ev.filter(function (e) { return e === 'start'; }).length === before && waited < 120000) { w.advance(1000); waited += 1000; await tick(w); }
+        return waited;
+    }
+    var delays = [];
+    for (i = 1; i <= 7; i++) delays.push(await endAndWait('w' + i));
+    ok('aapd: started again 2, 5, 15, 30, then 60 s after each end in a row', JSON.stringify(delays) === JSON.stringify([2000, 5000, 15000, 30000, 60000, 60000, 60000]), JSON.stringify(delays));
+    w.info = { state: 'active', run: 'h1', pid: 7 };
+    w.advance(1000); await tick(w);
+    w.advance(61000); await tick(w);
+    ok('aapd: after a healthy run, an exit is followed by a start 2 s later', await endAndWait('h1', 'exit') === 2000);
+    /* A crash of the aapd a pending change replaced: nothing counted or
+     * restored; the start runs the file on disk and the marker goes. */
+    var pend = fakeRec({ info: { state: 'active', run: 'p1', pid: 5 } });
+    await new Promise(function (r) { pend.startBoot(r); });
+    pend.advance(1000); await tick(pend);
+    fs.writeFileSync(pend.target.pending, '{"action":"apply","boot":"B1"}\n');
+    pend.advance(1000); await tick(pend);
+    pend.info = { state: 'failed', result: 'core-dump', code: '3', status: '6', run: 'p1', pid: 0 };
+    for (i = 0; i < 5; i++) { pend.advance(1000); await tick(pend); }
+    ok('a crash of the run a pending change replaced the file of: not counted, not restored, started',
+        pend.ev.indexOf('restore') < 0 && pend.ev.indexOf('start') >= 0 &&
+        JSON.parse(fs.readFileSync(pend.statePath, 'utf8')).arm.crashes === 0, pend.ev.join(','));
+    pend.info = { state: 'active', run: 'p2', pid: 6 };
+    pend.advance(1000); await tick(pend);
+    pend.info = { state: 'failed', result: 'core-dump', code: '3', status: '6', run: 'p2', pid: 0 };
+    for (i = 0; i < 3; i++) { pend.advance(1000); await tick(pend); }
+    ok('then a crash of the run started after it, with the marker still there: restored at once', pend.ev.indexOf('restore') >= 0, pend.ev.join(','));
+    /* The same after the watcher itself restarted (an update restarts it). */
+    var pw = fakeRec({ info: { state: 'active', run: 'q1', pid: 5 } });
+    fs.writeFileSync(pw.target.pending, '{"action":"apply","boot":"B1"}\n');
+    await new Promise(function (r) { pw.startBoot(r); });
+    pw.advance(1000); await tick(pw);
+    pw.info = { state: 'failed', result: 'core-dump', code: '3', status: '6', run: 'q1', pid: 0 };
+    for (i = 0; i < 5; i++) { pw.advance(1000); await tick(pw); }
+    ok('a watcher started with the marker there: the crash of the run it found up is not counted', pw.ev.indexOf('restore') < 0 && pw.ev.indexOf('start') >= 0, pw.ev.join(','));
+
+    /* The boot step's restore after aapd's own crash fails: the watcher's
+     * start in the same boot restores at once. */
+    var f1 = fakeRec({ boot: 'F1' });
+    await new Promise(function (r) { f1.startBoot(r); });
+    fs.writeFileSync(path.join(f1.dir, 'shutdown-aapd'), 'F1 failed crash\n');
+    var fb = await new Promise(function (r) { fakeRec({ boot: 'F2', dir: f1.dir, restoreFails: true }).startBoot(r); });
+    var fw = await new Promise(function (r) { fakeRec({ boot: 'F2', dir: f1.dir }).startBoot(r); });
+    ok('a boot-step restore after aapd\'s crash that failed: the watcher restores at its start', fb.action === 'restore-failed' && fw.action === 'restored',
+        JSON.stringify([fb, fw]));
+
+    var never = fakeRec({});
+    await new Promise(function (r) { never.startBoot(r); });
+    never.info = { state: 'inactive', result: 'success', code: '', status: '', run: 'n0', pid: 0, started: false };
+    for (i = 0; i < 30; i++) { never.advance(5000); await tick(never); }
+    ok('aapd that never ran (a start condition not met) is not started', never.ev.indexOf('start') < 0, never.ev.join(','));
 
     var k = fakeRec({ killed: 'pk' });
     k.info = { state: 'failed', result: 'signal', code: '2', status: '9', run: 'pk', pid: 0 };
@@ -1226,7 +1288,7 @@ async function recoveryTests() {
     for (i = 0; i < 20; i++) { n.advance(5000); await tick(n); }
     ok('without recmgr\'s aapd entry: the crash recorded, aapd not started', n.ev.indexOf('start') < 0 && JSON.parse(fs.readFileSync(n.statePath, 'utf8')).arm.crashes === 1);
 
-    /* Across boots: a crash at start (mark failed) twice restores before
+    /* Across boots: a crash at start (mark failed) restores before
      * aapd; a switch-off (mark running) counts nothing. */
     var d = fakeRec({ boot: 'B1' });
     await new Promise(function (r) { d.startBoot(r); });
@@ -1234,7 +1296,7 @@ async function recoveryTests() {
     var r2 = await new Promise(function (r) { fakeRec({ boot: 'B2', dir: d.dir }).startBoot(r); });
     fs.writeFileSync(path.join(d.dir, 'shutdown-aapd'), 'B2 failed crash\n');
     var r3 = await new Promise(function (r) { fakeRec({ boot: 'B3', dir: d.dir }).startBoot(r); });
-    ok('boot step: two boots whose aapd failed restore before aapd starts', r2.action === 'armed' && r3.action === 'restored', JSON.stringify([r2, r3]));
+    ok('boot step: a boot whose patched aapd crashed restores before aapd starts', r2.action === 'restored', JSON.stringify([r2, r3]));
     var s1 = fakeRec({ boot: 'S1' });
     await new Promise(function (r) { s1.startBoot(r); });
     fs.writeFileSync(path.join(s1.dir, 'shutdown-aapd'), 'S1 running\n');
@@ -1265,6 +1327,22 @@ async function recoveryTests() {
     var qh = hook(q, 'activate');
     ok('a restore that left aapd.conf patched: an install leaves aapd off and says why', qr.stdout === 'restored' && sha(q.bin) === sha(SRC) &&
         /boot recovery removed the patch after 2 failed head-unit starts/.test((qh.result.aa || {}).status || ''), qr.stdout + qr.stderr + ' ' + JSON.stringify(qh.result));
+
+    /* A restore after a crash of the patched aapd: an install of the same
+     * patch revision leaves it off and says why; one of a newer revision
+     * than the removed patch's applies it again. */
+    var cr = patchdUnit();
+    patcher(cr, ['apply', '--yes']);
+    var crr = cp.spawnSync(process.execPath, ['-e', 'var r = require(process.argv[1]); r.restoreTarget(r.TARGETS.aapd, true, 1, function (e, o) { process.stdout.write(String(e || o)); }, 0, "crash");',
+        path.join(PATCH, 'recovery.js')], { env: Object.assign({}, cr.env, { WOC_RECOVERY_STATE: path.join(cr.d, 'var', 'boot-recovery.json') }), encoding: 'utf8' });
+    var crRec = record.current(cr.bin), crh = hook(cr, 'activate');
+    ok('a restore after a crash: recorded with why and the revision; an install of that revision leaves aapd off and says why',
+        crr.stdout === 'restored' && crRec.why === 'crash' && crRec.rev === require('../aapd_patch.js').PATCH_REV && sha(cr.bin) === sha(SRC) &&
+        /removed the patch after the patched aapd crashed/.test((crh.result.aa || {}).status || ''), crr.stdout + crr.stderr + ' ' + JSON.stringify(crh.result));
+    record.write(cr.bin, { patched: false, by: 'recovery', at: crRec.at, fails: 1, why: 'crash' });
+    crh = hook(cr, 'activate');
+    ok('a patch of an older revision that a crash removed: an install applies this one', sha(cr.bin) !== sha(SRC) &&
+        record.current(cr.bin).patched === true, JSON.stringify(crh.result));
 
     /* The boot step's SIGTERM waits for a restore in progress. */
     var u = patchdUnit();

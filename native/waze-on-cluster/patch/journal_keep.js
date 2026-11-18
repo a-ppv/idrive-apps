@@ -18,7 +18,7 @@
  * the file system's own commit makes them durable within seconds.
  * A file that would pass FILE_MAX becomes journal.log.1, the older
  * ones move up and journal.log.<FILES-1> is dropped. The tools' lines
- * (waze-on-cluster, cluster-render) and the others (carplay, recmgr,
+ * (waze-on-cluster, cluster-render) and the others (carplay, aapd, recmgr,
  * crashhandler, systemd, the kernel) each have RATE / 2 bytes a minute, with a
  * minute's worth in reserve, so a flood of one kind never pushes out the
  * other; what comes faster is dropped and counted in one line per flush.
@@ -83,8 +83,8 @@ var CLK_TCK = 100;
 
 var UNITS = ['waze-on-cluster.service', 'waze-on-cluster-patchd.service', 'waze-on-cluster-boot.service',
     'waze-on-cluster-recovery.service', 'waze-on-cluster-capture.service', 'waze-on-cluster-journal.service',
-    'waze-on-cluster-logs.service', 'waze-on-cluster-logs-fw.service', 'cluster-render.service', 'carplay.service', 'recmgr.service',
-    'crashhandler.service'];
+    'waze-on-cluster-logs.service', 'waze-on-cluster-logs-fw.service', 'waze-on-cluster-aa-boot.service', 'cluster-render.service', 'carplay.service',
+    'aapd.service', 'recmgr.service', 'crashhandler.service'];
 /* units with no process of their own: only systemd's lines about them */
 var QUIET = ['waze-on-cluster.socket', 'waze-on-cluster-logs.socket', 'cluster-render.socket', 'waze-on-cluster-journal.timer'];
 
@@ -102,7 +102,7 @@ function journalArgs(follow) {
 
 /* Lines of the units that explain nothing, by message. */
 var NOISE = [
-    /^\[\w+\] (Intercepting function|Blocked function|Notice in function: findThreadByName)/,   // carplay's libschedconfig
+    /^\[\w+\] (Intercepting function|Blocked function|Notice in function: findThreadByName)/,   // carplay's and aapd's libschedconfig
     /^Coding base: Shm object data is available/,
     /^\s*ipcLib:/,                                                                           // the crash handler's IPC
     /^DLT ~(FIFO .* cannot be opened|Logging \(re-\)enabled|Buffer: )/,

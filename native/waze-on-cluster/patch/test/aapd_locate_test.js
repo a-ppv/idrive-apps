@@ -30,7 +30,7 @@ var REF_SHA = '6880f54c3abba40c1368f2bf254c77bd4a169323c0d4cab8f9662a7c912dcf89'
  * with and the sites it still finds. */
 var BUILDS = {};
 BUILDS[REF_SHA] = { name: 'aapd 22.39.3 (ID7 P18_23w44)', buildId: '2dfb9881706bff435b05f621486e8eb8b6c55984', version: '22.39.3',
-    sites: { gate: 0x998bd, call: 0x1d43eb, guard: 0x1d3f5d, screen: 0x15b440 } };
+    sites: { gate: 0x998bd, call: 0x1d43eb, guard: 0x1d3f53, screen: 0x15b440 } };
 BUILDS.a7971d64fc0feb4e48942441dc76a67d6df282b56cb5d64e92248ff83f18d62e = { name: 'aapd 23.16.5 (ID8)', buildId: 'ef291b7185f210a24d8e68855d94d44e9f32cb62',
     version: '23.16.5', sites: { screen: 0x180c50 },
     refused: { gate: 'gate: variant check not found', call: 'self-start: onNewNavigationStatus string not found',
@@ -76,7 +76,7 @@ if (!REF) {
 }
 var LOC = locator.locate(REF);
 ok('reference: the stock and patched bytes of every edit', LOC.ok && json(locator.EDITS.map(function (e) { return [LOC[e].stock, LOC[e].patched]; })) === json([
-    ['83bb1c02000001', '83bb1c02000002'], ['e800f8ffff', 'e840fbffff'], ['0f848d000000', 'e98e00000090'],
+    ['83bb1c02000001', '83bb1c02000002'], ['e800f8ffff', 'e840fbffff'], ['837b3802740a837b44020f848d000000', '807b4100740a837b38020f858d000000'],
     ['660fefc0ebe1662e0f1f840000000000', '83f802740b660fefc0ebdc0f1f440000']]), json(LOC));
 
 function patchAll(b, loc) { locator.EDITS.forEach(function (e) { Buffer.from(loc[e].patched, 'hex').copy(b, loc[e].offset); }); return b; }
@@ -90,6 +90,15 @@ function patchAll(b, loc) { locator.EDITS.forEach(function (e) { Buffer.from(loc
     loc = locator.locate(mixed);
     ok('one edit patched: located, that edit patched, the others original', loc.ok && loc.call.state === 'patched' && loc.gate.state === 'original' &&
         loc.guard.state === 'original' && loc.screen.state === 'original', json(loc));
+    /* The patch releases up to 0.10.10 wrote: requestStream's second test a
+     * jmp, which reads outdated, with this release's stock and patched
+     * bytes over the whole test. */
+    var old = patchAll(Buffer.from(REF), LOC);
+    REF.copy(old, LOC.guard.offset, LOC.guard.offset, LOC.guard.offset + 10);
+    Buffer.from('e98e00000090', 'hex').copy(old, LOC.guard.offset + 10);
+    loc = locator.locate(old);
+    ok('the earlier release\'s patch: located, the guard outdated, the same edits', loc.ok && loc.guard.state === 'outdated' &&
+        loc.guard.stock === LOC.guard.stock && loc.guard.patched === LOC.guard.patched && loc.gate.state === 'patched', json(loc));
 })();
 
 /* ---- mutation helpers (ELF program headers, .eh_frame_hdr, rel32) ------- */
@@ -157,10 +166,21 @@ var FIELD = REF.readUInt32LE(LOC.gate.offset + 2);
 var CODING_LEA = find('488db3' + LOC.gate.stock.slice(4, 12));
 var CODING = func(CODING_LEA);
 var CMD_CALL = callersOf(RS)[0];
-var LDO = LOC.guard.offset + 6 + REF.readInt32LE(LOC.guard.offset + 2);
+/* G: requestStream's opening test (16 bytes), its jump at G + 10. */
+var G = LOC.guard.offset;
+var LDO = G + 16 + REF.readInt32LE(G + 12);
 var STREAMING = find('c7442408' + '02000000', LDO, RS_FN.end);
 var SS_STORE = find('895738', SS, func(SS).end);
 var MARK = find('c74344' + '01000000', LDO, RS_FN.end);
+function named(name) { var at = cstrStart(name); return func(leasIn({ off: LOADS[0].off, end: LOADS[0].size }).filter(function (l) { return l.to === at; })[0].at); }
+var READY = named('AlternateDisplays::onAlternateVideoReady()'), END = named('AlternateDisplays::onEndSession()');
+var SUBSCRIBE = named('AlternateDisplays::subscribeEvents()'), INIT = named('Application::initAlternateDisplays()');
+var GATE_FLAG = REF.readUInt32LE(PREP_CALL + 7);
+var INIT_TEST = find('80bb' + REF.toString('hex', PREP_CALL + 7, PREP_CALL + 11) + '00', INIT.off, INIT.end);
+var NAV_TEST = (function () {
+    for (var p = 0; p + 5 <= LOADS[0].size; p++) if (REF[p] === 0xe9 && relTo(REF, p + 1, p + 5) === LOC.call.onNav) return find('80b8' + REF.toString('hex', PREP_CALL + 7, PREP_CALL + 11) + '00', p - 0x40, p);
+    return -1;
+})();
 var UNAVAILABLE = find('c7442418' + '00000000', LOC.call.offset - 32, LOC.call.offset);
 var AVAILABLE = find('c7442418' + '01000000', ONNAV.off, ONNAV.end);
 /* The variant converter: the function whose jump table maps raw 9 to class 0. */
@@ -187,7 +207,8 @@ var LOADER = (function () {
     return null;
 })();
 ok('mutation anchors found in the reference', [GATE_FN, SCREEN_FN, PREP, KOMBI, K_CALL, CODING, CONV, VICTIM, SHORT, LOADER].every(Boolean) &&
-    [CODING_LEA, CMD_CALL, STREAMING, SS_STORE, MARK, UNAVAILABLE, AVAILABLE, SWITCH].every(function (x) { return x >= 0; }) &&
+    [CODING_LEA, CMD_CALL, STREAMING, SS_STORE, MARK, UNAVAILABLE, AVAILABLE, SWITCH, INIT_TEST, NAV_TEST].every(function (x) { return x >= 0; }) &&
+    [READY, END, SUBSCRIBE, INIT].every(Boolean) &&
     func(CMD_CALL).off !== RS_FN.off && CONV.off < SWITCH);
 
 var EXPECT = {}; locator.EDITS.forEach(function (e) { EXPECT[e] = LOC[e].offset; });
@@ -319,11 +340,11 @@ var CASES = [
          * first branch landing on the next instruction, its second on Ldo */
         var at = RS_FN.off + 0x40;
         while (!(REF[at] === 0xe8 && REF[at + 5] === 0x4c && REF[at + 8] === 0xe8 && REF[at + 13] === 0x48)) at++;
-        REF.copy(b, at, LOC.guard.offset - 10, LOC.guard.offset + 6);
+        REF.copy(b, at, G, G + 16);
         setRel(b, at + 12, at + 16, LDO);
     }, ['refused'], null, 'guard-once'],
-    ['the guard branches on not-equal', function (b) { b[LOC.guard.offset + 1] = 0x85; }, ['refused'], null, 'guard-form'],
-    ['the guard\'s branch points at the already-streaming path', function (b) { setRel(b, LOC.guard.offset + 2, LOC.guard.offset + 6, LOC.guard.offset + 6); }, ['refused']],
+    ['the guard branches on not-equal', function (b) { b[G + 11] = 0x85; }, ['refused'], null, 'guard-form'],
+    ['the guard\'s branch points at the already-streaming path', function (b) { setRel(b, G + 12, G + 16, G + 16); }, ['refused']],
     ['the already-streaming log not loaded', function (b) {
         var l = leasIn(RS_FN).filter(function (x) { return /Already streaming/.test(cstr(x.to)); })[0];
         setRel(b, l.at + 3, l.at + 7, cstrStart('Cinemo navigation status received'));
@@ -372,10 +393,25 @@ var CASES = [
         b.write('aapd::navigation::AlternateDisplays::setNaviStreamStatus(int)\0', at, 'latin1');
         setRel(b, LOADER.lea + 3, LOADER.lea + 7, at);
     }, ['refused'], null, 'ss-name'],
-    ['the guard compares with 3 first', function (b) { b[LOC.guard.offset - 7] = 3; }, ['refused']],
-    ['the guard\'s first branch lands elsewhere', function (b) { b[LOC.guard.offset - 5] = 0x0c; }, ['refused']],
-    ['the guard compares through another register second', function (b) { b[LOC.guard.offset - 3] = 0x7a; }, ['refused']],
-    ['the guard compares one field twice', function (b) { b[LOC.guard.offset - 2] = b[LOC.guard.offset - 8]; }, ['refused']],
+    ['the guard compares with 3 first', function (b) { b[G + 3] = 3; }, ['refused']],
+    ['the guard\'s first branch lands elsewhere', function (b) { b[G + 5] = 0x0c; }, ['refused']],
+    ['the guard compares through another register second', function (b) { b[G + 7] = 0x7a; }, ['refused']],
+    ['the guard compares one field twice', function (b) { b[G + 8] = b[G + 2]; }, ['refused']],
+    ['requestStream tests another object than its own', function (b) { b[find('4889fb', RS_FN.off, G) + 2] = 0xf3; }, ['refused'], null, 'guard-this'],
+    ['onAlternateVideoReady sets its ready flag twice', function (b) {
+        var st = find('c6454101', READY.off, READY.end);
+        Buffer.from('c64541019090', 'hex').copy(b, st - 8);
+    }, ['refused'], null, 'ready-flag'],
+    ['onAlternateVideoReady sets no ready flag', function (b) { b[find('c6454101', READY.off, READY.end) + 3] = 2; }, ['refused']],
+    ['onAlternateVideoReady does not subscribe to the stream commands', function (b) {
+        var c = callsIn(READY).filter(function (x) { return x.to === SUBSCRIBE.off; })[0];
+        setRel(b, c.at + 1, c.at + 5, SS);
+    }, ['refused'], null, 'ready-subscribe'],
+    ['onEndSession clears another flag', function (b) { b[find('c6434100', END.off, END.end) + 2] = 0x42; }, ['refused'], null, 'end-resets'],
+    ['onEndSession leaves the focus mode', function (b) { b[find('c7434402000000', END.off, END.end) + 3] = 1; }, ['refused'], null, 'end-resets'],
+    ['the patched guard tests another flag than the ready flag', function (b) { patchAll(b, LOC); b[G + 2] = 0x40; }, ['refused'], null, 'guard-ready'],
+    ['initAlternateDisplays tests another flag than the gate\'s', function (b) { b.writeUInt32LE(GATE_FLAG + 4, INIT_TEST + 2); }, ['refused'], null, 'gate-gates-alt'],
+    ['onNewNavigationStatus reached without a test of the gate\'s result', function (b) { b.writeUInt32LE(GATE_FLAG + 4, NAV_TEST + 2); }, ['refused'], null, 'onnav-gated'],
     ['setNaviStreamStatus stores the status elsewhere', function (b) { b[SS_STORE + 2] = 0x3c; }, ['refused'], null, 'ss-field'],
     ['requestStream passes another status than STREAMING', function (b) { b[STREAMING + 4] = 3; }, ['refused'], null, 'streaming'],
     ['requestStream marks another field', function (b) { b[MARK + 2] = 0x48; }, ['refused'], null, 'mark'],

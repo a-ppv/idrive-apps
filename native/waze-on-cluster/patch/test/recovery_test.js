@@ -168,7 +168,7 @@ async function bootUp(w, bootId, names) {
     names = names || ['carplay'];
     const steps = {}, watchers = {};
     for (const n of names) {
-        steps[n] = await startBoot(w.recovery(n, bootId, { restore: (fails, cb) => recovery.restoreTarget(w.T[n], true, fails, cb, 1000) }));
+        steps[n] = await startBoot(w.recovery(n, bootId, { restore: (fails, cb, why) => recovery.restoreTarget(w.T[n], true, fails, cb, 1000, why) }));
         w.events.push(n + '-boot-step:' + steps[n].action);
     }
     for (const n of names) w.svc[n].starts();
@@ -240,8 +240,9 @@ async function loop(w, name, kind, end, max, names) {
 
 /* ---- thresholds ---- */
 
+/* aapd's own crash restores at once, whatever the patch (crashThreshold). */
 for (const name of ['carplay', 'aapd']) {
-    for (const [kind, at] of [['unproven', 2], ['proven', 3], ['unknown', 3]]) {
+    for (const [kind, at] of name === 'aapd' ? [['unproven', 2], ['proven', 2], ['unknown', 2]] : [['unproven', 2], ['proven', 3], ['unknown', 3]]) {
         test(`${name}, ${kind} patch crashing at start: restored before ${name} starts, at boot ${at}`, async () => {
             const w = makeWorld();
             assert.strictEqual(await loop(w, name, kind, END.crashAtStart, 5), at);
@@ -251,7 +252,8 @@ for (const name of ['carplay', 'aapd']) {
             if (name === 'aapd') assert(fs.readFileSync(w.T.aapd.files[1]).equals(CONF.original), 'aapd.conf restored too');
             assert(ro(), '/ read-only again');
             const rec = record.current(w.T[name].target);
-            assert.deepStrictEqual([rec.patched, rec.by, rec.fails], [false, 'recovery', THRESHOLD[kind]], 'the record names the restore');
+            assert.deepStrictEqual([rec.patched, rec.by, rec.fails, rec.why], [false, 'recovery', name === 'aapd' ? 1 : THRESHOLD[kind], name === 'aapd' ? 'crash' : 'boot'],
+                'the record names the restore and why');
             assert.deepStrictEqual([w.state(name).fails, w.state(name).arm], [0, null]);
             assert.strictEqual((await bootUp(w, 'boot-after', [name])).steps[name].action, 'idle', 'nothing armed after');
         });
@@ -779,11 +781,9 @@ test('both patched: a failure no record explains counts for both; a crash of one
     x.install('aapd', 'proven');
     await bootUp(x, 'A', ['carplay', 'aapd']);
     END.crashAtStart(x, 'A', 'aapd');
-    await bootUp(x, 'B', ['carplay', 'aapd']);
-    assert.deepStrictEqual([x.state('carplay').fails, x.state('aapd').fails], [0, 1], 'aapd\'s crash ended the boot');
-    END.crashAtStart(x, 'B', 'aapd');
-    const c = await bootUp(x, 'C', ['carplay', 'aapd']);
-    assert.deepStrictEqual([c.steps.carplay.action, c.steps.aapd.action], ['armed', 'restored']);
+    const c = await bootUp(x, 'B', ['carplay', 'aapd']);
+    assert.deepStrictEqual([c.steps.carplay.action, c.steps.aapd.action], ['armed', 'restored'], 'aapd\'s own crash restores it at once');
+    assert.strictEqual(x.state('carplay').fails, 0, 'aapd\'s crash ended the boot, not carplay\'s');
 });
 
 test('a crash of the other service explains nothing once that service is not patched', async () => {

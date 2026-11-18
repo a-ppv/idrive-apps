@@ -47,6 +47,10 @@
  *                          the crash handler and the kernel keep of crashes
  *                          (DUMPS, two levels deep, at most ENTRIES each),
  *                          never their contents
+ *       aapd-crashes.txt   of the crash handler's records of aapd's newest
+ *                          CONTEXTS crashes, where it crashed: signal,
+ *                          kernel stack, executable mappings, crash ids and
+ *                          summary (aapdCrashesText)
  *
  *   node logs_extra.js patchd <dir>
  *       patchd-logs.json: patchd's carplay, marker and AVB lines, its DLT
@@ -102,6 +106,8 @@ var INCIDENTS = 2000;
 var SCRUB_MS = Number(process.env.WOC_SCRUB_MS) || 60000;
 var SCRUB_FILE_MAX = 8 * 1024 * 1024;
 var CODING = '/dev/shm/rawcodingdata';
+var CONTEXTS = 3;
+var CONTEXT_MAX = 4 * 1024 * 1024;
 var DUMPS = [SIN + '/crashhandler/coredumps', SIN + '/crashhandler/gpu_hangs', SIN + '/gcd', SIN + '/dlt-cdh', '/var/opt/kerneldump'];
 
 function r(p) { return ROOT + p; }
@@ -264,12 +270,45 @@ function dumpsText() {
     return out.join('\n') + '\n';
 }
 
+/* The crash handler's record of aapd's newest CONTEXTS crashes
+ * (dlt-cdh/context.<time>.aapd.<pid>.txt), only what tells where it
+ * crashed: its first lines (process, thread, signal), the kernel stack,
+ * the executable mappings (where each module was loaded), the crash ids
+ * and the summary (the instruction and return addresses, their modules and
+ * file offsets). Never its environment, open files, other mappings, memory
+ * use or the core dump. */
+function aapdCrashesText() {
+    var d = r(SIN + '/dlt-cdh'), names, re = /^context\.(\d+)\.aapd\.\d+\.txt$/;
+    try { names = fs.readdirSync(d); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+    var ctx = names.filter(function (n) { return re.test(n); })
+        .sort(function (a, b) { return Number(re.exec(b)[1]) - Number(re.exec(a)[1]); });
+    if (!ctx.length) return null;
+    return (ctx.length > CONTEXTS ? '-- the newest ' + CONTEXTS + ' of ' + ctx.length + '\n' : '') + ctx.slice(0, CONTEXTS).map(function (n) {
+        return '-- ' + n + ' (' + iso(Number(re.exec(n)[1]) * 1000) + ')\n' + contextParts(readSource(path.join(d, n), CONTEXT_MAX));
+    }).join('\n');
+}
+function contextParts(src) {
+    if (!src) return '(unreadable)\n';
+    var out = [], sect = null, keep = true;
+    src.text.split('\n').forEach(function (l) {
+        var m = /^==== (.*) ====$/.exec(l);
+        if (m) {
+            sect = m[1];
+            keep = /\/stack>$|\/maps>$|^Crash (Coarse )?ID$|^Summary$/.test(sect);
+            if (keep) out.push(l);
+        } else if (/^=+$/.test(l)) keep = false;
+        else if (sect === null || (keep && (!/\/maps>$/.test(sect) || / r-xp /.test(l)))) out.push(l);
+    });
+    return out.join('\n') + (src.more ? '(cut at ' + CONTEXT_MAX + ' bytes)\n' : '');
+}
+
 function snapshot(dir) {
     writeParts(dir, [
         ['restartInfo-recmgr.xml', fileText(r(SIN + '/recmgr/restartInfo.xml'))],
         ['restartInfo-crashhandler.xml', fileText(r(SIN + '/crashhandler/restartInfo.xml'))],
         ['recmgr-crashes.txt', crashesText],
         ['core-dumps.txt', dumpsText],
+        ['aapd-crashes.txt', aapdCrashesText],
     ]);
 }
 

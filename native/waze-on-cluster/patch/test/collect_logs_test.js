@@ -137,6 +137,21 @@ mk('var/opt/public/sin/crashhandler/coredumps/20261108204714_000_carplay/core.gz
 mk('var/opt/public/sin/crashhandler/coredumps/20261108204714_000_carplay/context_WBA8E9C50GK123456.txt', 'CORE-DUMP-BYTES');
 mk('var/opt/public/sin/dlt-cdh/core.1794170822.carplay.4222.gz', 'CORE-DUMP-BYTES');
 for (i = 0; i < 130; i++) mk('var/opt/kerneldump/dump-' + i, 'CORE-DUMP-BYTES');
+/* the crash handler's records of aapd's crashes, the newest 3 of 4 kept */
+function aapdContext(t, pid) {
+    return 'ProcName:aapd\nThreadName:aapd\nPID:' + pid + '\nsignal:6\n\n' +
+        '==== Dumping file </proc/' + pid + '/cmdline> ====\n/usr/bin/aapd\n\n' +
+        '==== Dumping file </proc/' + pid + '/stack> ====\n[<0>] do_exit+0x74/0x468\n\n' +
+        '==== Dumping file </proc/' + pid + '/environ> ====\nSECRET_ENV=WBA8E9C50GK123456\n\n' +
+        '==== Dumping file </proc/' + pid + '/maps> ====\n555555554000-555555c31000 r-xp 00000000 00:46 578286 /usr/bin/aapd\n' +
+        '555555e5a000-555555e5b000 rw-p 00706000 00:46 578286 /usr/bin/aapd\n\n' +
+        '==== Listing directory </proc/' + pid + '/fd> ====\n0 -> /dev/null\n===========================\n\n' +
+        '==== Dumping file </proc/' + pid + '/smaps> ====\nRss: 4 kB\n\n' +
+        '==== Crash ID ====\n7F86D72813C6DB0D\n\n==== Summary ====\nCrash in "aapd", thread="aapd", pid=' + pid + ', sigid=6, RIP=0x7ffff78cea40\n';
+}
+[[1794170000, 11], [1794170100, 12], [1794170200, 13], [1794170300, 14]].forEach(function (c) {
+    mk('var/opt/public/sin/dlt-cdh/context.' + c[0] + '.aapd.' + c[1] + '.txt', aapdContext(c[0], c[1]));
+});
 /* sqlite3: records its arguments; rows as the firmware's would print them */
 var SQL_ARGS = path.join(dir, 'sqlite-args');
 fs.writeFileSync(path.join(bin, 'sqlite3'), '#!/bin/sh\nprintf "%s\\n" "$@" > ' + SQL_ARGS + '\n' +
@@ -160,6 +175,7 @@ assert.strictEqual(get('patch-record-aapd.json'), fs.readFileSync(path.join(U, '
 assert.strictEqual(get('aa-boot-recovery.json'), fs.readFileSync(path.join(U, 'var/opt/waze-on-cluster/aa-boot-recovery.json'), 'utf8'));
 assert.strictEqual(get('coding.txt'), 'KI_KOMBI_VARIANT 7\n');
 assert(/^target: +\/usr\/bin\/aapd$|^error: /m.test(get('aapd-status.txt')), get('aapd-status.txt'));
+assert(/^file: +\/usr\/bin\/aapd$|^error: /m.test(get('aapd-probe.txt')), get('aapd-probe.txt'));
 assert.strictEqual(get('deploy.txt'), 'mgu-deploy 0.8.9\ntools installed (/var/opt/<id>/current):\n  tool cluster-render 0.4.3\n' +
     '  tool waze-on-cluster 0.9.7\nstate.json:\n  tool waze-on-cluster 0.9.7 firmware S18A-23-07-550\n  app robertn_store 1.4.0\n' +
     '  pending restart: waze-on-cluster - new units\n  last bounce: 2026-11-08T20:33:20Z\n');
@@ -183,6 +199,11 @@ assert(dumps.some(function (l) { return /Z  20261108204714_000_carplay\/context_
 assert(dumps.some(function (l) { return /Z  core\.1794170822\.carplay\.4222\.gz$/.test(l); }));
 assert(dumps.indexOf('-- /var/opt/kerneldump (the newest 100 of 130)') >= 0, 'at most 100 a folder');
 assert.strictEqual(dumps.filter(function (l) { return / {2}dump-\d+$/.test(l); }).length, 100);
+var ac = get('aapd-crashes.txt');
+assert(/^-- the newest 3 of 4\n-- context\.1794170300\.aapd\.14\.txt \(2026-11-08T20:38:20Z\)\nProcName:aapd\n/.test(ac), ac);
+assert(ac.indexOf('aapd.11.txt') < 0 && /signal:6/.test(ac) && /do_exit/.test(ac) && / r-xp .*\/usr\/bin\/aapd/.test(ac) &&
+    /==== Summary ====\nCrash in "aapd".*RIP=0x7ffff78cea40/.test(ac) && /7F86D72813C6DB0D/.test(ac), ac);
+assert(ac.indexOf('SECRET_ENV') < 0 && ac.indexOf(' rw-p ') < 0 && ac.indexOf('/dev/null') < 0 && ac.indexOf('Rss:') < 0 && ac.indexOf('cmdline') < 0, ac);
 /* a VIN across the cap is scrubbed whole before the cut */
 var edge = path.join(dir, 'edge');
 fs.mkdirSync(edge);
@@ -200,7 +221,7 @@ assert(shrunk.length < 30000 && shrunk.indexOf('WBA') < 0 && /\n\.\.\. \(cut at 
 var everything = fs.readdirSync(A).map(get).join('\n');
 SECRETS.forEach(function (x) { assert(everything.indexOf(x) < 0, 'the archive holds ' + x); });
 console.log('ok   the archive adds the patch records, aapd recovery, coding, aapd status, deploy state, restart records, ' +
-    'recmgr crashes and core-dump names (' + (asRoot ? 'as root' : 'from the snapshot') + '), capped, no secret or VIN');
+    'recmgr crashes, aapd\'s crash records and core-dump names (' + (asRoot ? 'as root' : 'from the snapshot') + '), capped, no secret or VIN');
 
 /* sqlite3 that hangs is killed at 2 s; a missing database or folder is left out */
 fs.writeFileSync(path.join(bin, 'sqlite3'), '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
@@ -214,7 +235,7 @@ cp.execFileSync('rm', ['-rf', path.join(U, 'var/opt/public/sin/recmgr'), path.jo
 var snap3 = path.join(dir, 'snap3');
 fs.mkdirSync(snap3);
 cp.execFileSync(process.execPath, [path.join(CUR, 'logs_extra.js'), 'snapshot', snap3], { env: XENV });
-assert.deepStrictEqual(fs.readdirSync(snap3).sort(), ['core-dumps.txt', 'restartInfo-crashhandler.xml']);
+assert.deepStrictEqual(fs.readdirSync(snap3).sort(), ['aapd-crashes.txt', 'core-dumps.txt', 'restartInfo-crashhandler.xml']);
 assert(fs.readFileSync(path.join(snap3, 'core-dumps.txt'), 'utf8').indexOf('kerneldump') < 0);
 console.log('ok   a hung sqlite3 is killed at 2 s; what is absent is left out');
 

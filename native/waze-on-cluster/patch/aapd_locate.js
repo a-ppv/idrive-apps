@@ -40,6 +40,10 @@ var NAMES = {
         /^void (?:\w+::)*AlternateDisplays::onStreamCommandChanged\(const (?:\w+::)*ProjectedModeStreamCommand&\)$/, 'self-start: onStreamCommandChanged'],
     received: ['Request Stream Command event received', /^Request Stream Command event received$/, 'self-start: request log'],
     already: ['Ignoring event. Already streaming', /^Ignoring event\. Already streaming\.\.\.$/, 'self-start: already-streaming log'],
+    ready: ['AlternateDisplays::onAlternateVideoReady()', /^void (?:\w+::)*AlternateDisplays::onAlternateVideoReady\(\)$/, 'self-start: onAlternateVideoReady'],
+    endSession: ['AlternateDisplays::onEndSession()', /^void (?:\w+::)*AlternateDisplays::onEndSession\(\)$/, 'self-start: onEndSession'],
+    subscribe: ['AlternateDisplays::subscribeEvents()', /^void (?:\w+::)*AlternateDisplays::subscribeEvents\(\)$/, 'self-start: subscribeEvents'],
+    initAlt: ['Application::initAlternateDisplays()', /^void (?:\w+::)*Application::initAlternateDisplays\(\)$/, 'gate: initAlternateDisplays'],
     /* not in every build: checked whenever a string names it */
     ss: ['AlternateDisplays::setNaviStreamStatus(', /AlternateDisplays::setNaviStreamStatus\(/, 'self-start: setNaviStreamStatus'],
 };
@@ -52,8 +56,8 @@ var CHECKS = [
     'conv-copy', 'conv-switch-once', 'conv-mapping',
     'getter-shared', 'getter-once', 'helper-arg',
     'helper-once', 'size-1', 'size-0', 'class0-shape', 'room', 'fall-through',
-    'gate-field', 'gate-flag', 'gate-once', 'gate-kept', 'gate-unique',
-    'near', 'rs-called', 'guard-once', 'guard-form', 'already-log', 'request-log', 'request-log-once',
+    'gate-field', 'gate-flag', 'gate-once', 'gate-kept', 'gate-unique', 'gate-gates-alt', 'onnav-gated',
+    'near', 'rs-called', 'guard-once', 'guard-form', 'guard-this', 'ready-flag', 'ready-subscribe', 'end-resets', 'guard-ready', 'already-log', 'request-log', 'request-log-once',
     'ss-call-once', 'ss-field', 'ss-field-once', 'streaming', 'mark', 'ss-name', 'onnav-once', 'arg-pointer', 'arg-frame',
     'status-unavailable', 'status-available',
     'reloc',
@@ -293,18 +297,71 @@ function locateGate(im, str, refs, field) {
         if (c && c.field === field && (c.imm === 1 || c.imm === 2)) return fail('gate: variant compared outside secondVideoEnabled');
     }
     var body = hex(buf, g.at, 6);
-    return { ok: true, offset: g.at, len: 7, state: buf[g.at + 6] === 1 ? 'original' : 'patched', stock: body + '01', patched: body + '02' };
+    return { ok: true, offset: g.at, len: 7, state: buf[g.at + 6] === 1 ? 'original' : 'patched', stock: body + '01', patched: body + '02',
+             flag: on('gate-kept') ? buf.readUInt32LE(st + 2) : null };
+}
+
+/* `cmp byte [reg+disp32],0` (80 /7) with disp32 `flag` in [from, to). */
+function flagTests(buf, from, to, flag) {
+    return E.scan(buf, from, to, [0x80, null, flag & 0xff, (flag >>> 8) & 0xff, (flag >>> 16) & 0xff, flag >>> 24, 0])
+        .filter(function (q) { return (buf[q + 1] & 0xf8) === 0xb8 && (buf[q + 1] & 7) !== 4; });
+}
+
+/* The gate's kept result is the flag that turns the AlternateDisplays code
+ * on: initAlternateDisplays tests it before it builds the cluster display,
+ * and every branch into onNewNavigationStatus (the navigation-status
+ * callback's) is taken only after a test of it. Why not, or null. */
+function gateGatesAlt(im, str, refs, flag, onNav) {
+    var buf = im.buf, init = entryFunc(im, refs, str, 'initAlt');
+    if (init.err) return init.err;
+    if (on('gate-gates-alt') && !flagTests(buf, init.off, init.end, flag).length) return 'gate: initAlternateDisplays does not test the gate\'s result';
+    if (!on('onnav-gated')) return null;
+    var into = [];
+    for (var p = im.exec.off; p + 5 <= im.exec.end; p++) {
+        if ((buf[p] === 0xe8 || buf[p] === 0xe9) && im.rel(p + 1, p + 5) === onNav) into.push(p);
+    }
+    if (!into.length) return 'self-start: nothing branches into onNewNavigationStatus';
+    var open = into.filter(function (p) { return !flagTests(buf, Math.max(im.exec.off, p - 0x40), p, flag).length; });
+    return open.length ? 'self-start: onNewNavigationStatus reached without a test of the gate\'s result' : null;
 }
 
 /* ---- Edit: selfstart (onNewNavigationStatus's call, requestStream's guard) */
 
-/* cmp dword [reg+A],2 ; je over the guard ; cmp dword [reg+B],2 */
+/* requestStream's opening test at `p`, 16 bytes, R its object register, L1
+ * the end of the 16 bytes:
+ *   cmp dword [R+A],2 ; je L1 ; cmp dword [R+B],2 ; je Ldo         (stock)
+ *   cmp byte [R+F],0  ; je L1 ; cmp dword [R+A],2 ; jne Ldo        (patched)
+ *   cmp dword [R+A],2 ; je L1 ; cmp dword [R+B],2 ; jmp Ldo ; nop  (outdated:
+ *                                     the patch of releases up to 0.10.10)
+ * A is the stream status, B the video focus mode, F the alternate display's
+ * ready flag. { form (original | patched | outdated | null: the opening
+ * test with another jump), r, a, b (null when patched), f (patched only),
+ * g (the jump's offset), ldo } or null. */
 function guardAt(buf, p) {
-    var r = buf[p + 1];
-    if (buf[p] !== 0x83 || (r & 0xf8) !== 0x78 || (r & 7) === 4 || buf[p + 3] !== 2 || buf[p + 4] !== 0x74 || buf[p + 5] !== 10 ||
-        buf[p + 6] !== 0x83 || buf[p + 7] !== r || buf[p + 9] !== 2 || buf[p + 2] === buf[p + 8]) return null;
-    return { a: buf[p + 2], b: buf[p + 8], g: p + 10, r: r & 7 };
+    var r = buf[p + 1], g = p + 10;
+    if ((r & 0xf8) !== 0x78 || (r & 7) === 4 || buf[p + 4] !== 0x74 || buf[p + 5] !== 10 || buf[p + 6] !== 0x83 || buf[p + 7] !== r || buf[p + 9] !== 2) return null;
+    var out = { p: p, r: r & 7, g: g, form: null, ldo: null };
+    if (buf[p] === 0x80 && buf[p + 3] === 0) {
+        if (buf[g] !== 0x0f || buf[g + 1] !== 0x85) return null;
+        out.form = 'patched'; out.f = buf[p + 2]; out.a = buf[p + 8]; out.b = null; out.ldo = rel32(buf, g + 2);
+        return out;
+    }
+    if (buf[p] !== 0x83 || buf[p + 3] !== 2 || buf[p + 2] === buf[p + 8]) return null;
+    out.a = buf[p + 2]; out.b = buf[p + 8];
+    if (buf[g] === 0xe9 && buf[g + 5] === 0x90) { out.form = 'outdated'; out.ldo = rel32(buf, g + 1); }
+    else if (buf[g] === 0x0f && (buf[g + 1] === 0x84 || !on('guard-form'))) { out.form = 'original'; out.ldo = rel32(buf, g + 2); }
+    return out;
 }
+
+/* `mov byte [reg+d8],v` (c6 /0) in fn: the d8 of each. */
+function byteStores(buf, fn, v) {
+    return E.scan(buf, fn.off, fn.end, [0xc6, null, null, v]).filter(function (q) { return (buf[q + 1] & 0xf8) === 0x40 && (buf[q + 1] & 7) !== 4; }).map(function (q) { return buf[q + 2]; });
+}
+/* `mov dword [reg+d8],v` (c7 /0) in [from, to): the d8 of each. */
+function dwordStores(buf, from, to, v) {
+    return E.scan(buf, from, to, [0xc7, null, null, v, 0, 0, 0]).filter(function (q) { return (buf[q + 1] & 0xf8) === 0x40 && (buf[q + 1] & 7) !== 4; }).map(function (q) { return buf[q + 2]; });
+}
+function h8(n) { return (n & 0xff).toString(16).replace(/^(.)$/, '0$1'); }
 
 /* A status argument built on the stack: its vtable stored at [rsp+B]
  * (`mov [rsp+B],rax`) and its value at [rsp+B+X], X where
@@ -343,10 +400,8 @@ function statusStores(buf, from, to, v, d) {
     return E.scan(buf, from, to, [0xc7, 0x44, 0x24, d === undefined ? null : d, v, 0, 0, 0]);
 }
 
-/* requestStream (called by onStreamCommandChanged) opens with
- *   cmp [this+A],2 ; je L1 ; cmp [this+B],2 ; je Ldo        (stock)
- *   cmp [this+A],2 ; je L1 ; cmp [this+B],2 ; jmp Ldo ; nop  (patched)
- * L1 logging that it is streaming already, Ldo logging the request and
+/* requestStream (called by onStreamCommandChanged) opens with one of
+ * guardAt's forms, L1 logging that it is streaming already, Ldo logging the request and
  * calling setNaviStreamStatus(STREAMING), then setting B to 1.
  * setNaviStreamStatus (named so where the build has its name string) copies
  * the status argument's value into A. onNewNavigationStatus calls it
@@ -363,12 +418,25 @@ function locateSelfstart(im, str, refs) {
     for (var p = rs.off; p + 16 <= Math.min(rs.end, rs.off + ENTRY); p++) { var x = guardAt(buf, p); if (x) gs.push(x); }
     var gd = one(gs, 'guard-once');
     if (!gd) return fail(count(gs, 'self-start: requestStream guard'));
-    var g = gd.g, ldo, gState;
-    if (buf[g] === 0xe9 && buf[g + 5] === 0x90) { ldo = rel32(buf, g + 1); gState = 'patched'; }
-    else if (buf[g] === 0x0f && (buf[g + 1] === 0x84 || !on('guard-form'))) { ldo = rel32(buf, g + 2); gState = 'original'; }
-    else return fail('self-start: requestStream guard is neither stock nor patched');
+    var g = gd.g, ldo = gd.ldo, gState = gd.form;
+    if (!gState) return fail('self-start: requestStream guard is neither stock nor patched');
+    /* R is requestStream's this: copied from rdi before the test. */
+    if (on('guard-this') && !E.scan(buf, rs.off, gd.p, [0x48, null, null]).some(function (q) {
+        return (buf[q + 1] === 0x89 && buf[q + 2] === (0xf8 | gd.r)) || (buf[q + 1] === 0x8b && buf[q + 2] === (0xc7 | gd.r << 3));
+    })) return fail('self-start: requestStream tests another object than its own');
+    /* The alternate display's ready flag F: onAlternateVideoReady sets it
+     * and subscribes to the car's stream commands, the only way stock
+     * requestStream is reached; onEndSession clears it with the stream
+     * status and puts the focus mode back to native (2). The patched test
+     * reads that flag, so requestStream goes ahead only while the phone's
+     * cluster display is set up. */
+    var ready = entryFunc(im, refs, str, 'ready'), endS = entryFunc(im, refs, str, 'endSession'), sub = entryFunc(im, refs, str, 'subscribe');
+    if (ready.err || endS.err || sub.err) return fail(ready.err || endS.err || sub.err);
+    var fs1 = byteStores(buf, ready, 1), F = one(fs1, 'ready-flag');
+    if (F === undefined) return fail(count(fs1, 'self-start: onAlternateVideoReady\'s ready flag'));
+    if (on('ready-subscribe') && !im.calls(ready.off, ready.end).some(function (c) { return c.to === sub.off; })) return fail('self-start: onAlternateVideoReady does not subscribe to the stream commands');
     function loads(s, from, to) { return refs[s.off].some(function (q) { return q >= from && q < to; }); }
-    if (on('already-log') && !loads(str.already, g + 6, ldo)) return fail('self-start: requestStream does not log streaming already');
+    if (on('already-log') && !loads(str.already, gd.p + 16, ldo)) return fail('self-start: requestStream does not log streaming already');
     var recvs = on('request-log') ? refs[str.received.off].filter(function (q) { return q >= ldo && q < rs.end; }) : [ldo];
     var recv = one(recvs, 'request-log-once');
     if (recv === undefined) return fail(recvs.length ? 'self-start: requestStream logs the request ' + recvs.length + ' times' : 'self-start: requestStream does not log the request');
@@ -392,8 +460,16 @@ function locateSelfstart(im, str, refs) {
         return fail('self-start: requestStream does not pass the STREAMING status it builds');
     if (on('arg-frame') && sv && !sameFrame(im, rs, [sv.v.q, sv.s], ssCall.at))
         return fail('self-start: requestStream builds STREAMING in another frame than the call\'s');
-    if (on('mark') && !E.scan(buf, ssCall.at + 5, Math.min(rs.end, ssCall.at + 0x30), [0xc7, 0x40 | gd.r, gd.b, 0x01, 0x00, 0x00, 0x00]).length)
-        return fail('self-start: requestStream does not mark the request');
+    /* After the call requestStream sets the focus mode B to projected (1).
+     * The patched form does not name B: there it is the one field set so
+     * that onEndSession sets to 2. */
+    var marked = E.scan(buf, ssCall.at + 5, Math.min(rs.end, ssCall.at + 0x30), [0xc7, 0x40 | gd.r, null, 0x01, 0x00, 0x00, 0x00]).map(function (q) { return buf[q + 2]; });
+    var endTwo = dwordStores(buf, endS.off, endS.end, 2);
+    var B = gd.b !== null ? gd.b : one(marked.filter(function (d) { return endTwo.indexOf(d) >= 0; }), 'mark');
+    if (on('mark') && (B === undefined || marked.indexOf(B) < 0)) return fail('self-start: requestStream does not mark the request');
+    if (on('end-resets') && (byteStores(buf, endS, 0).indexOf(F) < 0 || dwordStores(buf, endS.off, endS.end, 0).indexOf(gd.a) < 0 || endTwo.indexOf(B) < 0))
+        return fail('self-start: onEndSession does not reset the ready flag, the stream status and the focus mode requestStream tests');
+    if (on('guard-ready') && gState === 'patched' && gd.f !== F) return fail('self-start: requestStream tests another flag than the ready flag');
     if (on('ss-name') && !/not found$/.test(str.ss.err || '')) {
         var named = entryFunc(im, refs, str, 'ss');
         if (named.err || named.off !== ss) return fail(named.err || 'self-start: requestStream calls another function than setNaviStreamStatus');
@@ -421,8 +497,10 @@ function locateSelfstart(im, str, refs) {
         call: { ok: true, offset: at, len: 5, state: site.to === ss ? 'original' : 'patched',
                 stock: 'e8' + E.hex32(im.va(ss) - next), patched: 'e8' + E.hex32(im.va(rs.off) - next),
                 onNav: onNav.off, requestStream: rs.off, setNaviStreamStatus: ss },
-        guard: { ok: true, offset: g, len: 6, state: gState,
-                 stock: '0f84' + E.hex32(im.va(ldo) - im.va(g + 6)), patched: 'e9' + E.hex32(im.va(ldo) - im.va(g + 5)) + '90' },
+        guard: { ok: true, offset: gd.p, len: 16, state: gState,
+                 stock: '83' + h8(0x78 | gd.r) + h8(gd.a) + '02740a83' + h8(0x78 | gd.r) + h8(B === undefined ? 0 : B) + '020f84' + E.hex32(im.va(ldo) - im.va(gd.p + 16)),
+                 patched: '80' + h8(0x78 | gd.r) + h8(F) + '00740a83' + h8(0x78 | gd.r) + h8(gd.a) + '020f85' + E.hex32(im.va(ldo) - im.va(gd.p + 16)),
+                 readyFlag: F },
     };
 }
 
@@ -461,6 +539,8 @@ function locate(buf, opts) {
         var ssr = locateSelfstart(im, str, refs);
         out.call = ssr.ok === false ? ssr : ssr.call;
         out.guard = ssr.ok === false ? ssr : ssr.guard;
+        var gg = out.gate.ok && out.call.ok && out.gate.flag !== null ? gateGatesAlt(im, str, refs, out.gate.flag, out.call.onNav) : null;
+        if (gg) out.gate = out.call = out.guard = fail(gg);
     }
     var hit = on('reloc') ? E.relocated(im, EDITS.filter(function (e) { return out[e].ok; }).map(function (e) { return [e, out[e].offset, out[e].len]; }))
         : { all: null, edits: [] };

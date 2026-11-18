@@ -11,10 +11,11 @@ After=local-fs.target waze-on-cluster-boot.service waze-on-cluster-aa-boot.servi
 # of carplay and of aapd the moment it sees it, each in its own counter,
 # and restores a patch at once when it cannot save that record. It records
 # a service healthy once it has run 60 s. Where recmgr loaded a service's
-# entry this boot, it also restores at the threshold, and runs `systemctl
-# start` of it after a crash or a SIGKILL patchd did not send (bounded per
-# boot). It never stops, kills, restarts or reboots anything (PATCH.md
-# "Boot recovery").
+# entry this boot, it also restores at the threshold (a patched aapd at its
+# first crash), and runs `systemctl start` of it after a crash or a SIGKILL
+# patchd did not send: carplay's bounded per boot, aapd's after every end,
+# with a growing delay. It never stops, kills, restarts or reboots anything
+# (PATCH.md "Boot recovery").
 ExecStart=/usr/bin/node /var/opt/waze-on-cluster/current/recovery.js
 Restart=always
 RestartSec=5

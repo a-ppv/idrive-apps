@@ -74,7 +74,10 @@ restores the original binary before CarPlay (or aapd) starts: after one
 failed start for a patch not yet proven on that car, after two for a proven
 one. CarPlay comes back without the map, its Status reads `Removed — head
 unit kept restarting`, and its Patch button applies the patch again
-(PATCH.md "Boot recovery").
+(PATCH.md "Boot recovery"). Android Auto's patch is removed at the first
+crash of the patched aapd, and aapd is started again after every end, so
+Android Auto comes back without the cluster map; the patch stays off until
+its Patch button applies it or an update brings a newer patch.
 
 To break a loop by hand: keep the phone from connecting (unplug it, or turn
 off its Wi-Fi and Bluetooth), then over SSH run
@@ -266,6 +269,7 @@ for experiments and for undoing the patches without the app:
 |---|---|
 | `status`, `aa-status` | what is on disk |
 | `probe` | where the edit sites are in a carplay binary and whether it is patchable, without writing |
+| `aa-probe [<file>]` | the same for aapd (`/usr/bin/aapd` by default) |
 | `verify` | whether carplay's patch is complete |
 | `revert [--force]` | restores the original carplay; `--force` over another build (a firmware update) |
 | `aa-revert [--force]` | restores the original aapd and aapd.conf |

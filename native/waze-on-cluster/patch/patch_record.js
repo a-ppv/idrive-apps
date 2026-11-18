@@ -9,9 +9,11 @@
  *   {"patched": true|false, "proven": true|false, "ino", "size", "mtime"
  *    (ms), for carplay's patch "trial": true while a patch of a proven build
  *    has not yet run healthy on this car, and after a revert
- *    of one that ran healthy "healthy": true, and, after boot recovery's
+ *    of one that ran healthy "healthy": true, for aapd's patch "rev" (its
+ *    revision, aapd_patch.js PATCH_REV), and, after boot recovery's
  *    restore, "by": "recovery" or "refused", "at" (ISO time), and with
- *    "recovery" "fails"}
+ *    "recovery" "fails", "why" (crash | boot) and "rev" (the removed
+ *    patch's revision)}
  *
  * Written by the patchers after each write to the target (and by an apply
  * or revert that finds nothing to do when the file has changed since the
