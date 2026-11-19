@@ -1664,11 +1664,28 @@ void SlotManager::verify(int i, int64_t now_ms)
              t.recoveries == 1 ? " at once" : " on the ladder");
     take_down(i, now_ms);
     /* From the second recovery on the publication itself may be what the renderer missed: unpublished, so the
-     * next acquire publishes it again (a fresh offer); then, now and again, the framework reconnected */
+     * next acquire publishes it again (a fresh offer); then, now and again, the framework reconnected, unless
+     * another target's scene is subscribed: the session is served, only this target's renderer is absent */
     if (t.recoveries >= 2)
         drop_scene(i);
-    if (t.recoveries % kReconnectAfter == 0)
-        reconnect(i, "no renderer subscription through " + std::to_string(t.recoveries) + " recoveries in a row", now_ms);
+    if (t.recoveries % kReconnectAfter == 0) {
+        const std::string why =
+            "no renderer subscription through " + std::to_string(t.recoveries) + " recoveries in a row";
+        int other = -1;
+        auto o = subs_.begin();
+        for (; o != subs_.end(); ++o) {
+            other = by_published(o->first);
+            if (!o->second.empty() && other >= 0 && other != i)
+                break;
+        }
+        if (o == subs_.end())
+            reconnect(i, why, now_ms);
+        else
+            log_warn("target %s: %s; the RAMSES framework not reconnected: target %s's scene 0x%llx is subscribed by "
+                     "renderer %s",
+                     spec.name.c_str(), why.c_str(), specs_[other].name.c_str(), (unsigned long long)o->first,
+                     o->second.begin()->first.c_str());
+    }
     if (t.recoveries == 1)
         set(i, TargetState::Waiting, Holder::None, reason, now_ms, now_ms);
     else

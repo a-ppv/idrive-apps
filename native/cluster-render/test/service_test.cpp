@@ -1022,6 +1022,73 @@ static void hud_yield_choice()
     ok("and gives way", r.svc->slots().status(k).state == TargetState::Waiting);
 }
 
+/* A target whose renderer never subscribes (a HUD the display does not draw) next to one whose scene is
+ * subscribed: the first is recovered on the ladder again and again, the framework never reconnected (that drops
+ * every target's content), the other never taken down. With no target subscribed the reconnect goes as before. */
+static void one_renderer_absent()
+{
+    Rig r;
+    const uint64_t kPanelScene = 0x010004f8, kHudScene = 0x01000400;
+    r.sc.targets[1].scene_id = kPanelScene;   /* the panel on its own id, as cluster-render.conf ships it */
+    TargetSpec h;
+    h.name = "hud"; h.slot = 0x323; h.scene_id = kHudScene; h.width = 800; h.height = 480; h.linger_ms = 3000;
+    r.sc.targets.push_back(h);
+    r.start();
+    SlotManager &m = r.svc->slots();
+    int stuck = 0;
+    m.on_renderer_stuck = [&stuck, &r](int64_t) {
+        stuck++;
+        r.port.watchdog();   /* as the display does: every content of the participant dropped */
+    };
+    cr::Client a("app", r.path);
+    Events ea;
+    ea.wire(a);
+    r.clients = {&a};
+    r.pump(50);
+    const cr::EffectOptions white{"#version 100\nvoid main(){gl_FragColor=vec4(1.0);}", "", 0};
+    cr::LayerOptions lo;
+    lo.target = "panel";
+    lo.contend = true;
+    a.effect(lo, white);
+    lo.target = "hud";
+    a.effect(lo, white);
+    r.pump(200);
+    const int panel = m.index("panel"), hud = m.index("hud");
+    m.on_subscription(kPanelScene, true, false, "renderer-1", r.now);
+    r.pump(10);
+    ok("absent renderer: the panel shown and rendered, the hud shown",
+       m.status(panel).state == TargetState::Shown && m.status(panel).rendering == Rendering::Verified &&
+           m.status(hud).state == TargetState::Shown);
+
+    uint64_t seq = 0;
+    std::vector<std::string> lines;
+    cld::log_lines_since(&seq, &lines);
+    int recoveries = 0, kept_on = 0, panel_lost = 0;
+    bool panel_shown = true;
+    for (int k = 0; k < 4000 && recoveries < 3 * SlotManager::kReconnectAfter; k++) {
+        r.pump(100, 10);
+        lines.clear();
+        cld::log_lines_since(&seq, &lines);
+        for (const std::string &l : lines) {
+            recoveries += has(l, "target hud: the display reports scene 0x1000400 mapped but its renderer is not "
+                                 "subscribed");
+            kept_on += has(l, "the RAMSES framework not reconnected: target panel's scene 0x10004f8 is subscribed "
+                              "by renderer renderer-1");
+            panel_lost += has(l, "INCIDENT target panel lost");
+        }
+        panel_shown = panel_shown && m.status(panel).state == TargetState::Shown && r.port.row(0x203, kPanelScene);
+    }
+    ok("the hud never subscribed through 3 x kReconnectAfter recoveries: no framework reconnect, each skip logged",
+       recoveries == 3 * SlotManager::kReconnectAfter && stuck == 0 && kept_on == 3);
+    ok("the panel shown and rendered throughout, never lost",
+       panel_shown && panel_lost == 0 && m.status(panel).rendering == Rendering::Verified);
+
+    m.on_renderer_gone("renderer-1", r.now);
+    for (int k = 0; k < 600 && !stuck; k++)
+        r.pump(100, 10);
+    ok("no target subscribed: a kReconnectAfter-th recovery in a row reconnects the framework", stuck == 1);
+}
+
 static void scene_files()
 {
     char tmpl[] = "/tmp/crs-service-scenes-XXXXXX";
@@ -1973,6 +2040,7 @@ int main()
     guide_hold();
     guide_hold_choice();
     hud_yield_choice();
+    one_renderer_absent();
     display_drops();
     repeats();
     framing();

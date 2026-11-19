@@ -167,8 +167,10 @@
  *   (or after the renderer unsubscribed) is released and asked for again,
  *   at once the first time and on the ladder after that; from the second
  *   in a row its scene is unpublished, and every kReconnectAfter-th the
- *   unit reconnects (on_renderer_stuck). Before any subscription has been
- *   seen nothing is verified.
+ *   unit reconnects (on_renderer_stuck), unless another target's scene is
+ *   subscribed: the renderer serves the session, only this target's renderer
+ *   is absent, and a reconnect would drop every target's content. Before any
+ *   subscription has been seen nothing is verified.
  * - Holds: a target that follows another (TargetSpec::follows) keeps its
  *   slot from the stock HMI while that target is shown and one of its
  *   take_over_contents is mapped in the slot (follow(), which keeps a
@@ -539,8 +541,8 @@ public:
     std::function<std::string()> budget_text;
     /* The unit reconnects its RAMSES framework: a participant session the display no longer serves (one it kept
      * over a restart of this side, or one whose fetches it stopped completing). Called at every kReconnectAfter-th
-     * recovery in a row of a target whose renderer never subscribes, or of a stalled fetch (above), at most once per
-     * kReconnectGapMs. Unset: the ladder only. */
+     * recovery in a row of a target whose renderer never subscribes while no other target's scene is subscribed,
+     * or of a stalled fetch (above), at most once per kReconnectGapMs. Unset: the ladder only. */
     std::function<void(int64_t now_ms)> on_renderer_stuck;
     static constexpr int kReconnectAfter = 3;
 
