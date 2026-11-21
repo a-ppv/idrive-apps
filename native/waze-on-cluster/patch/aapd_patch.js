@@ -334,7 +334,6 @@ function cmdStatus(t) {
         line(e[1].replace(' ', '-'), s && s.ok ? s.state.toUpperCase() : 'UNKNOWN (' + (s ? s.reason : 'not located') + ')');
     });
     line('geometry', geometryText(us[1].cur, us[1].b));
-    /* Our edits beside another change in either file. */
     var fo = foreignIn(t);
     line('foreign', fo === null ? 'unknown' : fo ? 'yes' : 'no');
     line('planable', c.inMem.length ? 'no (' + c.inMem.join('; ') + ')' : 'yes');
@@ -423,7 +422,6 @@ function plans() { return require('./carplay_patch.js'); }
 function planRegions(c) { return SITES.map(function (e) { return [c.loc[e[0]].offset, c.loc[e[0]].len]; }); }
 var PLAN_NAMES = ['gate', 'selfstart-call', 'selfstart-guard', 'screen', 'confpath'];
 
-/* Writes data to file by rename, fsynced. */
 function writeFileWhole(file, data) {
     var tmp = file + '.tmp';
     fs.writeFileSync(tmp, data, { mode: 0o644 });

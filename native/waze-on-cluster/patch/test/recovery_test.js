@@ -1884,6 +1884,29 @@ test('the real boot step puts back an earlier release\'s patch of a carplay copy
     assert(a.own < 2000, a.stdout);
 });
 
+for (const confLeft of [true, false]) test('the boot step over patchd\'s put-back of an earlier aapd patch cut short (aapd as it ships, ' +
+    (confLeft ? 'aapd.conf still patched' : 'aapd.conf as it ships too') + ', our backups beside them, a record still to plan): put back, no backup left, the patch kept on', () => {
+    if (!fs.existsSync(AAPD_BIN) || !fs.existsSync(AAPD_CONF)) { console.log('     (skipped: AAPD_BIN, AAPD_CONF not set)'); return; }
+    const w = makeWorld();
+    aapdPatcher(w)(['apply', '--dpi', '170', '--yes']);
+    const target = w.T.aapd.target, conf = w.T.aapd.files[1];
+    assert(fs.existsSync(target + '.woc-orig') && fs.existsSync(conf + '.woc-orig'), 'both backups');
+    /* patchd's order: the record to plan first, then the files back */
+    const args = ['--conf', conf, '--dpi', '170', '--card', 'shown', '--unproven'];
+    inmem.planFailed('aapd', args, 'not planned yet: putting aapd back was cut short');
+    fs.writeFileSync(target + '.new', fs.readFileSync(AAPD_BIN), { mode: 0o755 });
+    fs.renameSync(target + '.new', target);
+    if (!confLeft) { fs.writeFileSync(conf + '.new', fs.readFileSync(AAPD_CONF), { mode: 0o644 }); fs.renameSync(conf + '.new', conf); }
+    record.write(target, { patched: false });
+    const r = runBootStep(w, 'aapd', 'C');
+    assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+    assert(!/turned the in-memory patch of aapd off/.test(r.stdout), r.stdout);
+    assert(fs.readFileSync(target).equals(fs.readFileSync(AAPD_BIN)) && fs.readFileSync(conf).equals(fs.readFileSync(AAPD_CONF)), 'both as they ship: ' + r.stdout);
+    assert(!fs.existsSync(target + '.woc-orig') && !fs.existsSync(conf + '.woc-orig') && !fs.existsSync(record.recordPath(target)), 'no backup or record of ours left: ' + r.stdout);
+    assert.deepStrictEqual([inmem.readRecord('aapd').enabled, inmem.readRecord('aapd').args], [true, args], 'the patch stays on, planned as patchd recorded it');
+    assert(ro());
+});
+
 test('the boot step restores what an older release patched where the locator now refuses a site', () => {
     if (!fs.existsSync(CARPLAY_BIN) || sha(fs.readFileSync(CARPLAY_BIN)) !== 'ddb33e33161387c6479c391684b3d019b0de54ecfcee8d6877eca94aa62f3e50') {
         console.log('     (skipped: carplay 22.28.3 not found)'); return;

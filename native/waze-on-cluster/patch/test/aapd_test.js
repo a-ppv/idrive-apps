@@ -9,7 +9,7 @@
  * proven list without --unproven, an aapd.conf without what the geometry
  * needs), the plan and the copy of aapd.conf it points aapd at, the byte-exact
  * undo of a patch an earlier release wrote to the files (waze-on-cluster
- * 0.11.0's patcher, earlier_patcher.js), patchd's hooks and socket next to
+ * 0.12.0's patcher, earlier_patcher.js), patchd's hooks and socket next to
  * carplay's (CARPLAY_BIN, optional) with aapd's process in a fake /proc
  * (carplay_proc.js), the head-unit restart guard, and boot recovery for aapd
  * with /, /proc, mount and systemctl faked. The build outside the proven
@@ -87,7 +87,7 @@ function unit(bin) {
     fs.chmodSync(t.df, 0o755);
     return t;
 }
-/* This version's patcher; an `apply` is an earlier release's (0.11.0, the
+/* This version's patcher; an `apply` is an earlier release's (0.12.0, the
  * last that writes the patch to the files): what the tests start from where
  * a car still has that patch on disk. */
 function patcher(t, args) {
@@ -618,7 +618,7 @@ function nextStart(t, pid) {
         noAaInmem(t) && untouched(t) && marker(t, 'aa-pending').action === 'revert' && ro(t), r.out);
     if (HAVE_CP) ok('deactivate: carplay as it ships, its plan gone', sha(t.carplay) === sha(CARPLAY) && !fs.existsSync(path.join(t.d, 'var', 'inmem-carplay.json')));
 
-    /* An earlier release's patch on disk (an update from 0.11.0 or before):
+    /* An earlier release's patch on disk (an update from 0.12.0 or before):
      * put back as it ships, backups dropped, then planned in memory; the
      * running aapd, which runs that patch, kept linked. */
     var m = patchdUnit();
@@ -632,6 +632,17 @@ function nextStart(t, pid) {
     ['aa-pending'].forEach(function (n) { try { fs.unlinkSync(path.join(m.shm, n)); } catch (e) {} });
     r = hook(m, 'deactivate');
     ok('deactivate: the link aapd still runs goes to the deploy tool', (r.result.removeWhenUnused || []).indexOf(m.bin + '.woc-running') >= 0 && noAaInmem(m), JSON.stringify(r.result));
+
+    /* An earlier release's Remove patch still waiting for the next start
+     * (aapd not restartable then): an update in that boot leaves Android
+     * Auto off, the backups kept. */
+    var wr = patchdUnit();
+    patcher(wr, ['apply', '--yes']);
+    patcher(wr, ['revert', '--yes']);
+    fs.writeFileSync(path.join(wr.shm, 'aa-pending'), JSON.stringify({ action: 'revert', reason: 'removed' }) + '\n');
+    r = hook(wr, 'activate');
+    ok('an earlier release\'s Remove patch waiting for the next start: an install leaves Android Auto off, nothing armed, the backups kept', r.code === 0 &&
+        /turned off/.test(r.result.aa.status) && noAaInmem(wr) && fs.existsSync(wr.bin + '.woc-orig') && sha(wr.bin) === sha(SRC), JSON.stringify(r.result));
 
     /* An earlier patch beside another tool's change: left as it is, a
      * conflict, nothing armed. */
@@ -1377,15 +1388,19 @@ async function recoveryTests() {
     /* The boot step's SIGTERM waits for a put-back in progress. */
     var u = patchdUnit();
     patcher(u, ['apply', '--yes']);
-    fs.writeFileSync(u.env.WOC_MOUNT, '#!/bin/sh\nsleep 1\ncase "$*" in *rw*) echo "/dev/root / ext4 rw 0 0" > "' + u.mounts + '";; *) echo "/dev/root / ext4 ro 0 0" > "' + u.mounts + '";; esac\n');
+    var remounting = path.join(u.d, 'remounting');
+    fs.writeFileSync(u.env.WOC_MOUNT, '#!/bin/sh\ncase "$*" in *rw*) : > "' + remounting + '";; esac\nsleep 1\ncase "$*" in *rw*) echo "/dev/root / ext4 rw 0 0" > "' + u.mounts + '";; *) echo "/dev/root / ext4 ro 0 0" > "' + u.mounts + '";; esac\n');
     var envU = Object.assign({}, u.env, { WOC_BOOT_ID: path.join(u.d, 'bootid') });
     fs.writeFileSync(path.join(u.d, 'bootid'), 'x\n');
     var ch = cp.spawn(process.execPath, [path.join(PATCH, 'recovery.js'), 'boot', 'aapd'], { env: envU });
     children.push(ch);
-    await sleep(500);
+    var chOut = '';
+    ch.stdout.on('data', function (d) { chOut += d; });
+    ch.stderr.on('data', function (d) { chOut += d; });
+    for (var wait = 0; wait < 300 && !fs.existsSync(remounting); wait++) await sleep(50);
     ch.kill('SIGTERM');
     await new Promise(function (res2) { ch.on('exit', res2); });
-    ok('boot step: SIGTERM mid-put-back lets it finish, / read-only', sha(u.bin) === sha(SRC) && ro(u));
+    ok('boot step: SIGTERM mid-put-back lets it finish, / read-only', fs.existsSync(remounting) && sha(u.bin) === sha(SRC) && ro(u), chOut);
 
     /* Both boot steps over earlier patches in the same boot: they share the
      * remount lock, and each waits for the other's put-back. */

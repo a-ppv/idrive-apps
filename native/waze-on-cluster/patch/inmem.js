@@ -88,7 +88,6 @@ function patchId(rec) {
     return sha256(Buffer.from(rec.planSha256 + Object.keys(c).sort().map(function (k) { return ' ' + k + '=' + c[k]; }).join('')));
 }
 
-/* The recorded stat of a file: {file, ino, size, mtime}, or null. */
 function statOf(f) {
     try { var st = fs.statSync(f); return { file: f, ino: st.ino, size: st.size, mtime: st.mtime.getTime() }; } catch (e) { return null; }
 }

@@ -955,12 +955,12 @@ function readAaState(cb, fresh) {
     }
     aaInFlight = true;
     function done(st) {
+        aaInFlight = false;
         aaState = st; cb(st);
         var waiting = aaFresh.splice(0);
         if (waiting.length) readAaState(function (next) { waiting.forEach(function (w) { w(next); }); }, true);
     }
     cp.execFile(process.execPath, [AA_PATCHER, 'status', '--target', AAPD, '--conf', AAPD_CONF, '--coding', CODING], { timeout: tmo(15000) }, function (err, out, errOut) {
-        aaInFlight = false;
         var text = (out || '') + '';
         function get(k) { var m = new RegExp('^' + k + ':\\s+(.*)$', 'm').exec(text); return m ? m[1] : ''; }
         var st = { state: 'unknown', reason: null, conflict: null, dpi: null, density: aaDensity(), card: aaCard(), restorable: /^yes$/.test(get('restorable')),
@@ -1124,7 +1124,7 @@ function remountRo(tries, cb) {
 var recmgrLoaded = require('./recmgr_list.js').recmgrLoaded;
 var parseShow = require('./recovery.js').parseShow;
 var DROPIN = process.env.WOC_CARPLAY_DROPIN || '/etc/systemd/system/carplay.service.d/50-waze-on-cluster.conf';
-/* aapd's: the env file of a start armed in memory. */
+/* aapd's: names the env file of a start armed in memory (EnvironmentFile). */
 var AA_DROPIN = process.env.WOC_AAPD_DROPIN || '/etc/systemd/system/aapd.service.d/50-waze-on-cluster.conf';
 
 /* cb(null) when t's service may be restarted, else cb(why not). */
@@ -1153,14 +1153,14 @@ var PENDING_REASON = {
  * a restart needs, and files besides the binary read at start (extra). */
 var CP = { name: 'carplay', unit: 'carplay.service', target: TARGET, patcher: PATCHER, running: TARGET + '.woc-running',
            pending: PENDING, killed: path.join(path.dirname(SOCK), 'carplay-killed'), dropin: DROPIN, reasons: PENDING_REASON, extra: [],
-           svc: 'carplay', modified: 'carplay was modified by something else', overlayState: function (t) { return cpOverlayState(t); } };
+           svc: 'carplay', modified: 'carplay was modified by something else', overlayState: cpOverlayState };
 var AA = { name: 'aapd', unit: 'aapd.service', target: AAPD, patcher: AA_PATCHER, running: AAPD + '.woc-running',
            pending: path.join(path.dirname(SOCK), 'aa-pending'), killed: path.join(path.dirname(SOCK), 'aapd-killed'), dropin: AA_DROPIN,
            /* aapd reads aapd.conf when it starts: a change there needs a start too. */
            extra: [AAPD_CONF],
            reasons: { apply: 'Android Auto patch armed in memory; takes effect at the next head-unit start',
                       revert: 'Android Auto patch removed; aapd runs as it ships from the next head-unit start' },
-           svc: 'aapd', modified: 'aapd was modified by something else', overlayState: function (t) { return aaOverlayState(t); } };
+           svc: 'aapd', modified: 'aapd was modified by something else', overlayState: aaOverlayState };
 
 /* Restart t's service: SIGKILL its main process, wait until systemd has
  * reaped it, `systemctl start` it, and confirm the unit is active. A systemd
@@ -1704,7 +1704,6 @@ function memOf(t, cb, planText) {
         cb(pid, pid > 0 ? inmem.memState(t.name, pid, planText) : null);
     });
 }
-function carplayMem(cb, planText) { memOf(CP, cb, planText); }
 
 /* Whether the running process (pid, its memory mem) runs t's enabled patch:
  * the plan's bytes at every site and, for aapd, the start that armed it with
@@ -1995,6 +1994,12 @@ function aaHook(which, cb) {
         if (!ours && rec && rec.enabled === false && inmem.describes('aapd', rec) && (rec.by === 'recovery' || rec.by === 'user') &&
             !(rec.by === 'recovery' && (rec.rev || 1) < AA_PATCH_REV)) {
             out(0, rec.by === 'recovery' ? recoveredWords(rec.fails, rec.why) : 'the patch was turned off; its Patch button applies it');
+            return;
+        }
+        /* An earlier release's Remove patch still waiting for the next start
+         * (not a removal's, and no record of this version's): it stays off. */
+        if (!rec && st.pending === 'revert' && st.pendingBy !== 'removal') {
+            out(0, 'the patch was turned off; its Patch button applies it');
             return;
         }
         var reset = highfReset(AA, st), retry = !!st.recovered && !!st.recoveredRev && st.recoveredRev < AA_PATCH_REV;

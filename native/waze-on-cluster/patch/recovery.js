@@ -554,7 +554,7 @@ function restoreTarget(t, onlyIfRunning, fails, cb, waitMs, why) {
     /* On a head unit that refuses our parts nothing is remounted only to
      * correct the record. */
     var refused = headUnit.refused();
-    if (!writes.length && ((rec && !rec.patched) || refused)) { cb(null, 'original'); return; }
+    if (!writes.length && why !== 'file' && ((rec && !rec.patched) || refused)) { cb(null, 'original'); return; }
     if (lock.holds(t.running, t.target) && lock.inUse(t.target)) { cb(new Error('processes run both ' + t.target + ' and ' + t.running + '; deferring')); return; }
     function locked() {
         var released = false;
@@ -903,16 +903,21 @@ Recovery.prototype._decide = function (cb) {
      * get to it, a patch written by hand) is put back to the original
      * before the service starts, whatever the count, and recorded as a
      * patch to plan, which the boot step plans and arms before the service
-     * starts. Files that also hold another change are left as they are (a
-     * conflict). Only the boot step: at an install the deploy tool starts
-     * the watcher before activate, which moves such a patch into memory
-     * itself. */
-    if (t.inmem && this._bootStep && !inMem && (kind === 'proven' || kind === 'unproven' || kind === 'unknown') && t.foreignIn() !== true) {
+     * starts; so is what a put-back of patchd's cut short left (our backups
+     * beside the original, a file besides the binary not yet put back),
+     * which a record still to plan marks. Files that also hold another
+     * change are left as they are (a conflict). Only the boot step: at an
+     * install the deploy tool starts the watcher before activate, which
+     * moves such a patch into memory itself. */
+    var prior = t.inmem ? inmem.readRecord(t.name) : null;
+    var cutShort = kind === 'original' && !!prior && prior.enabled === true && prior.needsPlan === true;
+    if (t.inmem && this._bootStep && !inMem && (kind === 'proven' || kind === 'unproven' || kind === 'unknown' || cutShort) && t.foreignIn() !== true) {
         if (tallied) this._save(st);
         /* An enabled plan takes the original back by its SHA-256 (adopt);
-         * without one the patch is recorded as one to plan. */
-        var drec = record.current(t.target), prior = inmem.readRecord(t.name);
-        if (!prior || (prior.enabled === true && !prior.planSha256)) {
+         * a record still to plan keeps the arguments it holds; without
+         * either the patch is recorded as one to plan. */
+        var drec = record.current(t.target);
+        if (!prior || (prior.enabled === true && !prior.planSha256 && prior.needsPlan !== true)) {
             try { inmem.planFailed(t.name, t.planArgs(drec), 'a patch in ' + t.name + '\'s files was put back as they ship at the start; planned again'); }
             catch (e) { this._log(t.name + ': recording the patch to plan failed: ' + e.message); }
         }
@@ -1300,11 +1305,12 @@ function runBoot(name) {
             ' in ' + Math.round(monoMs() - t0) + ' ms, ' + Math.round(process.uptime() * 1000) + ' ms since node started');
         process.exit(0);
     }
-    /* carplay: a plan still to make is made first (BOOT_PLAN_MS at most).
+    /* A plan still to make is made first (BOOT_PLAN_MS at most), unless
+     * our backup is beside the binary: the step puts that back first.
      * After the step put a patch in the file back, an enabled record is
      * planned (when it has no plan) and armed, so this start applies it;
      * the boot's bound still holds over all of it. */
-    (t.inmem ? function (cb) { retryPlan(t.name, cb, BOOT_CODING_WAIT_MS, BOOT_PLAN_MS); } : function (cb) { cb(false); })(function () {
+    (t.inmem && !exists(t.backups[0]) ? function (cb) { retryPlan(t.name, cb, BOOT_CODING_WAIT_MS, BOOT_PLAN_MS); } : function (cb) { cb(false); })(function () {
         rec.startBoot(function (r) {
             var ir = t.inmem && rec._putBack && r.action !== 'restore-failed' ? inmem.readRecord(t.name) : null;
             if (!ir || ir.enabled !== true) { done(r); return; }
