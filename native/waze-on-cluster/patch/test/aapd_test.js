@@ -9,7 +9,7 @@
  * proven list without --unproven, an aapd.conf without what the geometry
  * needs), the plan and the copy of aapd.conf it points aapd at, the byte-exact
  * undo of a patch an earlier release wrote to the files (waze-on-cluster
- * 0.12.0's patcher, earlier_patcher.js), patchd's hooks and socket next to
+ * 0.12.1's patcher, earlier_patcher.js), patchd's hooks and socket next to
  * carplay's (CARPLAY_BIN, optional) with aapd's process in a fake /proc
  * (carplay_proc.js), the head-unit restart guard, and boot recovery for aapd
  * with /, /proc, mount and systemctl faked. The build outside the proven
@@ -87,7 +87,7 @@ function unit(bin) {
     fs.chmodSync(t.df, 0o755);
     return t;
 }
-/* This version's patcher; an `apply` is an earlier release's (0.12.0, the
+/* This version's patcher; an `apply` is an earlier release's (0.12.1, the
  * last that writes the patch to the files): what the tests start from where
  * a car still has that patch on disk. */
 function patcher(t, args) {
@@ -618,7 +618,7 @@ function nextStart(t, pid) {
         noAaInmem(t) && untouched(t) && marker(t, 'aa-pending').action === 'revert' && ro(t), r.out);
     if (HAVE_CP) ok('deactivate: carplay as it ships, its plan gone', sha(t.carplay) === sha(CARPLAY) && !fs.existsSync(path.join(t.d, 'var', 'inmem-carplay.json')));
 
-    /* An earlier release's patch on disk (an update from 0.12.0 or before):
+    /* An earlier release's patch on disk (an update from 0.12.1 or before):
      * put back as it ships, backups dropped, then planned in memory; the
      * running aapd, which runs that patch, kept linked. */
     var m = patchdUnit();

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Robert Nisipeanu
 /* Earlier releases' patchers, for the tests that need carplay or aapd as
  * an earlier release patched it in the file: waze-on-cluster 0.10.12, the
- * last release whose carplay_patch.js has `apply`, and 0.12.0, the last
+ * last release whose carplay_patch.js has `apply`, and 0.12.1, the last
  * whose aapd_patch.js has it. Each patch folder comes from its release tag
  * (fetched when missing) into a temporary folder, once per process, removed
  * at exit.
@@ -11,7 +11,7 @@
  *   earlier.script()             0.10.12's carplay_patch.js
  *   earlier.scriptFor(args, cur) its carplay_patch.js for an `apply`, else cur
  *   earlier.run(args, env)       {code, out} of its carplay_patch.js
- *   earlier.aaScript()           0.12.0's aapd_patch.js
+ *   earlier.aaScript()           0.12.1's aapd_patch.js
  *   earlier.aaScriptFor(args, cur) its aapd_patch.js for an `apply`, else cur
  *   earlier.dir(tag)             a release's patch folder (default 0.10.12)
  */
@@ -23,7 +23,7 @@ var path = require('path');
 var cp = require('child_process');
 
 var TAG = 'waze-on-cluster@0.10.12';
-var AA_TAG = 'waze-on-cluster@0.12.0';
+var AA_TAG = 'waze-on-cluster@0.12.1';
 var REPO = path.join(__dirname, '..', '..', '..', '..');
 var dirs = {};
 

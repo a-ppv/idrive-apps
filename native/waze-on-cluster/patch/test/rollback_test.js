@@ -43,9 +43,9 @@
  * it B-G run on a synthetic build (synthetic_carplay.js), A not at all.
  *
  * Android Auto (part 7, with AAPD_BIN and AAPD_CONF, aapd 22.39.3 and its
- * aapd.conf): every release from 0.8.0 to 0.12.0 writes its patch to aapd
+ * aapd.conf): every release from 0.8.0 to 0.12.1 writes its patch to aapd
  * and aapd.conf; 0.8.0-0.10.10 a self-start guard this version's locator
- * reads as outdated, 0.10.11-0.12.0 this version's. Each release over the
+ * reads as outdated, 0.10.11-0.12.1 this version's. Each release over the
  * files as this version leaves them, and this version over each release's
  * patch.
  * The release tags come from the repository's git, fetched when missing.
@@ -607,8 +607,8 @@ var AAPD_BIN = process.env.AAPD_BIN || '', AAPD_CONF = process.env.AAPD_CONF || 
     function aClearInmem() { fs.readdirSync(SD).filter(function (f) { return /aapd/.test(f); }).forEach(function (f) { try { fs.unlinkSync(path.join(SD, f)); } catch (e) {} }); }
 
     var AA_RELEASES = RELEASES.filter(function (v) { return fs.existsSync(path.join(dir, 'rel', v, 'aapd_patch.js')); });
-    ok('every release with an aapd patcher, 0.8.0 to 0.12.0, is tested', AA_RELEASES[0] === '0.8.0' && AA_RELEASES.indexOf('0.10.10') >= 0 &&
-        AA_RELEASES.indexOf('0.10.11') >= 0 && AA_RELEASES.indexOf('0.12.0') >= 0, AA_RELEASES.join(' '));
+    ok('every release with an aapd patcher, 0.8.0 to 0.12.1, is tested', AA_RELEASES[0] === '0.8.0' && AA_RELEASES.indexOf('0.10.10') >= 0 &&
+        AA_RELEASES.indexOf('0.10.11') >= 0 && AA_RELEASES.indexOf('0.12.1') >= 0, AA_RELEASES.join(' '));
     aStock(); aClearInmem();
     var mp0 = aPlan();
     ok('this version plans Android Auto in memory over stock files, writing neither', mp0 === 'OK' && aHolds() === 'stock' && aKind() !== 'null', mp0);

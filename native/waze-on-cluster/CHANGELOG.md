@@ -2,11 +2,12 @@
 
 ## Unreleased
 
-## 0.12.1
 Android Auto's cluster map patch is applied in aapd's memory each time it
 starts, as CarPlay's is: `/usr/bin/aapd` and `/etc/aapd.conf` stay as they
 ship. Updating from an earlier version puts the original files back and
 keeps the map, your zoom and turn-card settings included.
+
+## 0.12.1
 
 The rollback tests treat 0.11.0 and later as releases that patch CarPlay in
 memory.

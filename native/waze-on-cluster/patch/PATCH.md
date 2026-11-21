@@ -983,7 +983,7 @@ version patched (`rollback_test.js` runs each one from its release tag):
 | 0.9.12–0.10.1 (F) | stock | as E | as E |
 | 0.10.2–0.10.3 (G) | stock | as E | Edits 1–4 and Edit 5 with the URL with ETA written, Edit 6 kept |
 | 0.10.4–0.10.6 (H) | stock | stock | 0.10.4–0.10.5: nothing to write; 0.10.6: its safe area 476x306 written |
-| 0.11.0–0.12.0 (I) | stock | stock | as this version: carplay put back to stock, the patch planned in memory |
+| 0.11.0–0.12.1 (I) | stock | stock | as this version: carplay put back to stock, the patch planned in memory |
 
 Every release reads this version's Edit 4 as patched (138x61 mm, a safe
 area inside the frame), and its activate writes its own safe area. A and B
@@ -1021,9 +1021,9 @@ log texts, the initial URL of a cluster display that CarPlay, with Edit 1
 reverted, does not offer the phone, and the ShowUI URL of the cluster
 stream that display would carry.
 
-**Android Auto.** Every release from 0.8.0 to 0.12.0 writes its Android
+**Android Auto.** Every release from 0.8.0 to 0.12.1 writes its Android
 Auto patch to aapd and aapd.conf, with backups; 0.8.0–0.10.10 the
-self-start guard this version reads as outdated, 0.10.11–0.12.0 this
+self-start guard this version reads as outdated, 0.10.11–0.12.1 this
 version's. None reads the record or plan of the patch in memory. This
 version's `deactivate` turns the patch off and deletes them, so the
 release installed next finds both files as they ship with no backup and
@@ -1031,7 +1031,7 @@ patches them as it always did; its boot recovery, Remove patch and removal
 end stock. That patch is another file than the plan's record describes,
 so this version, installed again, arms nothing over it: its boot step and
 `activate` put it back (whatever the count) and plan in memory
-(`rollback_test.js`, part 7). 0.11.0 and 0.12.0 also patch carplay in
+(`rollback_test.js`, part 7). 0.11.0 to 0.12.1 also patch carplay in
 memory: each plans the app's patch and reads this version's record, and
 this version reads theirs (parts 1 and 2).
 
@@ -1043,7 +1043,7 @@ and aapd sends it to the same AVB stream 15. `aapd_patch.js` plans four
 edits to aapd and its config path, and the geometry of a copy of
 `/etc/aapd.conf` (`aapd_conf.js`), applied in aapd's memory ("Android Auto in
 memory"); `patchd` runs it for the app and the install hooks. Releases up to
-0.12.0 wrote the same edits to `/usr/bin/aapd` and `/etc/aapd.conf`; this
+0.12.1 wrote the same edits to `/usr/bin/aapd` and `/etc/aapd.conf`; this
 version puts such a patch back ("Backups and undo").
 
 ### Builds and the coding
@@ -1157,7 +1157,7 @@ In the proven build:
   become `cmp eax,2 ; je <the 12.3 load> ; pxor xmm0,xmm0 ; jmp <return>`:
   class 2 reads 12.3, every other class as before.
 - **confpath.** The path aapd reads aapd.conf by, pointed at the copy with
-  the geometry ("Android Auto in memory"). Releases up to 0.12.0 edited
+  the geometry ("Android Auto in memory"). Releases up to 0.12.1 edited
   `/etc/aapd.conf` itself instead and had no such edit.
 
 **Found by.**
@@ -1279,7 +1279,7 @@ cropped wrongly until the head-unit start.
 ### Backups and undo
 
 This version writes aapd and aapd.conf only to put back a patch a release up
-to 0.12.0 wrote. Before its first change of each file such a release wrote
+to 0.12.1 wrote. Before its first change of each file such a release wrote
 the file's backup under a temporary name, fsynced and verified it, wrote the
 record (the SHA-256) in full by rename, then renamed the backup:
 `/usr/bin/aapd.woc-orig` and `/etc/aapd.conf.woc-orig`, each with
