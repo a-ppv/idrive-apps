@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Robert Nisipeanu
-/* libwocpatch.so: applies waze-on-cluster's carplay edits to the running
- * process's memory, before carplay's own code runs. The file on disk is
- * never written (PATCH.md "In memory").
+/* libwocpatch.so: applies waze-on-cluster's carplay or aapd edits to the
+ * running process's memory, before the program's own code runs. The file on
+ * disk is never written (PATCH.md "In memory").
  *
- * carplay.service loads it with LD_PRELOAD only when the boot step armed
- * this start: it wrote /run/woc-preload/carplay.env, which the tool's
- * drop-in names with EnvironmentFile=-, so without that file carplay starts
- * as it ships. The env names the plan (WOC_PATCH_PLAN) and the result file
- * (WOC_PATCH_RESULT).
+ * carplay.service and aapd.service load it with LD_PRELOAD only when their
+ * boot step armed this start: it wrote /run/woc-preload/<name>.env, which
+ * the tool's drop-in names with EnvironmentFile=-, so without that file the
+ * service starts as it ships. The env names the plan (WOC_PATCH_PLAN) and
+ * the result file (WOC_PATCH_RESULT).
  *
- * The plan is made by carplay_patch.js plan, as root, from the binary on
- * disk with the patcher's own locator and checks: the build-id, and one
- * line per edit region with its address, the bytes the build ships there
- * and the bytes to write. This library finds nothing by itself. It applies
- * every edit or none:
+ * The plan is made by the patcher's `plan` (carplay_patch.js,
+ * aapd_patch.js), as root, from the binary on disk with the patcher's own
+ * locator and checks: the build-id, and one line per edit region with its
+ * address, the bytes the build ships there and the bytes to write. This
+ * library finds nothing by itself. It applies every edit or none:
  *
  *   - the main program's GNU build-id must be the plan's: any other program
- *     (one carplay starts, inheriting LD_PRELOAD) is left alone and writes
- *     no result;
+ *     (one the service starts, inheriting LD_PRELOAD) is left alone and
+ *     writes no result;
  *   - the plan must be whole (a known version, every line well formed, its
  *     closing line with the edit count) and hold only kinds this library
  *     knows;
@@ -33,15 +33,15 @@
  * executable while it is written (read, write and execute for that
  * moment): libraries' constructors start threads before this one runs
  * (libdlt's dlt_receiver and dlt_segmented in carplay), and a page they
- * might run must never lose execute. None of them runs carplay's own code
- * yet: its constructors and main have not run, and the edits are in that
- * code and its read-only data. A failure before
+ * might run must never lose execute. None of them runs the program's own
+ * code yet: its constructors and main have not run, and the edits are in
+ * that code and its read-only data. A failure before
  * any write changes nothing; one after (an mprotect refused) makes every
  * page writable again, writes the stock bytes back and restores the
  * protections. Only a page that cannot get its protection back ends the
  * process (abort), which boot recovery counts as a crash of an armed
  * start. The result, applied or not and why, goes to WOC_PATCH_RESULT (a
- * file the boot step created for carplay's user; never created here) and
+ * file the boot step created for the service's user; never created here) and
  * to stderr, the journal.
  *
  * Built with the unit's toolchain (gcc 7.5, glibc 2.27). Exports nothing.
@@ -165,7 +165,7 @@ static const char *field(const char **at, const char *end, size_t *len) {
 
 static int is(const char *s, size_t len, const char *word) { return len == strlen(word) && memcmp(s, word, len) == 0; }
 
-/* The plan (carplay_patch.js plan, "wocplan 1"):
+/* The plan (the patcher's plan, "wocplan 1"):
  *   wocplan 1
  *   build-id <hex>
  *   edit <name> <vaddr hex> <stock hex> <patched hex>     (one per region)
@@ -367,7 +367,7 @@ static int apply(void) {
     if (failed) {
         /* A page kept its writable protection: every page writable again
          * (each was, a moment ago), the stock bytes back, then each page its
-         * segment's protection. carplay cannot run with a page that does
+         * segment's protection. The program cannot run with a page that does
          * not get it back. */
         static const char msg[] = "wocpatch: a page could not get its protection back; aborting\n";
         for (int k = 0; k < n; k++)

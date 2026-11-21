@@ -729,10 +729,14 @@ function regionNames(c) {
  * check tells a process running another mode's sink apart). Each region
  * lies in one file-backed PT_LOAD part. { text, edits (the regions that
  * change) } or { err }. */
-function planText(buf, out, c) {
-    var elf = locator.elf.parseElf(buf), names = regionNames(c), lines = ['wocplan 1', 'build-id ' + c.loc.buildId], edits = [];
-    if (!elf.load || !c.loc.buildId) return { err: 'no ELF load segments or no build-id' };
-    var rs = regions(c);
+function planText(buf, out, c) { return planOf(buf, out, regions(c), regionNames(c), c.loc.buildId); }
+
+/* The plan of the edit regions rs ([[offset, length]], named by `names`)
+ * between `buf` and its edited image `out`, for the build `id` (aapd's
+ * plan is made here too). { text, edits } or { err }. */
+function planOf(buf, out, rs, names, id) {
+    var elf = locator.elf.parseElf(buf), lines = ['wocplan 1', 'build-id ' + id], edits = [];
+    if (!elf.load || !id) return { err: 'no ELF load segments or no build-id' };
     for (var i = 0; i < rs.length; i++) {
         var off = rs[i][0], len = rs[i][1];
         var seg = elf.load.filter(function (s) { return off >= s.off && off + len <= s.off + s.size; })[0];
@@ -926,7 +930,7 @@ function foreignIn(target) {
 
 /* edited, classify, resFor and sinkUrlFor: the image an earlier release's
  * apply wrote, for the tests' fixtures. */
-module.exports = { trustedBackup: trustedBackup, PROVEN: PROVEN, parsePlan: parsePlan, overlay: overlay, againstPlan: againstPlan,
+module.exports = { trustedBackup: trustedBackup, PROVEN: PROVEN, parsePlan: parsePlan, overlay: overlay, againstPlan: againstPlan, planOf: planOf,
     foreignIn: foreignIn, edited: edited, classify: classify, resFor: resFor, sinkUrlFor: sinkUrlFor };
 
 if (require.main === module) main();

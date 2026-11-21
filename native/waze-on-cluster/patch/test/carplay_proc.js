@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Robert Nisipeanu
 'use strict';
-/* carplay's process in a fake /proc (WOC_PROC), for the host tests of the
- * patch in memory: <proc>/<pid>/exe is a hard link to the file it runs (its
- * inode), maps maps that file at BASE from offset 0, and mem holds each
- * loaded segment of the file at BASE plus its address, as inmem.js's memory
- * check reads it. A start the boot step armed (<run>/carplay.env, with the
- * plan at <run>/carplay.plan) holds the plan's bytes at its sites, as
- * libwocpatch.so writes them, and its result (<run>/carplay.result, when the
- * boot step made that file) names the pid. carplay is one process: a start
- * ends any other in the fake /proc.
+/* carplay's or aapd's process in a fake /proc (WOC_PROC), for the host
+ * tests of the patches in memory: <proc>/<pid>/exe is a hard link to the
+ * file it runs (its inode), maps maps that file at BASE from offset 0, and
+ * mem holds each loaded segment of the file at BASE plus its address, as
+ * inmem.js's memory check reads it. A start the boot step armed
+ * (<run>/<name>.env, with the plan at <run>/<name>.plan) holds the plan's
+ * bytes at its sites, as libwocpatch.so writes them, environ holds the env
+ * file's variables, and its result (<run>/<name>.result, when the boot step
+ * made that file) names the pid. The service is one process: a start ends
+ * any other in the fake /proc.
  */
 var fs = require('fs');
 var path = require('path');
@@ -34,20 +35,22 @@ function writeMem(memFile, buf) {
     } finally { fs.closeSync(fd); }
 }
 
-/* carplay started as process pid from file; runDir: the boot step's folder
- * (WOC_PRELOAD_DIR). 'patched' when the start was armed and the library
- * applied the plan, 'refused' when it was armed and the library refused it,
- * else 'stock'. */
-function start(proc, pid, file, runDir) {
+/* The service `name` (default carplay) started as process pid from file;
+ * runDir: the boot step's folder (WOC_PRELOAD_DIR). 'patched' when the start
+ * was armed and the library applied the plan, 'refused' when it was armed
+ * and the library refused it, else 'stock'. */
+function start(proc, pid, file, runDir, name) {
+    name = name || 'carplay';
     stop(proc);
     var pd = path.join(proc, String(pid)), buf = fs.readFileSync(file), how = 'stock';
     fs.mkdirSync(pd);
     fs.linkSync(file, path.join(pd, 'exe'));
     fs.writeFileSync(path.join(pd, 'maps'), '00000800-00000900 r--p 00000000 00:01 1 /lib/ld-linux-x86-64.so.2\n' +
-        BASE.toString(16).padStart(8, '0') + '-00400000 r-xp 00000000 fd:00 ' + fs.statSync(file).ino + ' /usr/bin/carplay\n');
-    var env = runDir ? path.join(runDir, 'carplay.env') : null, plan = runDir ? path.join(runDir, 'carplay.plan') : null;
+        BASE.toString(16).padStart(8, '0') + '-00400000 r-xp 00000000 fd:00 ' + fs.statSync(file).ino + ' /usr/bin/' + name + '\n');
+    var env = runDir ? path.join(runDir, name + '.env') : null, plan = runDir ? path.join(runDir, name + '.plan') : null;
+    fs.writeFileSync(path.join(pd, 'environ'), env && fs.existsSync(env) ? fs.readFileSync(env, 'utf8').split('\n').filter(Boolean).join('\0') + '\0' : 'PATH=/bin\0');
     if (env && fs.existsSync(env) && fs.existsSync(plan)) {
-        var o = require('../carplay_patch.js').overlay(buf, fs.readFileSync(plan, 'utf8')), result = path.join(runDir, 'carplay.result');
+        var o = require('../carplay_patch.js').overlay(buf, fs.readFileSync(plan, 'utf8')), result = path.join(runDir, name + '.result');
         if (o.err) how = 'refused';
         else { buf = o.buf; how = 'patched'; }
         if (fs.existsSync(result)) {

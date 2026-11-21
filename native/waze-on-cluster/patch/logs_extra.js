@@ -13,6 +13,11 @@
  *                          the patchers' records (patch_record.js)
  *       aa-boot-recovery.json
  *                          the aapd boot recovery's state (recovery.js)
+ *       inmem-carplay.json, inmem-aapd.json
+ *                          the records of the patches in memory (inmem.js)
+ *       inmem-carplay-result.json, inmem-aapd-result.json
+ *                          what libwocpatch.so did at the last armed start
+ *                          of this boot
  *       restart-record-<n>-<boot id>-<recmgr|crashhandler>.xml
  *                          the restart records the carplay boot step kept
  *                          (recovery.js keepRestartRecords)
@@ -220,6 +225,10 @@ function report(dir) {
         ['patch-record-carplay.json', fileText(r('/usr/bin/carplay.woc-patch.json'))],
         ['patch-record-aapd.json', fileText(r('/usr/bin/aapd.woc-patch.json'))],
         ['aa-boot-recovery.json', fileText(r('/var/opt/waze-on-cluster/aa-boot-recovery.json'))],
+        ['inmem-carplay.json', fileText(r('/var/opt/waze-on-cluster/inmem-carplay.json'))],
+        ['inmem-aapd.json', fileText(r('/var/opt/waze-on-cluster/inmem-aapd.json'))],
+        ['inmem-carplay-result.json', fileText(r('/run/woc-preload/carplay.result'))],
+        ['inmem-aapd-result.json', fileText(r('/run/woc-preload/aapd.result'))],
         ['coding.txt', codingText],
         ['deploy.txt', deployText],
     ].concat(names.map(function (n) { return ['restart-record-' + n, fileText(path.join(records, n))]; })));

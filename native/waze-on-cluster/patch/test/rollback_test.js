@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Robert Nisipeanu
-/* Every released carplay patcher against this version (PATCH.md
- * "Rollback"): each release's own carplay_patch.js and boot recovery, taken
- * from its release tag, acting on carplay as this version leaves it (stock
- * on disk, the patch in memory), and this version acting on a carplay each
+/* Every released carplay and aapd patcher against this version (PATCH.md
+ * "Rollback"): each release's own patchers and boot recovery, taken from its
+ * release tag, acting on carplay and aapd as this version leaves them (stock
+ * on disk, the patches in memory), and this version acting on files each
  * release patched: its boot recovery, Remove patch and removal end stock,
- * and its activate puts carplay back to stock and plans the patch in
- * memory. This version never writes a patch into the file. Boot recovery is
- * each release's own restore code (what its boot step and watcher run once
- * carplay failed enough), called directly; the crash count that leads there
- * is recovery_test.js's.
+ * and its activate puts the files back to stock and plans the patch in
+ * memory. This version never writes a patch into the files. Boot recovery
+ * is each release's own restore code (what its boot step and watcher run
+ * once the service failed enough), called directly; the crash count that
+ * leads there is recovery_test.js's.
  *
  * The releases, grouped by what their patcher and boot recovery do:
  *   A 0.5.0-0.6.3  fixed 22.28.3 offsets; revert restores the edits' bytes
@@ -41,9 +41,16 @@
  *
  * With CARPLAY_BIN every release runs on a copy of carplay 22.28.3; without
  * it B-G run on a synthetic build (synthetic_carplay.js), A not at all.
+ *
+ * Android Auto (part 7, with AAPD_BIN and AAPD_CONF, aapd 22.39.3 and its
+ * aapd.conf): every release from 0.8.0 to 0.12.0 writes its patch to aapd
+ * and aapd.conf; 0.8.0-0.10.10 a self-start guard this version's locator
+ * reads as outdated, 0.10.11-0.12.0 this version's. Each release over the
+ * files as this version leaves them, and this version over each release's
+ * patch.
  * The release tags come from the repository's git, fetched when missing.
  *
- *   [CARPLAY_BIN=<carplay 22.28.3>] node rollback_test.js
+ *   [CARPLAY_BIN=<carplay 22.28.3>] [AAPD_BIN=<aapd> AAPD_CONF=<aapd.conf>] node rollback_test.js
  */
 'use strict';
 
@@ -536,6 +543,114 @@ REPS.forEach(function (p) {
     ok('this version over the patch in memory: a crash loop and Remove patch leave carplay stock and the plan armable, its activate plans again over stock',
         live && recH === 'stock' && recKind !== 'null' && (rmH === 'stock' || rmH === 'refused-stock') && rmKind !== 'null' && up === 'planned',
         [live, rec, recH, recKind, rmH, rmKind, up].join(' '));
+})();
+
+/* 7. Android Auto: aapd and aapd.conf, every release from 0.8.0 (its own
+ * aapd_patch.js and boot recovery) against this version. */
+var AAPD_BIN = process.env.AAPD_BIN || '', AAPD_CONF = process.env.AAPD_CONF || '';
+(function () {
+    if (!fs.existsSync(AAPD_BIN) || !fs.existsSync(AAPD_CONF)) { process.stdout.write('(Android Auto skipped: set AAPD_BIN and AAPD_CONF)\n'); return; }
+    var AA_STOCK = fs.readFileSync(AAPD_BIN), AA_CONF = fs.readFileSync(AAPD_CONF);
+    var A = path.join(W, 'aapd'), AC = path.join(W, 'aapd.conf'), DF = path.join(W, 'df');
+    fs.writeFileSync(DF, '#!/bin/sh\necho "Filesystem 1024-blocks Used Available Capacity Mounted"\necho "/dev/root 999999 1 1048576 1% /"\n', { mode: 0o755 });
+    var AENV = Object.assign({}, IENV, { WOC_AAPD: A, WOC_AAPD_CONF: AC, WOC_DF: DF, WOC_AAPD_RUN_CONF: path.join(W, 'run-aapd.conf') });
+    var AFILES = ['', '.woc-orig', '.woc-orig.json', '.woc-patch.json', '.woc-running'];
+    function aClear() { [A, AC].forEach(function (f) { AFILES.forEach(function (x) { try { fs.unlinkSync(f + x); } catch (e) {} }); }); }
+    function aStock() { aClear(); fs.writeFileSync(A, AA_STOCK, { mode: 0o755 }); fs.writeFileSync(AC, AA_CONF, { mode: 0o644 }); }
+    function aSnap() { var o = {}; [A, AC].forEach(function (f) { AFILES.forEach(function (x) { try { o[f + x] = fs.readFileSync(f + x); } catch (e) {} }); }); return o; }
+    function aPut(snap) { aClear(); Object.keys(snap).forEach(function (f) { fs.writeFileSync(f, snap[f], { mode: /\.woc-/.test(f) ? 0o600 : f === A ? 0o755 : 0o644 }); }); }
+    /* 'stock' (both files as they ship, no backup of ours), else what differs */
+    function aHolds() {
+        var a = fs.readFileSync(A).equals(AA_STOCK), c = fs.readFileSync(AC).equals(AA_CONF), b = fs.existsSync(A + '.woc-orig') || fs.existsSync(AC + '.woc-orig');
+        return a && c ? (b ? 'stock, backups' : 'stock') : !a && !c ? 'patched' : !a ? 'aapd patched' : 'aapd.conf patched';
+    }
+    function aPatcher(d, args) {
+        var r = cp.spawnSync(process.execPath, [path.join(d, 'aapd_patch.js')].concat(args, ['--target', A, '--conf', AC, '--coding', car.CODING]), { encoding: 'utf8', env: AENV });
+        return { code: r.status, out: (r.stdout || '') + (r.stderr || '') };
+    }
+    var ADRIVER = path.join(dir, 'recover-aa.js');
+    fs.writeFileSync(ADRIVER, [
+        '"use strict";',
+        'var rec = require(process.argv[2] + "/recovery.js"), t = rec.TARGETS.aapd;',
+        'function done(e, r) { process.stdout.write("RESULT " + (e ? "error " + e.message : "ok " + (r || "")) + "\\n"); process.exit(0); }',
+        'if (!t) { process.stdout.write("RESULT none\\n"); process.exit(0); }',
+        'if (rec.restoreTarget) { if (rec.restoreTarget.length >= 5) rec.restoreTarget(t, false, 3, done); else rec.restoreTarget(t, false, done); }',
+        'else { var r = new rec.Recovery({ target: t }); if (r._restore.length >= 2) r._restore(3, done); else r._restore(done); }'].join('\n'));
+    function aRecover(d) {
+        var r = cp.spawnSync(process.execPath, [ADRIVER, d], { encoding: 'utf8', env: AENV, timeout: 60000 });
+        var m = /^RESULT (.*)$/m.exec(r.stdout || '');
+        return m ? m[1] : 'no result: ' + ((r.stdout || '') + (r.stderr || '')).slice(-200);
+    }
+    function aInmem(fn) {
+        var r = cp.spawnSync(process.execPath, ['-e', fn, path.join(NEW, 'inmem.js'), car.CODING], { encoding: 'utf8', env: AENV, timeout: 120000 });
+        return (r.stdout || '').trim() || (r.stderr || '').trim().slice(-200);
+    }
+    function aKind() { return aInmem('console.log(String(require(process.argv[1]).kind("aapd")))'); }
+    function aPlan() {
+        return aInmem('require(process.argv[1]).makePlan("aapd", ["--conf", process.env.WOC_AAPD_CONF, "--coding", process.argv[2]], 60000, function (e) { console.log(e ? "ERR " + e.message : "OK"); })');
+    }
+    /* This version's activate, as patchd's inmemApply steps it: files with
+     * another change than ours, or ones the patcher cannot read, are left;
+     * an earlier release's patch, or our backups, are put back to stock with
+     * the backups dropped; then the plan is made from the stock files. */
+    function aActivate() {
+        var st = aPatcher(NEW, ['status']).out;
+        if (/known:\s+NO/.test(st) || /^foreign:\s+yes$/m.test(st)) return 'left';
+        if (/^restorable:\s+yes$/m.test(st) || fs.existsSync(A + '.woc-orig') || fs.existsSync(AC + '.woc-orig')) {
+            var rv = aPatcher(NEW, ['revert', '--yes', '--drop-backup']);
+            if (rv.code !== 0) return 'revert failed: ' + rv.out.slice(-160);
+        }
+        var mp = aPlan();
+        if (mp !== 'OK') return 'plan: ' + mp;
+        return aHolds() === 'stock' && aKind() !== 'null' ? 'planned' : 'not stock: ' + aHolds();
+    }
+    function aClearInmem() { fs.readdirSync(SD).filter(function (f) { return /aapd/.test(f); }).forEach(function (f) { try { fs.unlinkSync(path.join(SD, f)); } catch (e) {} }); }
+
+    var AA_RELEASES = RELEASES.filter(function (v) { return fs.existsSync(path.join(dir, 'rel', v, 'aapd_patch.js')); });
+    ok('every release with an aapd patcher, 0.8.0 to 0.12.0, is tested', AA_RELEASES[0] === '0.8.0' && AA_RELEASES.indexOf('0.10.10') >= 0 &&
+        AA_RELEASES.indexOf('0.10.11') >= 0 && AA_RELEASES.indexOf('0.12.0') >= 0, AA_RELEASES.join(' '));
+    aStock(); aClearInmem();
+    var mp0 = aPlan();
+    ok('this version plans Android Auto in memory over stock files, writing neither', mp0 === 'OK' && aHolds() === 'stock' && aKind() !== 'null', mp0);
+    var inmemState = aSnap();
+    function fresh() { aPut(inmemState); return aPlan() === 'OK' && aKind() !== 'null'; }
+    aClearInmem();
+    AA_RELEASES.forEach(function (v) {
+        var d = path.join(dir, 'rel', v);
+        /* 1. After this version's deactivate (stock, no backup of ours):
+         * the release's activate, a crash loop under it, its Remove patch
+         * and its removal. */
+        aStock(); aClearInmem();
+        var r = aPatcher(d, ['apply', '--yes']), patched = r.code === 0 && aHolds() === 'patched', relPatch = aSnap();
+        var rec = aRecover(d), recH = rec === 'none' ? 'n/a' : aHolds();
+        aPut(relPatch); r = aPatcher(d, ['revert', '--yes']); var rmH = r.code === 0 ? aHolds() : 'refused';
+        aPut(relPatch); r = aPatcher(d, ['revert', '--yes', '--drop-backup']); var unH = r.code === 0 ? aHolds() : 'refused';
+        ok(v + ' after this version\'s deactivate: its Android Auto patch, a crash loop ends stock, Remove patch and removal stock',
+            patched && (recH === 'stock, backups' || recH === 'stock' || recH === 'n/a') && (rmH === 'stock, backups' || rmH === 'stock') && unH === 'stock',
+            [patched, rec, recH, rmH, unH].join(' | '));
+        /* 2. This version over the release's patch (an update, one skipping
+         * versions, an update cut short). */
+        aPut(relPatch); rec = aRecover(NEW); var nRec = aHolds();
+        aPut(relPatch); r = aPatcher(NEW, ['revert', '--yes']); var nRm = r.code === 0 ? aHolds() : 'refused';
+        aPut(relPatch); r = aPatcher(NEW, ['revert', '--yes', '--drop-backup']); var nUn = r.code === 0 ? aHolds() : 'refused';
+        aPut(relPatch); aClearInmem(); var up = aActivate();
+        ok(v + '\'s Android Auto patch under this version: a crash loop ends stock, Remove patch and removal stock, its activate puts both files back and plans in memory',
+            /^stock/.test(nRec) && /^stock/.test(nRm) && nUn === 'stock' && up === 'planned', [rec, nRec, nRm, nUn, up].join(' | '));
+        aClearInmem();
+        /* 6. The release over this version's layout: its crash loop and
+         * Remove patch leave the files stock and the plan armable, its
+         * activate patches the files; this version then arms nothing over
+         * that patch and restores it to stock. */
+        var live = fresh(); rec = aRecover(d); var lRec = aHolds(), lKind = aKind();
+        live = fresh() && live; r = aPatcher(d, ['revert', '--yes']); var lRm = aHolds(), lRmKind = aKind();
+        live = fresh() && live; r = aPatcher(d, ['apply', '--yes']); var lAp = r.code === 0 ? aHolds() : 'failed', lApKind = aKind();
+        var back = aRecover(NEW), backH = aHolds();
+        ok(v + ' over the Android Auto patch in memory: a crash loop and Remove patch leave the files stock and the plan armable, its activate patches them; ' +
+            'this version then arms nothing over that patch and restores it to stock',
+            live && /^stock/.test(lRec) && lKind !== 'null' && /^stock/.test(lRm) && lRmKind !== 'null' && lAp === 'patched' && lApKind === 'null' && /^stock/.test(backH),
+            [live, rec, lRec, lKind, lRm, lRmKind, lAp, lApKind, back, backH].join(' | '));
+        aClearInmem();
+    });
 })();
 
 process.stdout.write((BIN ? '' : '\n(group A needs CARPLAY_BIN)\n') + (fails ? ('\n' + fails + ' check(s) failed\n') : '\nall checks passed\n'));

@@ -2,20 +2,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Robert Nisipeanu
 # woc-patch.sh — read the carplay and aapd patches' state on the unit, and
-# undo them by hand without the app, with / remounted read-write for the
-# write, then read-only again on any exit. carplay's patch is applied in its
-# memory (PATCH.md "In memory"); `revert` puts back a carplay an earlier
-# release patched in the file. Run it deliberately, with the car parked and
-# on stable power.
+# undo them by hand without the app. Both patches are applied in the
+# services' memory (PATCH.md "In memory"): `off` and `aa-off` turn them off;
+# `revert` and `aa-revert` put back files an earlier release patched, with /
+# remounted read-write for the write, then read-only again on any exit. Run
+# it deliberately, with the car parked and on stable power.
 #
 #   woc-patch.sh status
 #   woc-patch.sh probe [<file>]                 # where the edit sites are, read-only
 #   woc-patch.sh off                            # turn carplay's patch in memory off (its next start runs stock)
 #   woc-patch.sh revert
 #   woc-patch.sh verify
-#   woc-patch.sh aa-status                      # Android Auto's patch: aapd and aapd.conf
+#   woc-patch.sh aa-status                      # Android Auto's patch: aapd and aapd.conf on disk
 #   woc-patch.sh aa-probe [<file>]              # where its edit sites are in aapd, read-only
-#   woc-patch.sh aa-revert                      # restore both
+#   woc-patch.sh aa-off                         # turn Android Auto's patch in memory off (aapd's next start runs stock)
+#   woc-patch.sh aa-revert                      # restore both files
 #
 # revert and aa-revert restore from our verified backups; on carplay
 # 22.28.3, aapd 22.39.3 and its aapd.conf they also work without them, from
@@ -82,6 +83,13 @@ case "$cmd" in
     # shellcheck disable=SC2086
     exec "$NODE" "$AA_PATCHER" status $AA_FILES ;;
   aa-probe) exec "$NODE" "$AA_PATCHER" probe "$@" ;;
+  aa-off)
+    # As Android Auto's Remove patch button turns it off: this boot's next
+    # aapd start and every later one run aapd as it ships. Only /var/opt and
+    # /run are written.
+    "$NODE" -e 'var m = require(process.argv[1]); m.disarm("aapd"); if (m.readRecord("aapd")) m.disable("aapd", { by: "user" }); console.log("aapd patch in memory off");' "$HERE/inmem.js"
+    echo "aapd runs as it ships from its next start (a head-unit restart)."
+    ;;
   aa-revert)
     # Extra flags pass through (--force restores over another aapd build).
     trap 'sync; "$MOUNT" -o remount,ro / 2>/dev/null || true' EXIT INT TERM HUP
@@ -92,6 +100,6 @@ case "$cmd" in
     echo "Reverted. $(aa_activation)"
     ;;
   *)
-    echo "usage: woc-patch.sh status|probe [<file>]|off|revert|verify|aa-status|aa-probe [<file>]|aa-revert" >&2
+    echo "usage: woc-patch.sh status|probe [<file>]|off|revert|verify|aa-status|aa-probe [<file>]|aa-off|aa-revert" >&2
     exit 2 ;;
 esac

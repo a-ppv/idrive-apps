@@ -275,6 +275,11 @@
       "unit": "carplay.service",
       "name": "50-waze-on-cluster.conf",
       "from": "systemd/carplay.service.d/50-waze-on-cluster.conf"
+    },
+    {
+      "unit": "aapd.service",
+      "name": "50-waze-on-cluster.conf",
+      "from": "systemd/aapd.service.d/50-waze-on-cluster.conf"
     }
   ],
   "recmgr": [

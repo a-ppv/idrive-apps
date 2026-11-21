@@ -71,9 +71,13 @@
  * crash or a SIGKILL patchd did not send, never stop or restart: carplay's
  * bounded by START_DELAYS_MS per boot, aapd's after every end of it, a
  * clean exit too, spaced by AA_START_DELAYS_MS. A crash of the patched aapd
- * restores its original at once (crashThreshold), before that start, so
+ * turns its patch off at once (crashThreshold), before that start, so
  * Android Auto comes back stock and stays so until its Patch button or an
  * update with a newer patch revision applies the patch again.
+ *
+ * Both patches are applied in memory (inmem.js): a restore of one turns it
+ * off, and only a patch an earlier release wrote to the files is put back
+ * by writing them.
  *
  * Node 8.16.2 on the unit. No dependencies.
  */
@@ -124,6 +128,12 @@ function targets(o) {
             name: 'carplay', unit: 'carplay.service', target: o.carplay, files: [o.carplay], floors: [fileMode.EXEC],
             /* the patch applied in memory (inmem.js): armed per start, never written to the file */
             inmem: true,
+            /* our edits in the file beside another change (a conflict) */
+            foreignIn: function () { return require('./carplay_patch.js').foreignIn(o.carplay); },
+            /* the plan's arguments for a patch in the file put back (drec, its record) */
+            planArgs: function (drec) {
+                return ['--panel', 'high', '--coding', CODING].concat(drec && drec.patched === true && drec.proven !== true && drec.trial !== true ? ['--unproven'] : []);
+            },
             check: function (i, cur) {
                 if (!exists(o.carplay + '.woc-orig')) return null;
                 var cpp = require('./carplay_patch.js'), b = cpp.trustedBackup(o.carplay, cur || Buffer.alloc(0));
@@ -142,6 +152,16 @@ function targets(o) {
         },
         aapd: {
             name: 'aapd', unit: 'aapd.service', target: o.aapd, files: [o.aapd, o.aapdConf], floors: [fileMode.EXEC, fileMode.READ],
+            inmem: true,
+            foreignIn: function () { return require('./aapd_patch.js').foreignIn({ target: o.aapd, conf: o.aapdConf, coding: CODING }); },
+            /* the owner's density and turn-card setting, as patchd plans them */
+            planArgs: function (drec) {
+                var ac = require('./aapd_conf.js'), dpi = parseInt(readText(path.join(dir, 'aa-density')), 10), card = readText(path.join(dir, 'aa-card')).trim();
+                if (ac.DENSITIES.indexOf(dpi) < 0) dpi = ac.DEFAULT_DPI;
+                if (ac.CARDS.indexOf(card) < 0) card = ac.DEFAULT_CARD;
+                return ['--conf', o.aapdConf, '--coding', CODING, '--dpi', String(dpi), '--card', card]
+                    .concat(drec && drec.patched === true && drec.proven !== true ? ['--unproven'] : []);
+            },
             check: function (i, cur) {
                 var ap = require('./aapd_patch.js'), f = i ? o.aapdConf : o.aapd;
                 var b = exists(f + '.woc-orig.json') ? ap.trusted(f) : stockBackup(f, aapdStock(i));
@@ -549,15 +569,18 @@ function restoreTarget(t, onlyIfRunning, fails, cb, waitMs, why) {
                     try { fs.linkSync(t.target, t.running); } catch (e) { log('keeping the running ' + t.name + ' linked failed: ' + e.message); }
                 }
                 writes.forEach(function (w) { fileMode.replace(w.file, w.buf, w.want); });
-                /* carplay's patch lives in memory only: a patch in its file
-                 * put back leaves no backup or record of ours beside it. */
-                var putBack = why === 'file' && t.inmem &&
-                    (writes.length ? writes[0].file === t.target && fs.readFileSync(t.target).equals(writes[0].buf) : !bin.out);
+                /* The patches live in memory only: a patch in the files put
+                 * back leaves no backup or record of ours beside them; a file
+                 * left as it is (its backup not trusted, another file than
+                 * its backup) keeps its backup. */
+                var putBack = why === 'file' && t.inmem && writes.every(function (w) { return fs.readFileSync(w.file).equals(w.buf); });
                 if (putBack) {
-                    var b0 = t.backups[0];
-                    [b0, b0 + '.json', b0 + '.tmp', b0 + '.json.tmp', record.recordPath(t.target)].forEach(function (f) {
-                        try { fs.unlinkSync(f); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+                    var gone = [record.recordPath(t.target)];
+                    t.files.forEach(function (f, i) {
+                        var pl = plans[i], b = t.backups[i];
+                        if (pl && !pl.err && !pl.other && b) gone.push(b, b + '.json', b + '.tmp', b + '.json.tmp');
                     });
+                    gone.forEach(function (f) { try { fs.unlinkSync(f); } catch (e) { if (e.code !== 'ENOENT') throw e; } });
                 } else record.write(t.target, !writes.length || why === 'file' ? { patched: false } : refused ? { patched: false, by: 'refused', at: new Date().toISOString() }
                     : { patched: false, by: 'recovery', at: new Date().toISOString(), fails: fails, why: why || 'boot', rev: rev });
                 try { fs.unlinkSync(t.pending); } catch (e) {}   /* the pending patch is gone */
@@ -679,8 +702,11 @@ function Recovery(opts) {
     var self = this;
     var runsTarget = this._runsTarget = opts.runsTarget || function () {
         if (!inmemKind(t)) return lock.inUse(t.target);
-        var r = inmem.result(t.name);
-        return !!r && r.applied === true && r.pid === self._pid && inmem.memState(t.name, self._pid) === 'patched';
+        var r = inmem.result(t.name), rec = inmem.current(t.name);
+        /* A program reading copies (aapd's aapd.conf): started with this
+         * record's ones. */
+        return !!r && r.applied === true && r.pid === self._pid && inmem.memState(t.name, self._pid) === 'patched' &&
+            (!inmem.TARGETS[t.name].copies.length || (!!rec && inmem.runningId(self._pid) === inmem.patchId(rec)));
     };
     this._prove = opts.prove || function (cb) { proveInmem(t, runsTarget, cb); };
     this._probe = opts.probe || function (cb) { probeTarget(t, cb); };
@@ -872,23 +898,22 @@ Recovery.prototype._decide = function (cb) {
     }
     var kind = patchKind(t), inMem = !!inmemKind(t);
     if (!inMem && t.inmem) inmem.disarm(t.name);
-    /* carplay's patch is applied in memory only: a patch of ours found in
-     * its file at the boot step (an install whose activate did not get to
-     * it, a patch written by hand) is put back to the original before
-     * carplay starts, whatever the count, and recorded as a patch to plan,
-     * which the boot step plans and arms before carplay starts. A file that
-     * also holds another change is left as it is (a conflict). Only the boot step:
-     * at an install the deploy tool starts the watcher before activate,
-     * which moves such a patch into memory itself. */
-    if (t.inmem && this._bootStep && !inMem && (kind === 'proven' || kind === 'unproven' || kind === 'unknown') &&
-        require('./carplay_patch.js').foreignIn(t.target) !== true) {
+    /* The patches are applied in memory only: a patch of ours found in the
+     * service's files at the boot step (an install whose activate did not
+     * get to it, a patch written by hand) is put back to the original
+     * before the service starts, whatever the count, and recorded as a
+     * patch to plan, which the boot step plans and arms before the service
+     * starts. Files that also hold another change are left as they are (a
+     * conflict). Only the boot step: at an install the deploy tool starts
+     * the watcher before activate, which moves such a patch into memory
+     * itself. */
+    if (t.inmem && this._bootStep && !inMem && (kind === 'proven' || kind === 'unproven' || kind === 'unknown') && t.foreignIn() !== true) {
         if (tallied) this._save(st);
         /* An enabled plan takes the original back by its SHA-256 (adopt);
          * without one the patch is recorded as one to plan. */
         var drec = record.current(t.target), prior = inmem.readRecord(t.name);
         if (!prior || (prior.enabled === true && !prior.planSha256)) {
-            var args = ['--panel', 'high', '--coding', CODING].concat(drec && drec.patched === true && drec.proven !== true && drec.trial !== true ? ['--unproven'] : []);
-            try { inmem.planFailed(t.name, args, 'a patch in carplay\'s file was put back as it ships at the start; planned again'); }
+            try { inmem.planFailed(t.name, t.planArgs(drec), 'a patch in ' + t.name + '\'s files was put back as they ship at the start; planned again'); }
             catch (e) { this._log(t.name + ': recording the patch to plan failed: ' + e.message); }
         }
         this._putBack = true;
@@ -1279,12 +1304,12 @@ function runBoot(name) {
      * After the step put a patch in the file back, an enabled record is
      * planned (when it has no plan) and armed, so this start applies it;
      * the boot's bound still holds over all of it. */
-    (t.inmem ? function (cb) { retryPlan(cb, BOOT_CODING_WAIT_MS, BOOT_PLAN_MS); } : function (cb) { cb(false); })(function () {
+    (t.inmem ? function (cb) { retryPlan(t.name, cb, BOOT_CODING_WAIT_MS, BOOT_PLAN_MS); } : function (cb) { cb(false); })(function () {
         rec.startBoot(function (r) {
             var ir = t.inmem && rec._putBack && r.action !== 'restore-failed' ? inmem.readRecord(t.name) : null;
             if (!ir || ir.enabled !== true) { done(r); return; }
             if (!ir.needsPlan) { rec._decide(done); return; }
-            retryPlan(function (planned) {
+            retryPlan(t.name, function (planned) {
                 if (!planned) { done(r); return; }
                 rec._decide(done);
             }, BOOT_CODING_WAIT_MS, BOOT_PLAN_MS);
@@ -1300,8 +1325,8 @@ function runBoot(name) {
  * this start applies it, and at the watcher's start if that did not get to
  * it. The cluster coding the plan reads is waited for up to waitMs.
  * cb(planned). */
-function retryPlan(cb, waitMs, planMs) {
-    var rec = inmem.readRecord('carplay');
+function retryPlan(name, cb, waitMs, planMs) {
+    var rec = inmem.readRecord(name);
     if (!rec || !rec.needsPlan || rec.enabled !== true) { cb(false); return; }
     var until = Date.now() + (waitMs || 0);
     (function wait() {
@@ -1309,23 +1334,28 @@ function retryPlan(cb, waitMs, planMs) {
         plan();
     })();
     function plan() {
-        log('carplay: planning the patch in memory again (it was: ' + rec.error + ')');
-        inmem.makePlan('carplay', rec.args || [], planMs || 60000, function (err, r) {
+        log(name + ': planning the patch in memory again (it was: ' + rec.error + ')');
+        inmem.makePlan(name, rec.args || [], planMs || 60000, function (err, r) {
             if (err) {
-                log('carplay: planning failed again: ' + err.message + '; carplay runs as it ships');
-                if (err.refused) { try { inmem.remove('carplay'); } catch (e) {} }
-                else { try { inmem.planFailed('carplay', rec.args || [], err.message); } catch (e) {} }
+                log(name + ': planning failed again: ' + err.message + '; ' + name + ' runs as it ships');
+                if (err.refused) { try { inmem.remove(name); } catch (e) {} }
+                else { try { inmem.planFailed(name, rec.args || [], err.message); } catch (e) {} }
             } else {
-                log('carplay: in-memory patch planned (' + r.edits.join(', ') + ')');
-                new Recovery({ target: TARGETS.carplay }).resetCount();
+                log(name + ': in-memory patch planned (' + r.edits.join(', ') + ')');
+                new Recovery({ target: TARGETS[name] }).resetCount();
             }
             cb(!err);
         });
     }
 }
 
+/* The watcher plans what the boot steps did not get to, carplay's then
+ * aapd's, then watches. */
 function runWatcher() {
-    retryPlan(watch, 120000, 60000);
+    retryPlan('carplay', function () {
+        if (!exists(TARGETS.aapd.target)) { watch(); return; }
+        retryPlan('aapd', watch, 120000, 60000);
+    }, 120000, 60000);
 }
 
 /* The watcher follows carplay, and aapd where the unit has it; each has its

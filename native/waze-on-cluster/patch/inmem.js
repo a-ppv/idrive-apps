@@ -1,34 +1,46 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Robert Nisipeanu
 'use strict';
-/* inmem.js — the carplay patch applied in memory (PATCH.md "In memory").
- * /usr/bin/carplay stays as it ships; libwocpatch.so, preloaded into a
- * carplay start the boot step armed, applies the same edits to the process
- * before carplay's own code runs.
+/* inmem.js — the carplay and aapd patches applied in memory (PATCH.md "In
+ * memory"). /usr/bin/carplay and /usr/bin/aapd stay as they ship;
+ * libwocpatch.so, preloaded into a start of the service the boot step
+ * armed, applies the same edits to the process before the program's own
+ * code runs.
  *
- * On /var/opt (no remount of / for any of it):
- *   inmem-carplay.plan   the plan (carplay_patch.js plan): the build-id and,
+ * Per target <name> (carplay, aapd), on /var/opt (no remount of / for any
+ * of it):
+ *   inmem-<name>.plan    the plan (the patcher's `plan`): the build-id and,
  *                        per edit region, its address, stock and patched
  *                        bytes
- *   inmem-carplay.json   the record: {v, enabled, target, ino, size, mtime,
+ *   inmem-<name>.<key>   each copy the plan's program reads in place of a
+ *                        file of its own (aapd: `conf`, aapd.conf with the
+ *                        cluster geometry), written to its place in /run
+ *                        when a start is armed
+ *   inmem-<name>.json    the record: {v, enabled, target, ino, size, mtime,
  *                        sha256, build, planSha256, edits, args, writes,
- *                        proven, trial, at, and when turned off by: "user" |
- *                        "recovery" | "refused" (recovery also fails, why)}
+ *                        rev, inputs, copies, proven, trial, at, and when
+ *                        turned off by: "user" | "recovery" | "refused"
+ *                        (recovery also fails, why)}
  *     It describes the target only while its inode, size and modification
- *     time are the recorded ones, and the plan only while its SHA-256 is.
- *     A plan that could not be made: {v, enabled, needsPlan, args, error}.
+ *     time are the recorded ones, those of each input (aapd.conf, which a
+ *     copy is made from) too, and the plan and each copy only while their
+ *     SHA-256 are. A plan that could not be made: {v, enabled, needsPlan,
+ *     args, error}.
  *
- * In /run (gone at every head-unit start), written by arm() before carplay
- * starts, only while the record is current and enabled:
- *   /run/woc-preload/carplay.plan    the plan, readable by carplay's user
- *   /run/woc-preload/carplay.result  empty, owned by carplay's user: the
- *                                    library writes its result there
- *   /run/woc-preload/carplay.env     LD_PRELOAD (the unit's own preloads,
- *                                    then this version's library),
- *                                    WOC_PATCH_PLAN, WOC_PATCH_RESULT;
- *                                    written last. The tool's carplay.service
- *                                    drop-in reads it with EnvironmentFile=-,
- *                                    so without it carplay starts stock.
+ * In /run (gone at every head-unit start), written by arm() before the
+ * service starts, only while the record is current and enabled:
+ *   /run/woc-preload/<name>.plan    the plan, readable by the service's user
+ *   /run/woc-preload/<name>.result  empty, owned by the service's user: the
+ *                                   library writes its result there
+ *   each copy at its place (aapd: /run/aapd.conf), readable by all
+ *   /run/woc-preload/<name>.env     LD_PRELOAD (the unit's own preloads,
+ *                                   then this version's library),
+ *                                   WOC_PATCH_PLAN, WOC_PATCH_RESULT and
+ *                                   WOC_PATCH_ID (the plan and copies it
+ *                                   was armed with); written last. The
+ *                                   tool's drop-in for the service reads
+ *                                   it with EnvironmentFile=-, so without
+ *                                   it the service starts stock.
  *
  * Node 8 on the unit. No dependencies.
  */
@@ -44,8 +56,17 @@ var PROC = process.env.WOC_PROC || '/proc';
 var SYSTEMCTL = process.env.WOC_SYSTEMCTL || 'systemctl';
 var PASSWD = process.env.WOC_PASSWD || '/etc/passwd';
 
+/* Each target: its unit, its program, the patcher that plans it, the files
+ * besides the program a plan is made from (inputs), and the copies the
+ * planned program reads in their place (copies: {key, run}, the patcher's
+ * `--<key>-out`). */
 var TARGETS = {
-    carplay: { name: 'carplay', unit: 'carplay.service', target: process.env.WOC_CARPLAY || '/usr/bin/carplay' },
+    carplay: { name: 'carplay', unit: 'carplay.service', target: process.env.WOC_CARPLAY || '/usr/bin/carplay', patcher: 'carplay_patch.js',
+               inputs: [], copies: [] },
+    aapd: { name: 'aapd', unit: 'aapd.service', target: process.env.WOC_AAPD || '/usr/bin/aapd', patcher: 'aapd_patch.js',
+            inputs: [process.env.WOC_AAPD_CONF || '/etc/aapd.conf'],
+            /* the path the plan's confpath edit names (aapd_locate.js CONF_RUN) */
+            copies: [{ key: 'conf', run: process.env.WOC_AAPD_RUN_CONF || '/run/aapd.conf' }] },
 };
 
 function paths(name) {
@@ -53,11 +74,25 @@ function paths(name) {
         record: path.join(STATE_DIR, 'inmem-' + name + '.json'),
         armError: path.join(STATE_DIR, 'inmem-' + name + '.armerror'),
         plan: path.join(STATE_DIR, 'inmem-' + name + '.plan'),
+        copies: TARGETS[name].copies.map(function (c) { return { key: c.key, state: path.join(STATE_DIR, 'inmem-' + name + '.' + c.key), run: c.run }; }),
         env: path.join(RUN_DIR, name + '.env'),
         runPlan: path.join(RUN_DIR, name + '.plan'),
         result: path.join(RUN_DIR, name + '.result'),
     };
 }
+
+/* What a start armed with rec runs: the plan and each copy, as one id
+ * (WOC_PATCH_ID in the env file). */
+function patchId(rec) {
+    var c = rec.copies || {};
+    return sha256(Buffer.from(rec.planSha256 + Object.keys(c).sort().map(function (k) { return ' ' + k + '=' + c[k]; }).join('')));
+}
+
+/* The recorded stat of a file: {file, ino, size, mtime}, or null. */
+function statOf(f) {
+    try { var st = fs.statSync(f); return { file: f, ino: st.ino, size: st.size, mtime: st.mtime.getTime() }; } catch (e) { return null; }
+}
+function sameStat(a, b) { return !!a && !!b && a.ino === b.ino && a.size === b.size && a.mtime === b.mtime; }
 
 /* The folder, made where it is missing (Node 8: no recursive mkdir). */
 function ensureDir(d) {
@@ -95,12 +130,15 @@ function readRecord(name) {
     return r && typeof r === 'object' && r.v === 1 ? r : null;
 }
 
-/* Whether the record describes the target as it is now and the plan on
- * /var/opt is the one it names. */
+/* Whether the record describes the target and its inputs as they are now,
+ * and the plan and copies on /var/opt are the ones it names. */
 function describes(name, rec) {
-    var st, t = TARGETS[name], plan = readOr(paths(name).plan);
+    var st, t = TARGETS[name], p = paths(name), plan = readOr(p.plan);
     try { st = fs.statSync(t.target); } catch (e) { return false; }
-    return !!rec && rec.ino === st.ino && rec.size === st.size && rec.mtime === st.mtime.getTime() && !!plan && sha256(plan) === rec.planSha256;
+    if (!rec || rec.ino !== st.ino || rec.size !== st.size || rec.mtime !== st.mtime.getTime() || !plan || sha256(plan) !== rec.planSha256) return false;
+    var ins = rec.inputs || [];
+    if (ins.length !== t.inputs.length || t.inputs.some(function (f, i) { return !ins[i] || ins[i].file !== f || !sameStat(ins[i], statOf(f)); })) return false;
+    return p.copies.every(function (c) { var b = readOr(c.state); return !!b && !!rec.copies && sha256(b) === rec.copies[c.key]; });
 }
 
 /* The record while it describes the target and is enabled, else null. */
@@ -134,33 +172,44 @@ function refusal(words) {
         /in memory needs the pristine build|is not a proven build/.test(words);
 }
 
-/* Makes the plan for the target as it is on disk (carplay_patch.js plan,
- * the same checks as the edits it plans), and on success writes it with a
- * record, enabled. cb(err, rec): err.refused with the patcher's own words
- * when it refuses the file (a conflict, not a failure). */
+/* Makes the plan for the target as it is on disk (its patcher's `plan`,
+ * the same checks as the edits it plans), and on success writes it, with
+ * each copy, and a record, enabled. cb(err, rec): err.refused with the
+ * patcher's own words when it refuses the file (a conflict, not a
+ * failure). */
 function makePlan(name, args, timeoutMs, cb) {
-    var t = TARGETS[name], p = paths(name), tmp = p.plan + '.new.' + process.pid, st0, from = t.target;
+    var t = TARGETS[name], p = paths(name), tmp = p.plan + '.new.' + process.pid, st0, from = t.target, in0;
+    var copyTmp = p.copies.map(function (c) { return c.state + '.new.' + process.pid; });
+    function cleanup() { [tmp].concat(copyTmp).forEach(function (f) { try { fs.unlinkSync(f); } catch (e) {} }); }
     try { st0 = fs.statSync(from); ensureDir(STATE_DIR); } catch (e) { cb(e); return; }
-    cp.execFile(process.execPath, [path.join(__dirname, 'carplay_patch.js'), 'plan', '--target', from, '--out', tmp].concat(args),
+    in0 = t.inputs.map(statOf);
+    var copyArgs = [];
+    p.copies.forEach(function (c, i) { copyArgs.push('--' + c.key + '-out', copyTmp[i]); });
+    cp.execFile(process.execPath, [path.join(__dirname, t.patcher), 'plan', '--target', from, '--out', tmp].concat(copyArgs, args),
         { timeout: timeoutMs || 60000 }, function (err, out, errOut) {
         var m = /^error: (.*)$/m.exec((errOut || '') + ''), sum = null;
         if (err) {
-            try { fs.unlinkSync(tmp); } catch (e) {}
+            cleanup();
             var e = new Error(m ? m[1] : err.message);
             if (m && refusal(m[1])) e.refused = m[1];
             cb(e);
             return;
         }
-        try { sum = JSON.parse(((out || '') + '').trim().split('\n').pop()); } catch (e2) { cb(new Error('plan: no summary')); return; }
-        var st1;
-        try { st1 = fs.statSync(from); } catch (e3) { cb(e3); return; }
-        if (st1.ino !== st0.ino || st1.size !== st0.size || st1.mtime.getTime() !== st0.mtime.getTime()) {
-            try { fs.unlinkSync(tmp); } catch (e) {}
-            cb(new Error(from + ' changed while the plan was made'));
+        try { sum = JSON.parse(((out || '') + '').trim().split('\n').pop()); } catch (e2) { cleanup(); cb(new Error('plan: no summary')); return; }
+        var st1, in1 = t.inputs.map(statOf);
+        try { st1 = fs.statSync(from); } catch (e3) { cleanup(); cb(e3); return; }
+        if (st1.ino !== st0.ino || st1.size !== st0.size || st1.mtime.getTime() !== st0.mtime.getTime() ||
+            in1.some(function (x, i) { return !sameStat(x, in0[i]); })) {
+            cleanup();
+            cb(new Error(from + (t.inputs.length ? ' or ' + t.inputs.join(', ') : '') + ' changed while the plan was made'));
             return;
         }
+        var copies = {}, inputs = in1.map(function (x, i) { return Object.assign(x, { sha256: sum.inputs ? sum.inputs[Object.keys(sum.inputs)[i]] : null }); });
+        try { p.copies.forEach(function (c, i) { copies[c.key] = sha256(fs.readFileSync(copyTmp[i])); }); } catch (e5) { cleanup(); cb(e5); return; }
+        if (p.copies.some(function (c) { return !sum.copies || sum.copies[c.key] !== copies[c.key]; })) { cleanup(); cb(new Error('plan: a copy does not match its summary')); return; }
         var prior = readRecord(name);
-        var same = !!prior && prior.planSha256 === sum.planSha256 && prior.ino === st1.ino && prior.mtime === st1.mtime.getTime();
+        var same = !!prior && prior.planSha256 === sum.planSha256 && prior.ino === st1.ino && prior.mtime === st1.mtime.getTime() &&
+            JSON.stringify(prior.copies || {}) === JSON.stringify(copies);
         /* Proven carries over only from a patch that ran healthy here and is
          * on, or that the user turned off (Remove patch); one boot recovery
          * turned off goes on trial again. */
@@ -169,16 +218,19 @@ function makePlan(name, args, timeoutMs, cb) {
         var onTrial = !proven && sum.provenBuild && sum.coding !== 'refused';
         var rec = { v: 1, enabled: true, target: t.target, ino: st1.ino, size: st1.size, mtime: st1.mtime.getTime(), sha256: sum.sha256,
             build: sum.build, version: sum.version, planSha256: sum.planSha256, edits: sum.edits, writes: sum.writes, args: args,
-            proven: proven, trial: onTrial, at: new Date().toISOString() };
+            inputs: inputs, copies: copies, proven: proven, trial: onTrial, at: new Date().toISOString() };
+        if (sum.rev) rec.rev = sum.rev;
         try {
             var text = fs.readFileSync(tmp);
             fsyncPath(tmp);
+            p.copies.forEach(function (c, i) { fsyncPath(copyTmp[i]); fs.renameSync(copyTmp[i], c.state); });
             fs.renameSync(tmp, p.plan);
             writeWhole(p.record, JSON.stringify(rec) + '\n');
-            /* Both read back as written, or nothing is relied on. */
-            if (!fs.readFileSync(p.plan).equals(text) || sha256(text) !== rec.planSha256 || JSON.stringify(readRecord(name)) !== JSON.stringify(rec))
-                throw new Error('the plan or its record does not read back as written');
-        } catch (e4) { cb(e4); return; }
+            /* All read back as written, or nothing is relied on. */
+            if (!fs.readFileSync(p.plan).equals(text) || sha256(text) !== rec.planSha256 || JSON.stringify(readRecord(name)) !== JSON.stringify(rec) ||
+                p.copies.some(function (c) { return sha256(fs.readFileSync(c.state)) !== copies[c.key]; }))
+                throw new Error('the plan, a copy or its record does not read back as written');
+        } catch (e4) { cleanup(); cb(e4); return; }
         cb(null, rec);
     });
 }
@@ -196,7 +248,12 @@ function adopt(name) {
     if (!plan || sha256(plan) !== rec.planSha256) return false;
     try { st = fs.statSync(t.target); buf = fs.readFileSync(t.target); } catch (e) { return false; }
     if (buf.length !== rec.size || sha256(buf) !== rec.sha256) return false;
-    try { update(name, { ino: st.ino, mtime: st.mtime.getTime() }); } catch (e) { return false; }
+    /* Each input holding the bytes the plan was made from, by its SHA-256. */
+    var ins = (rec.inputs || []).map(function (x) {
+        var now = statOf(x.file), b = readOr(x.file);
+        return now && b && x.sha256 && sha256(b) === x.sha256 ? Object.assign({}, x, { ino: now.ino, size: now.size, mtime: now.mtime }) : x;
+    });
+    try { update(name, { ino: st.ino, mtime: st.mtime.getTime(), inputs: ins }); } catch (e) { return false; }
     return describes(name, readRecord(name));
 }
 
@@ -224,14 +281,16 @@ function disable(name, fields) {
  * removal of the tool). */
 function remove(name) {
     var p = paths(name);
-    [p.record, p.plan, p.record + '.tmp', p.armError, p.env, p.runPlan, p.result].forEach(function (f) {
+    /* A copy in /run stays: the running program may read it again until it
+     * ends, and /run is empty at the next head-unit start. */
+    [p.record, p.plan, p.record + '.tmp', p.armError, p.env, p.runPlan, p.result].concat(p.copies.map(function (c) { return c.state; })).forEach(function (f) {
         try { fs.unlinkSync(f); } catch (e) { if (e.code !== 'ENOENT') throw e; }
     });
     try { fs.rmdirSync(RUN_DIR); } catch (e) {}
 }
 
-/* The LD_PRELOAD the unit sets itself (carplay.service's Environment=,
- * BMW's libschedconfig), kept in front of ours. */
+/* The LD_PRELOAD the unit sets itself (carplay.service's and aapd.service's
+ * Environment=, BMW's libschedconfig), kept in front of ours. */
 function unitPreload(unit) {
     var out = '';
     try { out = cp.execFileSync(SYSTEMCTL, ['show', unit, '-p', 'Environment'], { timeout: 10000, encoding: 'utf8' }); } catch (e) { return null; }
@@ -259,7 +318,9 @@ function uidOf(user) {
  * version's library. */
 function armed(name) {
     var rec = current(name), p = paths(name), plan = readOr(p.runPlan), env = readOr(p.env, 'utf8');
-    return !!rec && !!env && !!plan && sha256(plan) === rec.planSha256 && env.split('\n')[0].split(/[=\s]/).indexOf(LIB) >= 0;
+    return !!rec && !!env && !!plan && sha256(plan) === rec.planSha256 && env.split('\n')[0].split(/[=\s]/).indexOf(LIB) >= 0 &&
+        env.split('\n').indexOf('WOC_PATCH_ID=' + patchId(rec)) >= 0 &&
+        p.copies.every(function (c) { var b = readOr(c.run); return !!b && sha256(b) === rec.copies[c.key]; });
 }
 
 /* Why the last arm failed (kept on /var/opt for the status), or null. */
@@ -289,6 +350,15 @@ function arm(name, opts) {
         var rd = fs.lstatSync(RUN_DIR);
         if (!rd.isDirectory() || rd.uid !== (process.getuid ? process.getuid() : rd.uid)) throw new Error(RUN_DIR + ' is not our folder');
         fs.chmodSync(RUN_DIR, 0o755);
+        /* Each copy at its place, before the env file names the plan that
+         * points the program at it. A copy a running program reads is
+         * replaced whole, by rename. */
+        p.copies.forEach(function (c) {
+            var b = fs.readFileSync(c.state);
+            if (sha256(b) !== rec.copies[c.key]) throw new Error(c.state + ' is not the copy the plan was made with');
+            var have = readOr(c.run);
+            if (!have || !have.equals(b)) writeWhole(c.run, b, 0o644);
+        });
         if (!keepResult) {
             writeWhole(p.runPlan, fs.readFileSync(p.plan), 0o644);
             try { fs.unlinkSync(p.result); } catch (e) {}
@@ -297,7 +367,8 @@ function arm(name, opts) {
             fs.chmodSync(p.result, 0o644);
             if (process.getuid && process.getuid() === 0) fs.chownSync(p.result, ids.uid, ids.gid);
         }
-        writeWhole(p.env, 'LD_PRELOAD=' + (pre ? pre + ' ' : '') + LIB + '\nWOC_PATCH_PLAN=' + p.runPlan + '\nWOC_PATCH_RESULT=' + p.result + '\n', 0o644);
+        writeWhole(p.env, 'LD_PRELOAD=' + (pre ? pre + ' ' : '') + LIB + '\nWOC_PATCH_PLAN=' + p.runPlan + '\nWOC_PATCH_RESULT=' + p.result +
+            '\nWOC_PATCH_ID=' + patchId(rec) + '\n', 0o644);
         try { fs.unlinkSync(p.armError); } catch (e) {}
         return { armed: true };
     } catch (e) {
@@ -313,6 +384,25 @@ function disarm(name) {
     var p = paths(name), ok = true;
     [p.env, p.runPlan].forEach(function (f) { try { fs.unlinkSync(f); } catch (e) { if (e.code !== 'ENOENT') ok = false; } });
     return ok;
+}
+
+/* The WOC_PATCH_ID the process pid was started with (/proc/<pid>/environ,
+ * root): the plan and copies of the start that armed it, or null for a
+ * start no arm named (stock) or one that cannot be read. */
+function runningId(pid) {
+    var env = readOr(path.join(PROC, String(pid), 'environ'), 'latin1');
+    if (env === null) return null;
+    var m = /(?:^|\0)WOC_PATCH_ID=([0-9a-f]{64})(?:\0|$)/.exec(env);
+    return m ? m[1] : null;
+}
+
+/* Whether the process pid runs the record's patch: its memory holds the
+ * plan at every site and it was started with the record's plan and copies.
+ * null when that cannot be read. */
+function runsCurrent(name, pid) {
+    var rec = readRecord(name), mem = rec ? memState(name, pid) : null;
+    if (!rec || mem === null) return null;
+    return mem === 'patched' && runningId(pid) === patchId(rec);
 }
 
 /* The library's result of this boot: {pid, applied, edits, why}, or null. */
@@ -372,5 +462,6 @@ function memState(name, pid, planText) {
 module.exports = {
     TARGETS: TARGETS, paths: paths, readRecord: readRecord, current: current, kind: kind, describes: describes, update: update,
     makePlan: makePlan, refusal: refusal, armError: armError, adopt: adopt, planFailed: planFailed, disable: disable, remove: remove, arm: arm, armed: armed, disarm: disarm, result: result, memState: memState,
+    patchId: patchId, runningId: runningId, runsCurrent: runsCurrent,
     LIB: LIB, RUN_DIR: RUN_DIR,
 };

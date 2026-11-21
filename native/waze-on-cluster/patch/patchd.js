@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Robert Nisipeanu
-/* patchd — the root helper that applies and reverts the carplay patch when the
- * iDrive app asks, so no shell is needed. It is the same model as
- * mgu-updater: a root daemon on a /dev/shm socket (root:tm_oap_app, 0660) that
- * the unprivileged app drives.
+/* patchd — the root helper that applies and reverts the carplay and Android
+ * Auto patches when the iDrive app asks, so no shell is needed. It is the
+ * same model as mgu-updater: a root daemon on a /dev/shm socket
+ * (root:tm_oap_app, 0660) that the unprivileged app drives.
  *
- * It does two privileged things. On an apply/revert request it runs the vetted,
- * reversible carplay_patch.js (which refuses an unknown binary and keeps a
- * verified backup), with / remounted read-write only for the write. The new
- * binary takes effect when carplay next starts: patchd restarts carplay only
- * when recmgr loaded a carplay restart entry this boot and systemd loaded the
- * tool's carplay.service drop-in (restartCarplay), else at the next head-unit
- * start. It applies no patch on its own. Explicit
+ * It does two privileged things. On an apply/revert request it plans the
+ * patch in memory with the vetted patcher (carplay_patch.js, aapd_patch.js,
+ * which refuse an unknown binary) and arms it (inmem.js), or turns it off; a
+ * patch an earlier release wrote to the files is put back first, from
+ * verified backups, with / remounted read-write only for that write. The
+ * change takes effect when the service next starts: patchd restarts it only
+ * when recmgr loaded its restart entry this boot and systemd loaded the
+ * tool's drop-in for it (restartBlocked), else at the next head-unit start.
+ * It applies no patch on its own. Explicit
  * capture commands go to a separately supervised DLT helper; reading logs does
  * not change tracing mode. It also reads which Wi-Fi band wireless CarPlay
  * runs on (wifi_band.js), from wpa_supplicant's D-Bus, which only root may
@@ -29,8 +31,8 @@
  *                  {"cmd":"revert"}
  *                  {"cmd":"aa-apply"} | {"cmd":"aa-revert"}   the Android Auto patch
  *                  {"cmd":"aa-density","value":n} | {"cmd":"aa-card","value":"shown"|"hidden"}
- *                                   save the choice and, with the patch on disk,
- *                                   apply it (one change per DENSITY_SPACING_MS)
+ *                                   save the choice and, with the patch on,
+ *                                   plan it again (one change per DENSITY_SPACING_MS)
  *                  {"cmd":"reboot"} activate a deferred patch with a normal
  *                                   head-unit restart through NSM (so carplay
  *                                   and aapd next start from the patched
@@ -128,15 +130,16 @@
  * Install-time activation (the deploy tool's activate and deactivate hooks,
  * run as root once a version is in place and before it is removed):
  *
- *   patchd.js activate     applies what CarPlay's Patch button applies to an original or
- *                          an older patch of ours, unless the user reverted
- *                          it or a conflict stands; writes only, never stops
- *                          or restarts carplay: the change waits for the next
+ *   patchd.js activate     arms in memory what each Patch button applies, over
+ *                          the original or an older patch of ours (put back
+ *                          first), unless the user or boot recovery turned it
+ *                          off or a conflict stands; never stops or restarts
+ *                          carplay or aapd: the change waits for the next
  *                          head-unit start (pending apply). Once per unit, on
- *                          HIGH F, it also applies it to the original our
+ *                          HIGH F, it also applies it over the original our
  *                          trusted backup holds (highfReset)
- *   patchd.js deactivate   reverts our patch the same way (pending revert)
- *                          and drops our backup
+ *   patchd.js deactivate   turns both patches off (pending revert), puts back
+ *                          an older patch of ours and drops our backups
  *
  * Each prints a JSON line last: "status" what it did, "reboot" why a head-unit
  * start is needed. It exits non-zero only when it changed nothing and could
@@ -824,7 +827,7 @@ function readState(cb) {
                         ours: es.ours, foreign: foreign, unreadable: !!(err && !text),
                         complete: !err && /^end:\s+complete$/m.test(text) };
         st.diskConflict = conflict;
-        inmemOverlay(st, function () {
+        inmemOverlay(CP, st, function () {
             var waiters = statusWaiters;
             statusWaiters = null;
             waiters.forEach(function (w) { w(st); });
@@ -832,32 +835,38 @@ function readState(cb) {
     });
 }
 
-/* The status of the patch in memory over the file's (st, changed in
- * place): with an enabled record for carplay as it is, the state the
- * overlay of its plan says (carplay_patch.js overlay), patched while the
- * running carplay's memory holds the plan's bytes, else waiting for the
- * next start, or a conflict with the library's reason where it refused
- * for the running carplay; with the record turned off and carplay still
- * running the patch, the removal waiting. */
-function inmemOverlay(st, cb) {
-    var rec = inmem.readRecord('carplay'), cur = inmem.current('carplay');
+/* The status of t's patch in memory over the files' (st, changed in
+ * place): with an enabled record for the files as they are, the state the
+ * overlay of its plan says (the patcher's overlay), patched while the
+ * running process runs the plan (runsPatch), else waiting for the next
+ * start, or a conflict with the library's reason where it refused for the
+ * running process; with the record turned off and the process still
+ * running the patch, the removal waiting. st[t.svc]: deferred while a
+ * change waits. */
+function inmemOverlay(t, st, cb) {
+    var rec = inmem.readRecord(t.name), cur = inmem.current(t.name);
     /* A migration's record that has not adopted the file yet: the file's
      * own state is what runs. */
     if (!rec) { cb(); return; }
     if (rec.needsPlan) {
-        st.state = 'error'; st.carplay = null; st.pending = null;
+        st.state = 'error'; st[t.svc] = null; st.pending = null;
         st.reason = 'the patch in memory could not be planned (' + (rec.error || 'no reason given') + '); it is tried again at the next head-unit start';
         cb();
         return;
     }
-    carplayMem(function (pid, mem) {
+    memOf(t, function (pid, mem) {
         if (!cur) {
-            if (rec.by === 'recovery' && inmem.describes('carplay', rec)) st.recovered = rec.fails || 1;
-            if (mem === 'patched') { st.state = 'unknown'; st.reason = CP.reasons.revert; st.carplay = 'deferred'; st.pending = 'revert'; st.removable = false; }
+            if (rec.by === 'recovery' && inmem.describes(t.name, rec)) {
+                st.recovered = rec.fails || 1;
+                if (t === AA) { st.recoveredWhy = rec.why === 'crash' ? 'crash' : 'boot'; st.recoveredRev = rec.rev || 1; }
+            }
+            if (mem === 'patched') { st.state = 'unknown'; st.reason = t.reasons.revert; st[t.svc] = 'deferred'; st.pending = 'revert'; st.removable = false; }
             cb();
             return;
         }
-        cp.execFile(process.execPath, [PATCHER, 'overlay', '--target', TARGET, '--plan', inmem.paths('carplay').plan], { timeout: tmo(15000) }, function (err, out) {
+        var args = t === AA ? ['overlay'].concat(AA_FILES, ['--plan', inmem.paths('aapd').plan, '--conf-copy', inmem.paths('aapd').copies[0].state])
+            : ['overlay', '--target', TARGET, '--plan', inmem.paths('carplay').plan];
+        cp.execFile(process.execPath, [t.patcher].concat(args), { timeout: tmo(15000) }, function (err, out) {
             var text = (out || '') + '';
             if (err || !/^overlay:\s+ok$/m.test(text)) {
                 st.state = 'unknown';
@@ -865,27 +874,52 @@ function inmemOverlay(st, cb) {
                 cb();
                 return;
             }
-            var es = editState(text, true);
-            st.panel = es.panel; st.res = es.res; st.safe = es.safe; st.mapurl = es.mapurl;
+            var es = t.overlayState(text);
+            Object.keys(es.show).forEach(function (k) { st[k] = es.show[k]; });
             st.removable = true;
-            st.conflict = headUnit.refused() ? notSupported(headUnit.refused()) : codingConflict(st.coding === null ? null : [null, String(st.coding)]) || foreignStart(CP);
-            var res = inmem.result('carplay');
-            if (mem !== 'patched' && !inmem.armed('carplay')) {
+            st.conflict = headUnit.refused() ? notSupported(headUnit.refused()) : codingConflict(st.coding === null || st.coding === undefined ? null : [null, String(st.coding)]) || foreignStart(t);
+            var res = inmem.result(t.name);
+            if (!runsPatch(t, pid, mem) && !inmem.armed(t.name)) {
                 /* Planned but not armed (the library or the unit's user
-                 * missing, /run not writable): carplay's next start runs
-                 * stock, and the next head-unit start tries again. */
-                st.state = 'error'; st.mode = null; st.carplay = null; st.pending = null;
-                st.reason = 'the patch in memory is not armed for carplay\'s next start (' + (((inmem.armError('carplay') || '') + '').trim() || 'see the journal') + ')';
-            } else if (mem === 'patched') { st.state = es.state; st.mode = es.mode; st.reason = es.reason; st.carplay = null; st.pending = null; }
-            else if (res && res.pid === pid && res.applied === false) {
-                /* The library refused for the running carplay: a restart would
-                 * not change that. */
-                st.state = 'unknown'; st.mode = null; st.carplay = null; st.pending = null;
+                 * missing, /run not writable): the next start runs stock,
+                 * and the next head-unit start tries again. */
+                st.state = 'error'; st.mode = null; st[t.svc] = null; st.pending = null;
+                st.reason = 'the patch in memory is not armed for ' + t.name + '\'s next start (' + (((inmem.armError(t.name) || '') + '').trim() || 'see the journal') + ')';
+            } else if (runsPatch(t, pid, mem)) {
+                st.state = es.state; st.mode = es.mode; st.reason = es.reason; st[t.svc] = null;
+                /* aapd runs the plan; a crop override the render reads at
+                 * its start still waits for the head-unit start. */
+                var waiting = t === AA ? readPending(AA) : null;
+                if (waiting && waiting.action === 'apply') { st.state = 'unknown'; st.reason = waiting.reason; st[t.svc] = 'deferred'; st.pending = 'apply'; st.run = waiting.run; }
+                else st.pending = null;
+            } else if (res && res.pid === pid && res.applied === false) {
+                /* The library refused for the running process: a restart
+                 * would not change that. */
+                st.state = 'unknown'; st.mode = null; st[t.svc] = null; st.pending = null;
                 st.conflict = st.conflict || 'not applied in memory: ' + (res.why || 'no reason given');
-            } else { st.state = 'unknown'; st.mode = null; st.reason = CP.reasons.apply; st.carplay = 'deferred'; st.pending = 'apply'; }
+            } else {
+                var marker = readPending(t);
+                st.state = 'unknown'; st.mode = null; st.reason = t.reasons.apply; st[t.svc] = 'deferred'; st.pending = 'apply';
+                if (t === AA) st.run = marker && marker.action === 'apply' ? marker.run : mem === 'patched' ? undefined : null;
+            }
             cb();
         });
     });
+}
+
+/* What the edit lines of carplay's overlay say: the state, and the fields
+ * the status shows. */
+function cpOverlayState(text) {
+    var es = editState(text, true);
+    return { state: es.state, mode: es.mode, reason: es.reason, show: { panel: es.panel, res: es.res, safe: es.safe, mapurl: es.mapurl } };
+}
+
+/* aapd's: every site patched and the geometry of the copy it reads. */
+function aaOverlayState(text) {
+    function get(k) { var m = new RegExp('^' + k + ':\\s+(.*)$', 'm').exec(text); return m ? m[1] : ''; }
+    var g = /^PATCHED \((\d+) dpi, card (\w+)/.exec(get('geometry'));
+    var all = ['gate', 'selfstart-call', 'selfstart-guard', 'screen', 'confpath'].every(function (k) { return get(k) === 'PATCHED'; });
+    return { state: all && g ? 'patched' : 'unknown', mode: null, reason: all && g ? null : 'the plan does not read patched', show: { dpi: g ? Number(g[1]) : null, diskCard: g ? g[2] : null } };
 }
 
 /* The failed head-unit starts after which boot recovery restored the
@@ -946,6 +980,11 @@ function readAaState(cb, fresh) {
         var dpi = /^PATCHED \((\d+) dpi, card (\w+)/.exec(geom), coding = /^KI_KOMBI_VARIANT (\d+)$/.exec(get('coding'));
         var backup = get('backup') !== 'none', known = !/^NO/.test(get('known')), pristine = /^yes, pristine/.test(get('known'));
         var proven = get('proven') === 'yes', unknownWhy = /^NO — (.*)$/.exec(get('known')), confWhy = /^UNKNOWN \((.*)\)$/.exec(geom);
+        /* The config path the patch in memory also edits: a build without it
+         * is not patchable either. */
+        var planWhy = /^no \((.*)\)$/.exec(get('planable'));
+        st.foreign = get('foreign') === 'yes';
+        st.coding = coding ? Number(coding[1]) : null;
         st.dpi = dpi ? Number(dpi[1]) : null;
         st.diskCard = dpi ? dpi[2] : null;
         st.known = known;
@@ -962,7 +1001,8 @@ function readAaState(cb, fresh) {
         st.conflict = hu ? notSupported(hu) : codingConflict(coding) || (
               st.otherBuild ? 'aapd is another build than our backup'
             : !known && !backup ? 'not patchable' + (unknownWhy ? ': ' + unknownWhy[1] : '')
-            : !backup && !pristine ? 'aapd was modified by something else'
+            : planWhy && !st.ours && !backup ? 'not patchable: ' + planWhy[1]
+            : !backup && !pristine ? AA.modified
             : confWhy && !backup ? 'aapd.conf not usable: ' + confWhy[1]
             : foreignStart(AA) || (!backup && !proven ? 'untested aapd build' : null));
         st.recovered = recovered(AAPD);
@@ -973,7 +1013,7 @@ function readAaState(cb, fresh) {
             st.state = 'unknown'; st.reason = pending.reason; st.aapd = 'deferred'; st.pending = pending.action || 'apply'; st.pendingBy = pending.by;
             st.run = pending.run;
         }
-        done(st);
+        inmemOverlay(AA, st, function () { done(st); });
     });
 }
 /* The cluster coding (KI_KOMBI_VARIANT) both patches were proven on, and
@@ -1004,7 +1044,7 @@ function cropEnv(card, dpi) { return card === 'hidden' ? 'WOC_SRC_CROP=-s src_cr
 
 function aaMsg(st) {
     var m = { state: busy === 'aa' ? 'busy' : st.state, density: st.density, card: st.card, densities: [aapdConf.DENSITY_MIN, aapdConf.DENSITY_MAX, aapdConf.DENSITY_STEP],
-              removable: !!st.restorable };
+              removable: !!(st.restorable || st.removable) };
     /* While a change runs, the line says so; the values on disk stay. */
     if (busy !== 'aa') ['reason', 'conflict', 'aapd', 'recovered', 'recoveredWhy'].forEach(function (k) { if (st[k]) m[k] = st[k]; });
     ['pending', 'dpi', 'diskCard'].forEach(function (k) { if (st[k]) m[k] = st[k]; });
@@ -1084,6 +1124,8 @@ function remountRo(tries, cb) {
 var recmgrLoaded = require('./recmgr_list.js').recmgrLoaded;
 var parseShow = require('./recovery.js').parseShow;
 var DROPIN = process.env.WOC_CARPLAY_DROPIN || '/etc/systemd/system/carplay.service.d/50-waze-on-cluster.conf';
+/* aapd's: the env file of a start armed in memory. */
+var AA_DROPIN = process.env.WOC_AAPD_DROPIN || '/etc/systemd/system/aapd.service.d/50-waze-on-cluster.conf';
 
 /* cb(null) when t's service may be restarted, else cb(why not). */
 function restartBlocked(t, cb) {
@@ -1110,13 +1152,15 @@ var PENDING_REASON = {
  * pending marker, the run restartUnit kills (for recovery.js), the drop-in
  * a restart needs, and files besides the binary read at start (extra). */
 var CP = { name: 'carplay', unit: 'carplay.service', target: TARGET, patcher: PATCHER, running: TARGET + '.woc-running',
-           pending: PENDING, killed: path.join(path.dirname(SOCK), 'carplay-killed'), dropin: DROPIN, reasons: PENDING_REASON, extra: [] };
+           pending: PENDING, killed: path.join(path.dirname(SOCK), 'carplay-killed'), dropin: DROPIN, reasons: PENDING_REASON, extra: [],
+           svc: 'carplay', modified: 'carplay was modified by something else', overlayState: function (t) { return cpOverlayState(t); } };
 var AA = { name: 'aapd', unit: 'aapd.service', target: AAPD, patcher: AA_PATCHER, running: AAPD + '.woc-running',
-           pending: path.join(path.dirname(SOCK), 'aa-pending'), killed: path.join(path.dirname(SOCK), 'aapd-killed'), dropin: null,
+           pending: path.join(path.dirname(SOCK), 'aa-pending'), killed: path.join(path.dirname(SOCK), 'aapd-killed'), dropin: AA_DROPIN,
            /* aapd reads aapd.conf when it starts: a change there needs a start too. */
            extra: [AAPD_CONF],
-           reasons: { apply: 'Android Auto patch written; takes effect at the next head-unit start',
-                      revert: 'Android Auto patch removed; the original aapd runs from the next head-unit start' } };
+           reasons: { apply: 'Android Auto patch armed in memory; takes effect at the next head-unit start',
+                      revert: 'Android Auto patch removed; aapd runs as it ships from the next head-unit start' },
+           svc: 'aapd', modified: 'aapd was modified by something else', overlayState: function (t) { return aaOverlayState(t); } };
 
 /* Restart t's service: SIGKILL its main process, wait until systemd has
  * reaped it, `systemctl start` it, and confirm the unit is active. A systemd
@@ -1613,25 +1657,28 @@ function patchWith(t, args, action, blocked, done, run) {
     });
 }
 
-/* Puts back a carplay an earlier release patched in the file: the edits'
- * regions or the whole verified backup, or, without one, the proven
- * build's own bytes, each kept only when it verifies (carplay_patch.js
- * revert); dropBackup also drops our backup. This version never writes a
- * patch into the file. */
-function revert(noRestart, dropBackup, done) {
-    log('revert');
-    runPatch(CP, ['revert', '--target', TARGET, '--yes'].concat(dropBackup ? ['--drop-backup'] : []), 'revert', noRestart, done);
+/* Puts back a file an earlier release patched: carplay's, or aapd and
+ * aapd.conf: the edits' regions or the whole verified backups, or, without
+ * them, the proven files' own content, each kept only when it verifies (the
+ * patcher's revert); dropBackup also drops our backups. This version never
+ * writes a patch into either file. */
+function revertFile(t, noRestart, dropBackup, done) {
+    log(t.name + ': revert');
+    runPatch(t, (t === AA ? ['revert', '--yes'].concat(AA_FILES) : ['revert', '--target', TARGET, '--yes']).concat(dropBackup ? ['--drop-backup'] : []),
+        'revert', noRestart, done);
 }
+function revert(noRestart, dropBackup, done) { revertFile(CP, noRestart, dropBackup, done); }
 
-/* ---- the carplay patch in memory (inmem.js, PATCH.md "In memory") ----
+/* ---- the patches in memory (inmem.js, PATCH.md "In memory") ----
  *
- * The one mechanism of this version: a plan (carplay_patch.js plan, from
- * the stock file on disk) and its record on /var/opt; boot recovery arms
- * each start from them, and libwocpatch.so applies the plan in carplay's
- * memory. A patch an earlier release wrote to the file is put back to stock
- * first. A plan that cannot be made leaves carplay stock, with the error in
- * the status, and is tried again at the next head-unit start (the watcher)
- * or by CarPlay's Patch button. */
+ * The one mechanism of this version, for carplay and aapd alike: a plan
+ * (the patcher's `plan`, from the stock file on disk; for aapd also the
+ * copy of aapd.conf it reads) and its record on /var/opt; boot recovery
+ * arms each start from them, and libwocpatch.so applies the plan in the
+ * service's memory. A patch an earlier release wrote to the files is put
+ * back to stock first. A plan that cannot be made leaves the service stock,
+ * with the error in the status, and is tried again at the next head-unit
+ * start (its boot step, the watcher) or by its Patch button. */
 
 /* The plan's arguments for the patcher: the panel, the sink of the mode
  * (avb: the stock sink; udp: the stream sink this tool receives; fifo: the
@@ -1643,73 +1690,90 @@ function planArgs(panel, mode, unproven) {
     return args;
 }
 
-/* carplay's main PID now (0 when none) and what its memory holds at the
- * plan's sites: 'patched', 'stock', 'mixed' or null. */
-function carplayMem(cb, planText) {
-    cp.execFile('systemctl', ['show', CP.unit, '-p', 'MainPID'], { timeout: tmo(15000) }, function (err, out) {
+/* Android Auto's: aapd.conf, the coding, the owner's density and turn-card
+ * setting and, for its Patch button, --unproven. */
+function aaPlanArgs(unproven) {
+    return ['--conf', AAPD_CONF, '--coding', CODING, '--dpi', String(aaDensity()), '--card', aaCard()].concat(unproven ? ['--unproven'] : []);
+}
+
+/* t's main PID now (0 when none) and what its memory holds at the plan's
+ * sites: 'patched', 'stock', 'mixed' or null. */
+function memOf(t, cb, planText) {
+    cp.execFile('systemctl', ['show', t.unit, '-p', 'MainPID'], { timeout: tmo(15000) }, function (err, out) {
         var m = /^MainPID=(\d+)/m.exec((out || '') + ''), pid = m ? parseInt(m[1], 10) : 0;
-        cb(pid, pid > 0 ? inmem.memState('carplay', pid, planText) : null);
+        cb(pid, pid > 0 ? inmem.memState(t.name, pid, planText) : null);
     });
+}
+function carplayMem(cb, planText) { memOf(CP, cb, planText); }
+
+/* Whether the running process (pid, its memory mem) runs t's enabled patch:
+ * the plan's bytes at every site and, for aapd, the start that armed it with
+ * the copy of aapd.conf the record names (a density or turn-card change
+ * plans a new copy). */
+function runsPatch(t, pid, mem) {
+    return mem === 'patched' && (t !== AA || inmem.runsCurrent(t.name, pid) === true);
 }
 
 /* Boot recovery's decision for this boot, run now (recovery.js _decide):
- * it records this boot's arm for the enabled patch and arms carplay's next
- * start, or turns the patch off at the threshold. fresh: a new plan, whose
- * count starts at nothing (failures counted belong to the patch it
+ * it records this boot's arm for the enabled patch and arms the service's
+ * next start, or turns the patch off at the threshold. fresh: a new plan,
+ * whose count starts at nothing (failures counted belong to the patch it
  * replaces). cb(result). */
-function armNow(fresh, cb) {
-    var rec = require('./recovery.js'), r = new rec.Recovery({ target: rec.TARGETS.carplay, log: log });
+function armNow(t, fresh, cb) {
+    var rec = require('./recovery.js'), r = new rec.Recovery({ target: rec.TARGETS[t.name], log: log });
     if (fresh) r.resetCount();
-    r._decide(function (res) { log('boot recovery: ' + res.action + (res.inmem ? ' in memory' : '')); cb(res); });
+    r._decide(function (res) { log(t.name + ': boot recovery: ' + res.action + (res.inmem ? ' in memory' : '')); cb(res); });
 }
 
-/* The patch in memory with no plan: carplay runs stock, the status says
- * why, and the next head-unit start (the watcher) or the Patch button
- * plans it again. */
-function planFailed(args, why) {
-    log('carplay: the patch in memory could not be planned (' + why + '); carplay runs as it ships until it is');
-    inmem.disarm('carplay');
-    try { inmem.planFailed('carplay', args, why); } catch (e) { log('carplay: recording that failed too: ' + e.message); }
+/* The patch in memory with no plan: the service runs stock, the status
+ * says why, and the next head-unit start (the boot step, the watcher) or
+ * the Patch button plans it again. */
+function planFailed(t, args, why) {
+    log(t.name + ': the patch in memory could not be planned (' + why + '); ' + t.name + ' runs as it ships until it is');
+    inmem.disarm(t.name);
+    try { inmem.planFailed(t.name, args, why); } catch (e) { log(t.name + ': recording that failed too: ' + e.message); }
 }
 
-/* Applies the patch in memory, the one way this version patches carplay:
- *   1. a file another tool changed besides our edits, or one the patcher
- *      cannot read, is left as it is: a conflict, nothing armed;
- *   2. a patch an earlier release wrote to the file is put back to stock
- *      (our verified backup or the proven build's own bytes), and our
- *      backup goes;
- *   3. the plan is made from the stock file and armed for every next start
- *      of this boot; a plan that cannot be made leaves carplay stock with
- *      the error recorded (planFailed).
- * Activation: where patchd may restart carplay (not at install), SIGKILL
- * and start; a carplay whose memory holds the plan's bytes already (an
- * earlier release's patch running them) needs nothing; else the change
- * waits for the next start. done(err, roErr, activation, conflict, why). */
-function inmemApply(panel, mode, noRestart, unproven, done, keep) {
-    if (panel !== 'high' && panel !== 'mid') { done(new Error('panel must be high or mid')); return; }
-    /* keep: the arguments an enabled plan was made with (an install plans
-     * the user's choices again, with this version's edits). */
-    var args = keep || planArgs(panel, mode, unproven);
-    readState(function (st) {
+/* The state read of t, fresh: one that starts after this call. */
+function readFresh(t, cb) { if (t === AA) readAaState(cb, true); else readState(cb); }
+
+/* Applies t's patch in memory, the one way this version patches:
+ *   1. files another tool changed besides our edits, or that the patcher
+ *      cannot read, are left as they are: a conflict, nothing armed;
+ *   2. a patch an earlier release wrote to the files is put back to stock
+ *      (our verified backups or the proven files' own content), and our
+ *      backups go;
+ *   3. the plan is made from the stock files and armed for every next
+ *      start of this boot; a plan that cannot be made leaves the service
+ *      stock with the error recorded (planFailed).
+ * Activation: where patchd may restart the service (not at install),
+ * SIGKILL and start; a process that runs the plan already (an earlier
+ * release's patch running its bytes) needs nothing; else the change waits
+ * for the next start. done(err, roErr, activation, conflict, why). run:
+ * Android Auto's {dpi, card} running until then, for a pending marker. */
+function inmemApply(t, args, noRestart, done, run) {
+    readFresh(t, function (st) {
+        if (t === AA && st.state === 'absent') { done(null, null, null, st.conflict); return; }
         if (!st.known) { done(null, null, null, st.conflict || 'not patchable'); return; }
-        if (st.foreign) { done(null, null, null, 'carplay holds another change besides our earlier patch'); return; }
+        if (st.foreign) { done(null, null, null, t.name + ' holds another change besides our earlier patch'); return; }
         var ours = st.ours || st.restorable;
-        if (ours && !st.restorable) { done(null, null, null, 'our earlier patch in carplay cannot be put back (no backup of ours to trust)'); return; }
-        if (!ours && !st.backup && st.conflict === 'carplay was modified by something else') { done(null, null, null, st.conflict); return; }
-        /* What an earlier patch ran: its bytes and its record, so a patch
-         * that ran these very bytes healthy here keeps its proven state. */
-        var before = null, drec = record.current(TARGET);
-        if (ours) try { before = fs.readFileSync(TARGET); } catch (e) {}
+        if (ours && !st.restorable) { done(null, null, null, 'our earlier patch in ' + t.name + ' cannot be put back (no backup of ours to trust)'); return; }
+        if (!ours && !st.backup && st.conflict === t.modified) { done(null, null, null, st.conflict); return; }
+        /* What an earlier patch ran: its bytes and its record, so a carplay
+         * patch that ran these very bytes healthy here keeps its proven
+         * state. */
+        var before = null, drec = record.current(t.target);
+        if (ours && t === CP) try { before = fs.readFileSync(TARGET); } catch (e) {}
         (ours || st.backup ? function (cb) {
             /* Recorded first as a plan still to make: a reset between the
-             * revert and the plan leaves carplay stock with a record the
-             * watcher plans at the next head-unit start. */
+             * revert and the plan leaves the service stock with a record
+             * its boot step plans at the next head-unit start. */
             if (ours) {
-                inmem.disarm('carplay');
-                try { inmem.planFailed('carplay', args, 'not planned yet: putting carplay back was cut short'); } catch (e) { cb(e); return; }
+                inmem.disarm(t.name);
+                try { inmem.planFailed(t.name, args, 'not planned yet: putting ' + t.name + ' back was cut short'); } catch (e) { cb(e); return; }
             }
-            log('carplay: putting ' + TARGET + ' back as it ships' + (ours ? ' (an earlier release patched it)' : ''));
-            revert(true, true, function (rErr, roErr) {
+            log(t.name + ': putting ' + t.target + (t === AA ? ' and ' + AAPD_CONF : '') + ' back as they ship' + (ours ? ' (an earlier release patched them)' : ''));
+            revertFile(t, true, true, function (rErr, roErr) {
                 if (roErr) log('WARNING: ' + roErr.message + ' — the next head-unit start mounts / read-only again');
                 cb(rErr);
             });
@@ -1719,94 +1783,96 @@ function inmemApply(panel, mode, noRestart, unproven, done, keep) {
         });
     });
     function plan(before, drec, coding) {
-        var prior = inmem.readRecord('carplay');
-        inmem.makePlan('carplay', args, tmo(60000), function (pErr, rec) {
+        var prior = inmem.readRecord(t.name);
+        inmem.makePlan(t.name, args, tmo(60000), function (pErr, rec) {
             if (pErr) {
-                if (pErr.refused) { inmem.disarm('carplay'); try { inmem.remove('carplay'); } catch (e) {} done(null, null, null, pErr.refused); return; }
-                planFailed(args, pErr.message);
-                done(null, null, null, null, 'carplay runs as it ships: the patch in memory could not be planned (' + pErr.message + '); it is tried again at the next head-unit start');
+                if (pErr.refused) { inmem.disarm(t.name); try { inmem.remove(t.name); } catch (e) {} done(null, null, null, pErr.refused); return; }
+                planFailed(t, args, pErr.message);
+                done(null, null, null, null, t.name + ' runs as it ships: the patch in memory could not be planned (' + pErr.message + '); it is tried again at the next head-unit start');
                 return;
             }
             var ran = false;
-            if (before && drec && drec.patched === true && drec.proven === true && drec.trial !== true && coding === PROVEN_CODING) {
+            if (t === CP && before && drec && drec.patched === true && drec.proven === true && drec.trial !== true && coding === PROVEN_CODING) {
                 try {
                     var a = require('./carplay_patch.js').againstPlan(before, fs.readFileSync(TARGET), fs.readFileSync(inmem.paths('carplay').plan, 'utf8'));
                     ran = !a.err && a.onlyPlan && a.same;
                 } catch (e) {}
             }
-            if (ran && !rec.proven && rec.trial) { try { rec = inmem.update('carplay', { proven: true, trial: false }); } catch (e) {} }
-            log('carplay: in-memory patch planned (' + rec.edits.join(', ') + '), ' + (rec.proven ? 'proven' : rec.trial ? 'on trial' : 'unproven'));
-            var fresh = !prior || prior.enabled !== true || prior.planSha256 !== rec.planSha256;
-            armNow(fresh, function (r) {
+            if (ran && !rec.proven && rec.trial) { try { rec = inmem.update(t.name, { proven: true, trial: false }); } catch (e) {} }
+            log(t.name + ': in-memory patch planned (' + rec.edits.join(', ') + '), ' + (rec.proven ? 'proven' : rec.trial ? 'on trial' : 'unproven'));
+            var fresh = !prior || prior.enabled !== true || prior.planSha256 !== rec.planSha256 || JSON.stringify(prior.copies || {}) !== JSON.stringify(rec.copies || {});
+            armNow(t, fresh, function (r) {
                 if (r.action !== 'armed' || r.armFailed) {
                     var why = 'boot recovery did not arm it (' + (r.armFailed || r.action) + ')';
-                    done(null, null, null, null, 'carplay runs as it ships: ' + why + '; it is tried again at the next head-unit start');
+                    done(null, null, null, null, t.name + ' runs as it ships: ' + why + '; it is tried again at the next head-unit start');
                     return;
                 }
-                activate('apply', noRestart, done);
+                activate(t, 'apply', noRestart, done, undefined, false, run);
             });
         });
     }
 }
 
-/* Turns the patch off: the next start is stock (disarmed), and the record
- * says by whom (removal: record and plan go). A patch an earlier release
- * wrote to the file is put back too. done(err, roErr, activation). */
-function inmemRevert(noRestart, removal, done) {
+/* Turns t's patch off: the next start is stock (disarmed), and the record
+ * says by whom (removal: record, plan and copies go). A patch an earlier
+ * release wrote to the files is put back too. done(err, roErr,
+ * activation). */
+function inmemRevert(t, noRestart, removal, done, run) {
     /* The plan as it was, for the memory check after it goes. */
-    var planText = inmem.readRecord('carplay') ? readText(inmem.paths('carplay').plan) : null;
-    inmem.disarm('carplay');
+    var planText = inmem.readRecord(t.name) ? readText(inmem.paths(t.name).plan) : null;
+    inmem.disarm(t.name);
     try {
-        if (removal) inmem.remove('carplay');
-        else if (inmem.readRecord('carplay')) inmem.disable('carplay', { by: 'user' });
+        if (removal) inmem.remove(t.name);
+        else if (inmem.readRecord(t.name)) inmem.disable(t.name, { by: 'user' });
     } catch (e) { done(e, null, null); return; }
-    readState(function (st) {
-        (st.ours || st.restorable || (removal && st.backup) ? function (cb) { revert(noRestart, removal, cb); }
+    readFresh(t, function (st) {
+        /* Our backups beside another build (a firmware update) are not ours
+         * to write. */
+        (st.ours || st.restorable || (removal && st.backup && !st.otherBuild) ? function (cb) { revertFile(t, noRestart, removal, cb); }
             : function (cb) { cb(null, null, null); })(function (pErr, roErr, diskActivation) {
             if (pErr) { done(pErr, roErr, null); return; }
             if (!planText) { done(null, roErr, diskActivation || null); return; }
-            activate('revert', noRestart, function (e, r, a) { done(e, roErr || r, a || diskActivation || null); }, planText, diskActivation === 'deferred');
+            activate(t, 'revert', noRestart, function (e, r, a) { done(e, roErr || r, a || diskActivation || null); }, planText, diskActivation === 'deferred', run);
         });
     });
 }
 
-/* What carplay runs against what is wanted (action): nothing to do, a
- * restart where allowed (restartBlocked), else pending until the next
- * start. */
-function activate(action, noRestart, done, planText, keepPending) {
-    carplayMem(function (pid, mem) {
-        var want = action === 'apply' ? 'patched' : 'stock';
-        if (mem === want || (action === 'revert' && !pid)) {
-            if (!keepPending) unlinkQuiet(CP.pending);
+/* What t runs against what is wanted (action): nothing to do, a restart
+ * where allowed (restartBlocked), else pending until the next start. */
+function activate(t, action, noRestart, done, planText, keepPending, run) {
+    memOf(t, function (pid, mem) {
+        if (action === 'apply' ? runsPatch(t, pid, mem) : mem === 'stock' || !pid) {
+            if (!keepPending) unlinkQuiet(t.pending);
             done(null, null, null);
             return;
         }
-        (noRestart ? function (cb) { cb('installing'); } : function (cb) { restartBlocked(CP, cb); })(function (blocked) {
+        (noRestart ? function (cb) { cb('installing'); } : function (cb) { restartBlocked(t, cb); })(function (blocked) {
             if (blocked) {
-                log('carplay not restarted (' + blocked + '); ' + CP.reasons[action]);
-                writePending(CP, action);
+                log(t.name + ' not restarted (' + blocked + '); ' + t.reasons[action]);
+                writePending(t, action, run);
                 done(null, null, 'deferred');
                 return;
             }
-            restartUnit(CP, function (rErr) {
+            restartUnit(t, function (rErr) {
                 if (rErr) { done(rErr, null, null); return; }
-                afterStart(action, function (pid2, mem2) {
-                    log('carplay restarted (MainPID ' + pid2 + '); its memory reads ' + (mem2 || 'unreadable') + ' at the edit sites');
-                    done(mem2 === want ? null : new Error('carplay restarted but runs ' + (mem2 || 'unknown') + ' bytes at the edit sites; see ' + inmem.paths('carplay').result), null, 'restarted');
+                afterStart(t, action, function (pid2, mem2) {
+                    var good = action === 'apply' ? runsPatch(t, pid2, mem2) : mem2 === 'stock';
+                    log(t.name + ' restarted (MainPID ' + pid2 + '); its memory reads ' + (mem2 || 'unreadable') + ' at the edit sites');
+                    done(good ? null : new Error(t.name + ' restarted but runs ' + (mem2 || 'unknown') + ' bytes at the edit sites; see ' + inmem.paths(t.name).result), null, 'restarted');
                 }, 0, planText);
             });
         });
     }, planText);
 }
 
-/* carplay's memory once the started process is past the library's
- * constructor: for an apply, until its result names the new main PID (at
- * most RESTART_TRIES polls); a revert's start runs no library. */
-function afterStart(action, cb, tries, planText) {
-    carplayMem(function (pid, mem) {
-        var r = inmem.result('carplay');
+/* t's memory once the started process is past the library's constructor:
+ * for an apply, until its result names the new main PID (at most
+ * RESTART_TRIES polls); a revert's start runs no library. */
+function afterStart(t, action, cb, tries, planText) {
+    memOf(t, function (pid, mem) {
+        var r = inmem.result(t.name);
         if (action === 'apply' && mem !== 'patched' && !(r && r.pid === pid) && (tries || 0) < RESTART_TRIES) {
-            setTimeout(function () { afterStart(action, cb, (tries || 0) + 1, planText); }, RESTART_POLL_MS);
+            setTimeout(function () { afterStart(t, action, cb, (tries || 0) + 1, planText); }, RESTART_POLL_MS);
             return;
         }
         cb(pid, mem);
@@ -1823,7 +1889,7 @@ function inmemHook(which, cb) {
         cb(code, r);
     }
     if (which === 'deactivate') {
-        inmemRevert(true, true, function (err, roErr, activation) {
+        inmemRevert(CP, true, true, function (err, roErr, activation) {
             if (roErr) log('WARNING: ' + roErr.message + ' — the next head-unit start mounts / read-only again');
             if (err) { out(1, 'CarPlay not undone (' + err.message + '): the tool stays to guard it'); return; }
             readState(function (st) {
@@ -1866,7 +1932,7 @@ function inmemHook(which, cb) {
          * button's, a build outside the proven list included) is planned as
          * that button did (--unproven). */
         var keep = rec && rec.enabled === true && Array.isArray(rec.args) && rec.args.length ? rec.args : null;
-        inmemApply('high', 'avb', true, !!st.backup, function (err, roErr, activation, conflict2, why) {
+        inmemApply(CP, keep || planArgs('high', 'avb', !!st.backup), true, function (err, roErr, activation, conflict2, why) {
             if (roErr) log('WARNING: ' + roErr.message + ' — the next head-unit start mounts / read-only again');
             if (conflict2) {
                 var c = /not a proven build/.test(conflict2) ? 'untested carplay build' : conflict2;
@@ -1877,8 +1943,105 @@ function inmemHook(which, cb) {
             if (why) { out(0, why); return; }
             settle();
             out(0, activation === 'deferred' ? 'map patch armed in memory; takes effect at the next carplay start' : 'map patch armed in memory; carplay runs it already', null, reset);
-        }, keep);
+        });
     });
+}
+
+/* The install hooks' step for Android Auto, as carplay's: cb(code,
+ * {status, conflict}). A patch boot recovery turned off stays off unless
+ * this version's patch revision is newer than the turned-off one. */
+function aaHook(which, cb) {
+    function out(code, status, conflict, reset) {
+        log(which + ': ' + status);
+        var r = { status: status };
+        if (conflict) r.conflict = conflict;
+        if (reset) r.reset = true;
+        cb(code, r);
+    }
+    if (which === 'deactivate') {
+        readAaState(function (st0) {
+            if (st0.state === 'absent') { inmem.disarm('aapd'); try { inmem.remove('aapd'); } catch (e) {} out(0, st0.conflict); return; }
+            /* A removal leaves Android Auto only when it knows what is ours to
+             * undo; a state not read whole keeps the tool and its recovery. */
+            if (!st0.complete) { out(1, 'Android Auto state unreadable: the tool stays to guard it', incomplete(st0, 'aapd')); return; }
+            aaRevert(true, true, function (err, roErr, activation) {
+                if (roErr) log('WARNING: ' + roErr.message + ' — the next head-unit start mounts / read-only again');
+                if (err) log(which + ': Android Auto: ' + err.message);
+                readAaState(function (st) {
+                    if (!aaUndone(st) || inmem.readRecord('aapd')) {
+                        out(1, 'Android Auto not undone (' + (!st.complete ? incomplete(st, 'aapd') : st.undo + (st.ours ? ', our edits read in it' : '')) + '): the tool stays to guard it');
+                        return;
+                    }
+                    /* Our backups beside another aapd (a firmware update):
+                     * not ours to undo, left as carplay's are. */
+                    if (st.otherBuild) { out(0, 'aapd left as it is: ' + st.conflict, st.conflict); return; }
+                    out(0, activation === 'deferred' ? 'Android Auto patch removed' : 'aapd runs as it ships');
+                }, true);
+            });
+        }, true);
+        return;
+    }
+    readAaState(function (st) {
+        if (st.state === 'absent') { out(0, st.conflict); return; }
+        var hu = headUnit.refused(), rec = inmem.readRecord('aapd');
+        if (hu) { out(0, 'aapd left as it is: ' + notSupported(hu), notSupported(hu)); return; }
+        var ours = st.ours || st.restorable;
+        function recoveredWords(fails, why) {
+            return why === 'crash' ? 'boot recovery removed the patch after the patched aapd crashed; its Patch button applies it'
+                : 'boot recovery removed the patch after ' + (fails || 1) + ' failed head-unit start' + (fails === 1 ? '' : 's') + '; its Patch button applies it';
+        }
+        /* Turned off in memory (Remove patch, boot recovery): it stays off,
+         * but for a patch boot recovery turned off at an older revision. */
+        if (!ours && rec && rec.enabled === false && inmem.describes('aapd', rec) && (rec.by === 'recovery' || rec.by === 'user') &&
+            !(rec.by === 'recovery' && (rec.rev || 1) < AA_PATCH_REV)) {
+            out(0, rec.by === 'recovery' ? recoveredWords(rec.fails, rec.why) : 'the patch was turned off; its Patch button applies it');
+            return;
+        }
+        var reset = highfReset(AA, st), retry = !!st.recovered && !!st.recoveredRev && st.recoveredRev < AA_PATCH_REV;
+        var off = st.binary === 'original' && st.backup && !st.pending && !(rec && rec.enabled === true);
+        function settle() { if (highfInstall && (reset || !off)) highfMark(AA, reset ? 'applied' : 'left'); }
+        /* An earlier release's boot recovery put its patch in the files back
+         * (the record beside them says so): it stays off, and what a restore
+         * cut short left of it in the files goes too. */
+        if (st.recovered && !retry && !(rec && rec.enabled === true)) {
+            if (!ours) { out(0, recoveredWords(st.recovered, st.recoveredWhy)); return; }
+            revertFile(AA, true, false, function (rErr) {
+                out(rErr ? 1 : 0, rErr ? 'putting aapd back failed: ' + rErr.message : recoveredWords(st.recovered, st.recoveredWhy));
+            });
+            return;
+        }
+        if (off && !reset && !retry) { out(0, 'the patch was turned off; its Patch button applies it'); return; }
+        /* A conflict keeps the install from planning (the coding, another
+         * program started as aapd, a build or aapd.conf it cannot plan, a
+         * firmware update beside our backups); an earlier patch of ours
+         * still goes back to stock. An untested build is the plan's to
+         * refuse. */
+        var conflict = st.conflict && !aaRetryable(st.conflict) ? st.conflict : null;
+        if (conflict) {
+            if (!ours || st.foreign || !st.restorable) { out(0, 'aapd left as it is: ' + conflict, conflict); return; }
+            revertFile(AA, true, true, function (rErr) {
+                inmem.disarm('aapd');
+                out(rErr ? 1 : 0, rErr ? 'putting aapd back failed: ' + rErr.message : 'aapd put back as it ships; not patched: ' + conflict, conflict);
+            });
+            return;
+        }
+        /* An untested build the Patch button patched (our backup beside an
+         * earlier release's patch, or a plan made with --unproven) is
+         * planned as that button did. */
+        var unproven = !!st.backup || (!!rec && rec.enabled === true && Array.isArray(rec.args) && rec.args.indexOf('--unproven') >= 0);
+        aaApply(true, unproven, function (err, roErr, activation, conflict2, why) {
+            if (roErr) log('WARNING: ' + roErr.message + ' — the next head-unit start mounts / read-only again');
+            if (conflict2) {
+                var c = /not a proven build/.test(conflict2) ? 'untested aapd build' : conflict2;
+                out(0, 'aapd left as it is: ' + c, c);
+                return;
+            }
+            if (err) { out(1, 'applying the Android Auto patch failed: ' + err.message); return; }
+            if (why) { out(0, why); return; }
+            settle();
+            out(0, activation === 'deferred' ? 'Android Auto patch armed in memory; takes effect at the next aapd start' : 'Android Auto patch armed in memory; aapd runs it already', null, reset);
+        });
+    }, true);
 }
 
 var AA_FILES = ['--target', AAPD, '--conf', AAPD_CONF];
@@ -1893,53 +2056,59 @@ function setCrop(text) {
 
 /* What aapd runs, from a read that starts once the change's command has
  * arrived and before the change writes anything: a pending marker's run
- * (undefined when the marker has none), else the patch on disk, null
+ * (undefined when the marker has none), else the patch it runs, null
  * without one. A status read later in the change cannot alter it. */
 function aaRunning(cb) {
     readAaState(function (st) {
-        cb(st.pending ? st.run : st.binary === 'patched' ? { dpi: st.dpi, card: st.diskCard } : null);
+        cb(st.pending ? st.run : st.state === 'patched' ? { dpi: st.dpi, card: st.diskCard } : null);
     }, true);
 }
 
-/* Applies the chosen density and card. The render reads its crop when it
- * starts, so a change of the crop override is left, with the aapd.conf it
- * goes with, for the next head-unit start; otherwise the change takes
- * effect as any other. `unproven`: Android Auto's Patch button, which
- * also patches a build outside the proven list; install-time activation
- * never does. done(err, roErr, activation, why, run): run, what aapd runs,
- * for a marker the caller writes. */
+/* Applies the chosen density and card in memory. The render reads its crop
+ * when it starts, so a change of the crop override is left, with the copy
+ * of aapd.conf it goes with, for the next head-unit start; otherwise the
+ * change takes effect as any other. `unproven`: Android Auto's Patch
+ * button, which also patches a build outside the proven list. done(err,
+ * roErr, activation, conflict, why, run): run, what aapd runs, for a marker
+ * the caller writes. */
 function aaApply(noRestart, unproven, done) {
     var dpi = aaDensity(), card = aaCard(), crop = cropEnv(card, dpi), cropChange = readText(AA_CROP_ENV) !== crop;
     log('Android Auto: apply at ' + dpi + ' dpi, card ' + card);
     aaRunning(function (run) {
-        runPatch(AA, ['apply', '--dpi', String(dpi), '--card', card, '--coding', CODING, '--yes'].concat(AA_FILES, unproven ? ['--unproven'] : []), 'apply', noRestart || cropChange,
-            function (pErr, roErr, activation, why) {
-                if (!pErr) {
-                    try {
-                        if (setCrop(crop) && activation !== 'deferred') { writePending(AA, 'apply', run, AA.extra.map(sha).join()); activation = 'deferred'; }
-                    } catch (e) { pErr = new Error('writing ' + AA_CROP_ENV + ': ' + e.message); }
-                }
-                done(pErr, roErr, activation, why, run);
-            }, run);
+        inmemApply(AA, aaPlanArgs(unproven), noRestart || cropChange, function (pErr, roErr, activation, conflict, why) {
+            if (!pErr && !conflict && !why) {
+                try {
+                    if (setCrop(crop) && activation !== 'deferred') { writePending(AA, 'apply', run); activation = 'deferred'; }
+                } catch (e) { pErr = new Error('writing ' + AA_CROP_ENV + ': ' + e.message); }
+            }
+            done(pErr, roErr, activation, conflict, why, run);
+        }, run);
     });
 }
 
+/* A conflict a new plan may clear: an untested build, which only the Patch
+ * button patches, and a plan the library or the overlay refused. */
+function aaRetryable(conflict) { return /^(untested|not applied in memory|in-memory plan unusable)/.test(conflict || ''); }
+
 /* Android Auto's Patch button (and a density or card change it
- * applies): refused for any conflict but an untested build, which only it
- * patches, as the app offers it. */
+ * applies): refused for any conflict but those (aaRetryable), as the app
+ * offers it. */
 function aaEnable(done) {
     readAaState(function (st) {
-        if (st.conflict && !/^untested/.test(st.conflict)) { done(new Error(st.conflict)); return; }
-        aaApply(false, true, done);
+        if (st.conflict && !aaRetryable(st.conflict)) { done(new Error(st.conflict)); return; }
+        aaApply(false, true, function (e, r, a, conflict, why) { done(e || (conflict || why ? new Error(conflict || why) : null), r, a); });
     }, true);
 }
 
-function aaRevert(noRestart, dropBackup, done) {
+/* Android Auto's Remove patch (removal: the tool's removal, whose record,
+ * plan and copy go): the patch in memory off, a patch an earlier release
+ * wrote put back, the crop override gone. */
+function aaRevert(noRestart, removal, done) {
     log('Android Auto: revert');
     aaRunning(function (run) {
-        runPatch(AA, ['revert', '--yes'].concat(AA_FILES, dropBackup ? ['--drop-backup'] : []), 'revert', noRestart, function (pErr, roErr, activation, why) {
+        inmemRevert(AA, noRestart, removal, function (pErr, roErr, activation) {
             if (!pErr) unlinkQuiet(AA_CROP_ENV);
-            done(pErr, roErr, activation, why, run);
+            done(pErr, roErr, activation, null, run);
         }, run);
     });
 }
@@ -2161,7 +2330,10 @@ function handle(line, sock) {
         var panel = msg.panel;
         var mode = (msg.mode === 'avb' || msg.mode === 'udp') ? msg.mode : 'fifo';   /* capture mode; default fifo */
         operate('carplay', msg.cmd === 'apply' ? 'applying' : 'reverting',
-            msg.cmd === 'apply' ? function (cb) { inmemApply(panel, mode, false, true, function (e, r, a, conflict, why) { cb(e || (conflict || why ? new Error(conflict || why) : null), r, a); }); } : function (cb) { inmemRevert(false, false, cb); });
+            msg.cmd === 'apply' ? function (cb) {
+                if (panel !== 'high' && panel !== 'mid') { cb(new Error('panel must be high or mid')); return; }
+                inmemApply(CP, planArgs(panel, mode, true), false, function (e, r, a, conflict, why) { cb(e || (conflict || why ? new Error(conflict || why) : null), r, a); });
+            } : function (cb) { inmemRevert(CP, false, false, cb); });
     } else if (msg.cmd === 'aa-apply') {
         operate('aa', 'applying', aaEnable);
     } else if (msg.cmd === 'aa-revert') {
@@ -2181,7 +2353,7 @@ function handle(line, sock) {
         busy = 'aa';
         readAaState(function (aa) {
             function idle() { busy = null; status(); quitWhenIdle(); }
-            if (aa.conflict && !/^untested/.test(aa.conflict)) { refuse(aa.conflict); idle(); return; }
+            if (aa.conflict && !aaRetryable(aa.conflict)) { refuse(aa.conflict); idle(); return; }
             lastDensityAt = now;
             try { saveFile(density ? AA_DPI_FILE : AA_CARD_FILE, v + '\n'); } catch (e) {
                 aaError = 'saving the choice failed: ' + e.message;
@@ -2191,7 +2363,8 @@ function handle(line, sock) {
                 return;
             }
             log('Android Auto: ' + (density ? 'density ' + v + ' dpi' : 'turn card ' + v) + ' chosen');
-            if (aa.binary === 'patched' || (aa.pending === 'apply')) { operate('aa', 'applying', aaEnable); return; }
+            var arec = inmem.readRecord('aapd');
+            if ((arec && arec.enabled === true) || aa.state === 'patched' || aa.binary === 'patched' || aa.pending === 'apply') { operate('aa', 'applying', aaEnable); return; }
             idle();
         }, true);
     }
@@ -2238,39 +2411,6 @@ function ensureDir(dir) {
 }
 
 /* ---- install-time activation (patchd.js activate | deactivate) ---------- */
-
-/* What activate and deactivate do with a target as its state reads: { op:
- * "apply" | "revert", or none and why }. activate applies the patch
- * CarPlay's Patch button applies to
- * a known file without a conflict: a proven original (no backup of ours) or
- * a patch of ours, any configuration of it, which the patcher brings up to
- * date or leaves as it is; an original with our backup was reverted by the
- * user and stays so (reset applies it: highfReset), a patch boot recovery
- * removed stays so whatever is left of it (an Android Auto patch of an
- * older revision than this release's is applied again), as does a pending change other
- * than a removal's revert. After a removal's revert an install patches a proven build again;
- * a build outside the proven list, its backup dropped, stays reverted (a
- * conflict). deactivate reverts a patch of ours, a pending one too, also one
- * the patcher no longer recognises when our verified backup of the same
- * build differs from it (restorable), and drops our backup, so a later
- * install starts from the original as a fresh one does. */
-function plan(which, st, name, reset) {
-    if (st.pending && which === 'activate' && !(st.pending === 'revert' && st.pendingBy === 'removal')) {
-        return { why: 'a change already waits for the next head-unit start' };
-    }
-    if (which === 'deactivate' && st.restorable) return { op: 'revert' };
-    /* Android Auto's: also a crash of the patched aapd; an install with a
-     * newer patch revision than the removed one applies it again. */
-    var retry = which === 'activate' && !!st.recovered && !!st.recoveredRev && st.recoveredRev < AA_PATCH_REV;
-    if (which === 'activate' && st.recovered && !retry) {
-        return { why: st.recoveredWhy === 'crash' ? 'boot recovery removed the patch after the patched aapd crashed; its Patch button applies it'
-            : 'boot recovery removed the patch after ' + st.recovered + ' failed head-unit start' + (st.recovered === 1 ? '' : 's') + '; its Patch button applies it' };
-    }
-    if (st.conflict && (which === 'activate' || !st.known || st.otherBuild)) return { conflict: st.conflict };
-    if (which === 'deactivate') return st.binary === 'original' && !st.backup ? { why: name + ' is the original' } : { op: 'revert' };
-    if (st.binary === 'original' && st.backup) return reset ? { op: 'apply', reset: true } : retry ? { op: 'apply' } : { why: 'the patch was turned off; its Patch button applies it' };
-    return { op: 'apply' };
-}
 
 /* waze-on-cluster 0.8.2 refused HIGH F head units, and its boot recovery
  * put every patch of ours there back to the original, keeping the backup,
@@ -2320,75 +2460,6 @@ function cpUndone(st) { return st.complete ? !st.ours && !st.restorable : st.unr
 
 /* Why a status read is not whole: its error, or cut short. */
 function incomplete(st, name) { return st.unreadable ? st.conflict : name + ' status cut short'; }
-
-/* One target's hook step: cb(code, { status, conflict }). Exit code 1 when
- * it could not do its job: a change that failed without writing, or a
- * removal that leaves something of ours to undo. */
-
-function hookStep(which, t, read, run, done) {
-    var label = t === AA ? 'Android Auto' : 'map';
-    function cb(code, r) {
-        if (code || which !== 'deactivate') { done(code, r); return; }
-        read(function (st) {
-            if (t === AA ? st.state === 'absent' || aaUndone(st) : cpUndone(st)) { done(0, r); return; }
-            r = { status: (t === AA ? 'Android Auto not undone (' + (!st.complete ? incomplete(st, 'aapd') : st.undo + (st.ours ? ', our edits read in it' : '')) + ')'
-                : 'CarPlay not undone (' + (!st.complete ? incomplete(st, 'carplay') : 'our edits read in carplay') + ')') + ': the tool stays to guard it', conflict: r.conflict };
-            log(which + ': ' + r.status);
-            done(1, r);
-        });
-    }
-    read(function (st) {
-        if (t === AA && st.state === 'absent') { cb(0, { status: st.conflict }); return; }
-        /* A removal leaves Android Auto only when it knows aapd is not ours
-         * to undo; a state not read whole keeps the tool and its recovery. */
-        if (t === AA && which === 'deactivate' && !st.complete) {
-            log(which + ': ' + incomplete(st, 'aapd'));
-            cb(1, { status: 'Android Auto state unreadable: the tool stays to guard it', conflict: incomplete(st, 'aapd') });
-            return;
-        }
-        var p = plan(which, st, t.name, highfReset(t, st)), off = st.binary === 'original' && !!st.backup;
-        /* A HIGH F install is done with a target it applied, or with one that
-         * has nothing to put back; a turned-off one it left is tried again. */
-        function settle(r) { if (highfInstall && !r.conflict && (r.reset || !off)) highfMark(t, r.reset ? 'applied' : 'left'); }
-        if (!p.op) {
-            var r = { status: p.conflict ? t.name + ' left as it is: ' + p.conflict : p.why };
-            if (p.conflict) r.conflict = p.conflict;
-            log(which + ': ' + r.status);
-            settle(r);
-            cb(0, r);
-            return;
-        }
-        var files = t === AA ? [AAPD, AAPD_CONF] : [TARGET];
-        var before = files.map(sha).join();
-        log(which + ': ' + (p.op === 'apply' ? 'applying' : 'reverting') + ' the ' + label + ' patch');
-        run(p.op, function (pErr, roErr, activation, refused, aaRun) {
-            var written = files.map(sha).join() !== before;
-            if (roErr) log('WARNING: ' + roErr.message + ' — the next head-unit start mounts / read-only again');
-            if (written && pErr) writePending(t, p.op, aaRun);
-            var r = {};
-            if (written || !pErr) {
-                if (p.reset && written) r.reset = true;
-                r.status = activation === 'deferred' || written ? label + ' patch ' + (p.op === 'apply' ? 'written' : 'removed') +
-                    (pErr ? ' (' + pErr.message + ')' : '') : t.name + ' already as wanted';
-                log(which + ': ' + r.status);
-                settle(r);
-                cb(0, r);
-                return;
-            }
-            /* The patcher would not touch it: left as it is, for the user. */
-            if (refused && /refusing|requires the pristine|not a proven build|not a recognised|no backup/.test(refused)) {
-                r.status = t.name + ' left as it is: ' + refused;
-                r.conflict = refused;
-                log(which + ': ' + r.status);
-                cb(0, r);
-                return;
-            }
-            r.status = (p.op === 'apply' ? 'applying' : 'reverting') + ' the ' + label + ' patch failed: ' + pErr.message;
-            log(which + ': ' + r.status);
-            cb(1, r);
-        });
-    });
-}
 
 /* Runs activate or deactivate once and exits; the last stdout line is its
  * JSON result. Never stops or restarts carplay or aapd. CarPlay first: when
@@ -2455,9 +2526,7 @@ function oneShot(which) {
                 finish(which === 'deactivate' ? 1 : 0);
                 return;
             }
-            hookStep(which, AA, readAaState, function (op, cb) {
-                if (op === 'apply') aaApply(true, false, cb); else aaRevert(true, true, cb);
-            }, function (aaCode, aaR) {
+            aaHook(which, function (aaCode, aaR) {
                 result.aa = aaR;
                 finish(which === 'deactivate' ? aaCode : 0);
             });

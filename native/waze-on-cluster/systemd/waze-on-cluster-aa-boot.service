@@ -1,18 +1,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Robert Nisipeanu
 [Unit]
-Description=waze-on-cluster boot check: restore the original aapd before it starts if the Android Auto patch keeps the head unit from starting
+Description=waze-on-cluster boot check: arm the Android Auto patch in memory for aapd's start, or leave aapd stock if the patch keeps the head unit from starting
 RequiresMountsFor=/var/opt
-After=local-fs.target
+# codingshm publishes the cluster coding a plan still to make reads; aapd is
+# ordered after it too, so this adds no wait to aapd's start.
+After=local-fs.target codingshm.service
 # aapd.service (WantedBy=late.target, after multi-user.target) starts only
 # once this has finished, failed or timed out; it does not require it.
 Before=aapd.service
 
 [Service]
-# As waze-on-cluster-boot.service does for carplay: it records a boot that
-# starts a patched aapd and, at the threshold or when it cannot save that
-# record, remounts / read-write only to write the verified aapd and
-# aapd.conf back, then read-only again (PATCH.md "Boot recovery").
+# As waze-on-cluster-boot.service does for carplay (PATCH.md "Boot
+# recovery"): it records a boot that starts aapd armed and arms that start,
+# or at the threshold leaves it stock. A patch an earlier release wrote to
+# aapd or aapd.conf is put back before aapd starts: / is remounted
+# read-write only to write the verified originals, then read-only again.
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=-/usr/bin/node /var/opt/waze-on-cluster/current/recovery.js boot aapd

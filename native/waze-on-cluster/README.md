@@ -24,9 +24,10 @@ a video pipeline:
    memory at start while `/usr/bin/carplay` stays as it ships, makes `KI_KOMBI_VARIANT` 7 resolve to a supported
    cluster variant, makes CarPlay start the cluster stream itself, and
    advertises the size the map is shown at ([patch/PATCH.md](patch/PATCH.md)).
-   Another to `/usr/bin/aapd` and `/etc/aapd.conf` does the same for Android
-   Auto (PATCH.md "Android Auto"). Each is applied only where it is
-   supported, and each on its own.
+   Another, applied in aapd's memory while `/usr/bin/aapd` and
+   `/etc/aapd.conf` stay as they ship, does the same for Android Auto
+   (PATCH.md "Android Auto"). Each is applied only where it is supported,
+   and each on its own.
 2. **Capture.** The phone sends the stream as RTP to the stock media-bus sink,
    AVB stream `media_transport.avb_streaming.15`; the render joins it as an
    extra receiver. It also listens on a local UDP port and a FIFO, which
@@ -51,14 +52,16 @@ Patched after restart`, and one head-unit start runs CarPlay with the
 patch. Over an earlier release's patch of `/usr/bin/carplay` it puts the
 shipped file back in the same step; the earlier patch keeps running until
 CarPlay next starts, which then applies the patch in memory, so no restart
-is needed for it. It then writes the Android Auto patch on a proven aapd
-build. Anywhere else it leaves everything as it is, and the app's Status
-says why (PATCH.md "Install-time activation", "In memory").
+is needed for it. It then does the same for Android Auto on a proven aapd
+build: an earlier release's patch of `/usr/bin/aapd` and `/etc/aapd.conf`
+goes back as they ship, and the patch is armed in aapd's memory. Anywhere
+else it leaves everything as it is, and the app's Status says why (PATCH.md
+"Install-time activation", "In memory").
 
 **Remove.** In the Store, remove the app, then the tool (refused while the
-app is installed). `patchd.js deactivate` turns the patch in memory off,
-reverts our edits to aapd and aapd.conf (and to carplay, where an earlier
-release wrote them) and drops our backups; the deploy tool then removes this
+app is installed). `patchd.js deactivate` turns both patches in memory
+off, reverts our edits to carplay, aapd and aapd.conf where an earlier
+release wrote them and drops our backups; the deploy tool then removes this
 tool's services and files. The next head-unit start runs the original
 CarPlay and aapd.
 
@@ -276,9 +279,11 @@ sources are left out.
 
 `patch/carplay_patch.js` and `patch/aapd_patch.js` (Node 8, no
 dependencies) find their edit sites in the build and check them.
-carplay's edits go into a plan that `preload/wocpatch.c`
-(`libwocpatch.so`, preloaded into carplay) applies in memory; aapd's are
-written to the file with a verified full backup, by atomic rename. The install patches only
+Their edits go into a plan that `preload/wocpatch.c` (`libwocpatch.so`,
+preloaded into carplay or aapd) applies in memory; aapd also reads a copy
+of aapd.conf with the cluster geometry, in `/run`. Neither file on `/` is
+written but to put back a patch an earlier release wrote, from verified
+backups, by atomic rename. The install patches only
 a proven build; another build whose sites are all found is patched once a
 Patch button asks. Edits, sites and proven builds:
 [patch/PATCH.md](patch/PATCH.md).
@@ -292,9 +297,9 @@ for reading the patches' state and undoing them without the app:
 | `probe` | where the edit sites are in a carplay binary and whether it is patchable, without writing |
 | `aa-probe [<file>]` | the same for aapd (`/usr/bin/aapd` by default) |
 | `verify` | whether carplay's patch is complete |
-| `off` | turns carplay's patch in memory off: its next start runs stock |
+| `off`, `aa-off` | turns carplay's or Android Auto's patch in memory off: the next start runs stock |
 | `revert [--force]` | restores the original carplay where an earlier release patched the file; `--force` over another build (a firmware update) |
-| `aa-revert [--force]` | restores the original aapd and aapd.conf |
+| `aa-revert [--force]` | restores the original aapd and aapd.conf where an earlier release patched them |
 
 It remounts `/` read-write only for the write.
 

@@ -35,20 +35,22 @@ function parseElf(buf) {
     if (buf[4] !== 2 || buf[5] !== 1 || buf.readUInt16LE(18) !== 62) return { reason: 'not a 64-bit little-endian x86-64 ELF' };
     var phoff = u64(buf, 0x20), phentsize = buf.readUInt16LE(0x36), phnum = buf.readUInt16LE(0x38);
     if (phoff === null || phoff + phnum * phentsize > buf.length) return { reason: 'ELF program headers out of range' };
-    var elf = { load: [], exec: null, eh: null, notes: [], dyn: null, dynBad: false };
+    var elf = { load: [], exec: null, eh: null, notes: [], dyn: null, dynBad: false, relro: null };
     for (var i = 0; i < phnum; i++) {
         var o = phoff + i * phentsize, type = buf.readUInt32LE(o);
-        var seg = { off: u64(buf, o + 8), va: u64(buf, o + 16), size: u64(buf, o + 32) };
+        /* flags: PF_X 1, PF_W 2, PF_R 4 */
+        var seg = { off: u64(buf, o + 8), va: u64(buf, o + 16), size: u64(buf, o + 32), flags: buf.readUInt32LE(o + 4) };
         if (seg.off === null || seg.va === null || seg.size === null || seg.off + seg.size > buf.length) {
             if (type === 2) elf.dynBad = true;          /* a PT_DYNAMIC outside the file */
             continue;
         }
         if (type === 1) {                               /* PT_LOAD; PF_X marks the code */
             elf.load.push(seg);
-            if ((buf.readUInt32LE(o + 4) & 1) && !elf.exec) elf.exec = { off: seg.off, end: seg.off + seg.size };
+            if ((seg.flags & 1) && !elf.exec) elf.exec = { off: seg.off, end: seg.off + seg.size };
         } else if (type === 0x6474e550) elf.eh = seg;   /* PT_GNU_EH_FRAME */
         else if (type === 4) elf.notes.push(seg);       /* PT_NOTE */
         else if (type === 2) elf.dyn = seg;             /* PT_DYNAMIC */
+        else if (type === 0x6474e552) elf.relro = { va: seg.va, size: u64(buf, o + 40) };   /* PT_GNU_RELRO, its memory size */
     }
     if (!elf.exec) return { reason: 'no executable ELF segment' };
     return elf;
@@ -84,6 +86,7 @@ function Image(buf, elf) {
     this.starts = funcStarts(buf, elf.eh);
     this.dyn = elf.dyn;
     this.dynBad = elf.dynBad;
+    this.relro = elf.relro;
     this.callIndex = null;
 }
 Image.prototype.va = function (off) {

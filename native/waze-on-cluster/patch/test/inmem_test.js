@@ -106,7 +106,8 @@ test('arm: the plan, the result file and the env (the unit\'s preload first); ag
     const a = inmem.arm('carplay', { preload: '/usr/lib/libschedconfig.so.1', user: 'cia_13002' });
     assert.deepStrictEqual(a, { armed: true });
     const env = fs.readFileSync(P.env, 'utf8');
-    assert.strictEqual(env, 'LD_PRELOAD=/usr/lib/libschedconfig.so.1 ' + process.env.WOC_PRELOAD_LIB + '\nWOC_PATCH_PLAN=' + P.runPlan + '\nWOC_PATCH_RESULT=' + P.result + '\n');
+    assert.strictEqual(env, 'LD_PRELOAD=/usr/lib/libschedconfig.so.1 ' + process.env.WOC_PRELOAD_LIB + '\nWOC_PATCH_PLAN=' + P.runPlan + '\nWOC_PATCH_RESULT=' + P.result +
+        '\nWOC_PATCH_ID=' + inmem.patchId(inmem.readRecord('carplay')) + '\n');
     assert(fs.readFileSync(P.runPlan).equals(fs.readFileSync(P.plan)));
     assert.strictEqual(fs.readFileSync(P.result, 'utf8'), '');
     fs.writeFileSync(P.result, '{"v":1,"pid":7,"applied":true}\n');

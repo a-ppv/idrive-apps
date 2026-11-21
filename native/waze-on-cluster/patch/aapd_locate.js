@@ -49,7 +49,15 @@ var NAMES = {
 };
 var EDITS = ['gate', 'call', 'guard', 'screen'];
 /* The part of the patch each edit belongs to, for reasons. */
-var LABEL = { gate: 'gate', call: 'self-start', guard: 'self-start', screen: 'screen' };
+var LABEL = { gate: 'gate', call: 'self-start', guard: 'self-start', screen: 'screen', confpath: 'config path' };
+/* The config path aapd reads its configuration from, and the file it reads
+ * patched: the same length, so every copy aapd makes of it is the whole
+ * path. The patch in memory points it at the copy of aapd.conf with the
+ * cluster geometry (PATCH.md "Android Auto: the geometry"). */
+var CONF_STOCK = '/etc/aapd.conf', CONF_RUN = '/run/aapd.conf';
+/* Every site the patch in memory writes: the four edits an earlier release
+ * also wrote to the file, and the config path. */
+var SITES = EDITS.concat(['confpath']);
 
 var CHECKS = [
     'name-once', 'name-one-function', 'name-at-entry',
@@ -60,6 +68,7 @@ var CHECKS = [
     'near', 'rs-called', 'guard-once', 'guard-form', 'guard-this', 'ready-flag', 'ready-subscribe', 'end-resets', 'guard-ready', 'already-log', 'request-log', 'request-log-once',
     'ss-call-once', 'ss-field', 'ss-field-once', 'streaming', 'mark', 'ss-name', 'onnav-once', 'arg-pointer', 'arg-frame',
     'status-unavailable', 'status-available',
+    'conf-once', 'conf-inline', 'conf-read', 'conf-whole', 'conf-ro',
     'reloc',
 ];
 var off = {};
@@ -504,19 +513,85 @@ function locateSelfstart(im, str, refs) {
     };
 }
 
+/* ---- the config path ----------------------------------------------------- */
+
+/* The one string naming aapd's configuration file, CONF_STOCK (or, in a
+ * process the plan was applied to, CONF_RUN), NUL-terminated and starting
+ * after a NUL, such that rewriting its bytes in memory, before any code of
+ * aapd runs, changes every path aapd opens it by and nothing else:
+ *   conf-once    the whole string is in the file once, in one form;
+ *   conf-inline  no 8 bytes of it are anywhere else (a copy built from
+ *                immediates or a literal pool would keep the stock path);
+ *   conf-read    code loads its address with a rip-relative lea;
+ *   conf-whole   no rip-relative lea, mov or SSE load or store, absolute
+ *                pointer or relocation addend points inside it (another
+ *                string merged into its tail would change with it);
+ *   conf-ro      it lies in a PT_LOAD without write permission, outside
+ *                PT_GNU_RELRO, so nothing writes it after the load;
+ * and no dynamic relocation covers it (reloc). */
+/* Whether the opcode ending at `o`, before a rip-relative modrm, is one
+ * that reads or takes the address of memory without an immediate: lea or
+ * mov with a REX prefix, or an SSE load or store (0f 10/11/28/29/6f/7f). */
+function ripLoad(buf, o) {
+    if ((buf[o] === 0x8d || buf[o] === 0x8b) && buf[o - 1] >= 0x40 && buf[o - 1] <= 0x4f) return true;
+    return buf[o - 1] === 0x0f && [0x10, 0x11, 0x28, 0x29, 0x6f, 0x7f].indexOf(buf[o]) >= 0;
+}
+
+function confPathSite(im, addends) {
+    var buf = im.buf, len = CONF_STOCK.length + 1, forms = [CONF_STOCK, CONF_RUN].map(function (s) { return Buffer.from(s + '\0', 'latin1'); });
+    var found = [];
+    forms.forEach(function (k, i) {
+        for (var p = buf.indexOf(k); p >= 0; p = buf.indexOf(k, p + 1)) found.push({ off: p, state: i ? 'patched' : 'original', k: k });
+    });
+    var s = one(found, 'conf-once');
+    if (!s) return fail(count(found, 'config path: the path string'));
+    if (on('conf-once') && !(s.off > 0 && buf[s.off - 1] === 0)) return fail('config path: the path is the tail of another string');
+    for (var w = 0; on('conf-inline') && w + 8 <= len; w++) {
+        var win = s.k.slice(w, w + 8);
+        for (var q = buf.indexOf(win); q >= 0; q = buf.indexOf(win, q + 1))
+            if (q !== s.off + w) return fail('config path: its bytes are also at 0x' + q.toString(16));
+    }
+    var va = im.va(s.off), end = va + len, seg = null;
+    im.load.forEach(function (g) { if (s.off >= g.off && s.off + len <= g.off + g.size) seg = g; });
+    if (on('conf-ro') && (!seg || (seg.flags & 2) || (im.relro && va < im.relro.va + im.relro.size && im.relro.va < end)))
+        return fail('config path: the path is not in read-only data');
+    var refs = E.leaRefs(im, [s.off])[s.off] || [];
+    if (on('conf-read') && !refs.length) return fail('config path: the path is not referenced');
+    if (on('conf-whole')) {
+        var inner = null, ex = im.exec;
+        for (var p = ex.off + 3; !inner && p + 4 <= ex.end; p++) {
+            if ((buf[p - 1] & 0xc7) !== 0x05 || !ripLoad(buf, p - 2)) continue;
+            var nv = im.va(p + 4), t = nv === null ? null : (nv + buf.readInt32LE(p)) >>> 0;
+            if (t !== null && t > va && t < end) inner = p - 1;
+        }
+        for (var a = 0; !inner && a < addends.length; a++) if (addends[a] > va && addends[a] < end) inner = 'a relocation';
+        /* pointers: in the writable segments' data (a PIE's are relocation
+         * addends, above) */
+        im.load.forEach(function (g) {
+            if (!(g.flags & 2)) return;
+            for (var o = g.off + ((8 - g.off % 8) % 8); !inner && o + 8 <= g.off + g.size; o += 8) {
+                var lo = buf.readUInt32LE(o);
+                if (lo > va && lo < end && buf.readUInt32LE(o + 4) === 0) inner = o;
+            }
+        });
+        if (inner !== null) return fail('config path: something points inside the path (' + (typeof inner === 'number' ? 'at 0x' + inner.toString(16) : inner) + ')');
+    }
+    return { ok: true, offset: s.off, len: len, state: s.state, stock: forms[0].toString('hex'), patched: forms[1].toString('hex'), path: CONF_RUN, refs: refs.length };
+}
+
 /* ---- the build ---------------------------------------------------------- */
 
-/* All four sites: { elf, reason, buildId, version, gate, call, guard,
- * screen, ok }, each edit { ok, reason } or { ok, offset, len, state
+/* All five sites: { elf, reason, buildId, version, gate, call, guard,
+ * screen, confpath, ok }, each { ok, reason } or { ok, offset, len, state
  * (original | patched), stock (hex, null when it cannot be told from the
- * patched form), patched (hex) }. ok is true when every edit was found.
+ * patched form), patched (hex) }. ok is true when every site was found.
  * opts.off: the CHECKS not to make. */
 function locate(buf, opts) {
     off = {};
     ((opts && opts.off) || []).forEach(function (c) { if (CHECKS.indexOf(c) < 0) throw new Error('no check ' + c); off[c] = true; });
     var elf = E.parseElf(buf), out = { elf: !!elf.load, buildId: null, version: null };
     if (!elf.load) {
-        EDITS.forEach(function (e) { out[e] = fail('not located'); });
+        SITES.forEach(function (e) { out[e] = fail('not located'); });
         out.ok = false;
         out.reason = elf.reason;
         return out;
@@ -542,15 +617,17 @@ function locate(buf, opts) {
         var gg = out.gate.ok && out.call.ok && out.gate.flag !== null ? gateGatesAlt(im, str, refs, out.gate.flag, out.call.onNav) : null;
         if (gg) out.gate = out.call = out.guard = fail(gg);
     }
-    var hit = on('reloc') ? E.relocated(im, EDITS.filter(function (e) { return out[e].ok; }).map(function (e) { return [e, out[e].offset, out[e].len]; }))
+    var all = E.relocated(im, []);
+    out.confpath = confPathSite(im, all.addends);
+    var hit = on('reloc') ? E.relocated(im, SITES.filter(function (e) { return out[e].ok; }).map(function (e) { return [e, out[e].offset, out[e].len]; }))
         : { all: null, edits: [] };
-    EDITS.forEach(function (e) {
+    SITES.forEach(function (e) {
         if (out[e].ok && (hit.all || hit.edits.indexOf(e) >= 0)) out[e] = fail(LABEL[e] + ': ' + (hit.all || 'a dynamic relocation over the edit'));
     });
-    var failed = EDITS.filter(function (e) { return !out[e].ok; }).map(function (e) { return out[e].reason; });
+    var failed = SITES.filter(function (e) { return !out[e].ok; }).map(function (e) { return out[e].reason; });
     out.ok = failed.length === 0;
     if (failed.length) out.reason = failed.filter(function (r, i) { return failed.indexOf(r) === i; }).join('; ');
     return out;
 }
 
-module.exports = { locate: locate, EDITS: EDITS, CHECKS: CHECKS };
+module.exports = { locate: locate, EDITS: EDITS, SITES: SITES, CHECKS: CHECKS, CONF_STOCK: CONF_STOCK, CONF_RUN: CONF_RUN };
