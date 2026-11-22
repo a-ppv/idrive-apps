@@ -226,7 +226,10 @@ void Client::read_events()
             /* a host refused is not sent again after a reconnect */
             if (l != layers_.end() && j["op"] == "host")
                 l->second.hosts.erase(j["target"]);
-            if (j["op"] == "host" && !j["into"].empty()) {
+            /* a host from layers refused: the service ended this client's
+             * host of the target; forgotten here when it is the one refused
+             * (one sent since, into another target, still holds) */
+            if (j["op"] == "host" && j.count("into")) {
                 auto lh = layer_hosts_.find(j["target"]);
                 if (lh != layer_hosts_.end() && lh->second.first == j["into"])
                     layer_hosts_.erase(lh);
@@ -243,6 +246,9 @@ void Client::read_events()
                 on_fps_cap(fps_cap, fps_cap_app);
         } else if (ev == "status" && on_status) {
             on_status(j["text"]);
+        } else if (ev == "hosting") {
+            if (on_hosting)
+                on_hosting(j["target"], j["into"], j["state"], j["reason"]);
         } else if (ev == "host") {
             Host h;
             h.target = j["target"];
@@ -382,6 +388,8 @@ std::vector<std::pair<std::string, std::string>> Client::fields(const char *op, 
     }
     if (lo.others_fps)
         kv.push_back({"others_fps", num(lo.others_fps)});
+    if (!lo.hosted.empty())
+        kv.push_back({"hosted", json_quote(lo.hosted)});
     return kv;
 }
 
@@ -614,16 +622,12 @@ void Client::scene(uint32_t ref, const SceneOptions &so)
     send_now();
 }
 
-bool Client::host(uint32_t ref, const Host &h)
+/* A host message: by is ("ref", the scene's) or ("into", a target's name). */
+std::string Client::host_json(const std::pair<std::string, std::string> &by, const Host &h) const
 {
-    auto it = layers_.find(ref);
-    /* what the service refuses whatever it holds is not sent or kept */
-    if (it == layers_.end() || it->second.kind != "scene" || !it->second.so.layers || h.target.empty() ||
-        h.target == it->second.so.target)
-        return false;
     std::vector<std::pair<std::string, std::string>> kv = {
-        {"op", json_quote("host")}, {"ref", num(ref)},     {"target", json_quote(h.target)}, {"x", num(h.x)},
-        {"y", num(h.y)},            {"w", num(h.w)},       {"h", num(h.h)},                  {"shown", flag(h.shown)}};
+        {"op", json_quote("host")}, by,             {"target", json_quote(h.target)}, {"x", num(h.x)},
+        {"y", num(h.y)},            {"w", num(h.w)}, {"h", num(h.h)},                  {"shown", flag(h.shown)}};
     if (h.src_w && h.src_h)
         kv.insert(kv.end(), {{"src_x", num(h.src_x)}, {"src_y", num(h.src_y)}, {"src_w", num(h.src_w)},
                              {"src_h", num(h.src_h)}});
@@ -631,7 +635,17 @@ bool Client::host(uint32_t ref, const Host &h)
         kv.insert(kv.end(), {{"edge_top", num(h.edge_top)}, {"edge_bottom", num(h.edge_bottom)},
                              {"edge_fade", num(h.edge_fade)}, {"edge_dim", num(h.edge_dim)},
                              {"edge_blur", num(h.edge_blur)}});
-    const std::string json = json_object(kv);
+    return json_object(kv);
+}
+
+bool Client::host(uint32_t ref, const Host &h)
+{
+    auto it = layers_.find(ref);
+    /* what the service refuses whatever it holds is not sent or kept */
+    if (it == layers_.end() || it->second.kind != "scene" || !it->second.so.layers || h.target.empty() ||
+        h.target == it->second.so.target)
+        return false;
+    const std::string json = host_json({"ref", num(ref)}, h);
     it->second.hosts[h.target] = json;
     queue(json);
     send_now();
@@ -642,18 +656,7 @@ bool Client::host(const Host &h)
 {
     if (h.into.empty() || h.target.empty() || h.into == h.target)
         return false;
-    std::vector<std::pair<std::string, std::string>> kv = {
-        {"op", json_quote("host")}, {"into", json_quote(h.into)}, {"target", json_quote(h.target)},
-        {"x", num(h.x)},            {"y", num(h.y)},              {"w", num(h.w)},
-        {"h", num(h.h)},            {"shown", flag(h.shown)}};
-    if (h.src_w && h.src_h)
-        kv.insert(kv.end(), {{"src_x", num(h.src_x)}, {"src_y", num(h.src_y)}, {"src_w", num(h.src_w)},
-                             {"src_h", num(h.src_h)}});
-    if (h.edge_top || h.edge_bottom)
-        kv.insert(kv.end(), {{"edge_top", num(h.edge_top)}, {"edge_bottom", num(h.edge_bottom)},
-                             {"edge_fade", num(h.edge_fade)}, {"edge_dim", num(h.edge_dim)},
-                             {"edge_blur", num(h.edge_blur)}});
-    const std::string json = json_object(kv);
+    const std::string json = host_json({"into", json_quote(h.into)}, h);
     layer_hosts_[h.target] = {h.into, json};   /* into another target: the service moves it */
     /* to an older service nothing: it would refuse it (no such scene) */
     if (ready_ && host_layers_) {
@@ -666,14 +669,17 @@ bool Client::host(const Host &h)
 void Client::unhost(const std::string &target)
 {
     auto it = layer_hosts_.find(target);
-    if (it == layer_hosts_.end())
-        return;
+    /* sent also with nothing kept here (a refusal of an older host may have
+     * crossed a newer one): the service ends whatever this client hosts of
+     * target, whatever its into */
     if (ready_ && host_layers_) {
-        queue(json_object({{"op", json_quote("unhost")}, {"into", json_quote(it->second.first)},
+        queue(json_object({{"op", json_quote("unhost")},
+                           {"into", json_quote(it != layer_hosts_.end() ? it->second.first : std::string())},
                            {"target", json_quote(target)}}));
         send_now();
     }
-    layer_hosts_.erase(it);
+    if (it != layer_hosts_.end())
+        layer_hosts_.erase(it);
 }
 
 void Client::edit(uint32_t ref, const std::string &lines)

@@ -277,10 +277,14 @@ Beside the layers:
 - **Hosting from layers** (PROTOCOL.md "Hosting from layers"): an app that
   draws a target with layers only, a cluster theme on `panel` for example,
   hosts another target there with no scene file (`host` with `into`): the
-  hosted picture (Waze's map, for example) is drawn at the rect it names,
-  just under the app's layers, so its frame and readouts sit over it. The
-  picture goes back to its own target while none of the app's layers there
-  is visible, and when the app ends the host or exits. Both backends.
+  hosted picture (Waze's map, for example, which marks its layer `hosted`)
+  is drawn at the rect it names, just under the app's lowest drawn layer
+  (over it when that one is exclusive), so its frame and readouts sit over
+  it. The picture goes back to its own target while none of the app's
+  layers there is drawn, the panel is not on screen, or a scene hosts it,
+  and when the app ends the host or exits. Of several apps hosting the same
+  target the first to send it whose layers are drawn wins; the `hosting`
+  event tells each whether it is live and why not. Both backends.
 
 Each target's changes are flushed together once a tick, so the cluster never
 shows a half-written frame: a video or exclusive image left half written

@@ -15,7 +15,10 @@ An app that draws the cluster with layers only, such as a cluster theme,
 can show another app's picture (Waze's map) inside it with no scene file:
 `host` with `into`. The picture is drawn under the app's layers, and goes
 back to its own place when the app hides its layers, ends the host
-(`unhost`) or exits.
+(`unhost`) or exits, or the panel is taken. Of several such apps the first
+to ask whose layers show wins, and an app showing a scene file that hosts
+the picture wins over them; the `hosting` event tells each app why it
+waits.
 
 ## 0.8.0
 

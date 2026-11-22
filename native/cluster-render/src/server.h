@@ -66,6 +66,7 @@ private:
         std::map<std::string, std::string> target_sent;
         std::map<std::string, std::string> host_sent;   /* by hosted target: its host event last sent */
         uint64_t host_gen = 0;                          /* the Server's hosts_gen_ it was compared with */
+        std::map<std::string, std::string> hosting_sent;   /* by target: its last hosting event (its host from layers) */
         std::map<uint32_t, std::string> frame_error;  /* by ref: the last frame error sent */
         std::string budget_sent;
         uint32_t fps_cap_sent = 0;   /* the fps of its last fps_cap event; 0: none or none sent */
@@ -96,8 +97,9 @@ private:
     void op_host(Client &c, uint32_t ref, const cr::Json &j);
     /* That host ends (PROTOCOL.md "unhost"). */
     void op_unhost(Client &c, uint32_t ref, const cr::Json &j);
-    /* For the status and the log: a host from layers of target hosted. */
-    std::string layer_host_text(int hosted) const;
+    /* For the status and the log: owner's host from layers of target
+     * hosted, and whether it is live or why not. */
+    std::string layer_host_text(int hosted, uint64_t owner) const;
     /* set, uniform, bind, part, transform, animate and stop. */
     void op_on_layer(Client &c, const std::string &op, uint32_t ref, Layer *l, const cr::Json &j);
     void op_uniform(Client &c, uint32_t ref, Layer *l, const cr::Json &j);

@@ -37,8 +37,8 @@ struct StackItem {
     Klass klass = Klass::Content;
     int z = 0;
     uint64_t seq = 0;   /* creation order */
-    /* 1: drawn just under the layer whose klass, z and seq it was given (a
-     * hosted video under its host's lowest layer: compositor.h) */
+    /* With the klass, z and seq of another layer: 1 drawn just under it,
+     * -1 just over it (a hosted video by its host's anchor: compositor.h) */
     int under = 0;
     bool visible = true, ready = false, exclusive = false, prewarm = false, contend = false, guide_hold = true;
     bool yield = true, preload = false;

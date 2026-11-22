@@ -33,6 +33,7 @@
  *   cr.edit(gauge, '--rotate ^needle$=0,0,-30\n--uniform ^bar$:u_level=0.5');
  *   cr.host('panel', { target: 'map', x: 600, y: 120, w: 720, h: 480 });   // the map under this app's panel layers
  *   cr.on('host', (target, ev) => { ... });   // ev.into: where target is drawn now ('' : its own slot)
+ *   cr.on('hosting', (target, ev) => { ... });   // this app's host: ev.state 'live' or 'waiting', ev.reason
  *   cr.close();
  *
  * Nothing blocks and nothing queues without bound. The client reconnects
@@ -58,7 +59,7 @@ const MESH_T = 0x4d;    /* 'M' */
 const MAX_DIRTY = 16;
 const BACKOFF_MS = [250, 500, 1000, 2000];
 const SET_KEYS = ['klass', 'z', 'x', 'y', 'w', 'h', 'visible', 'exclusive', 'prewarm', 'preload', 'contend',
-    'guide_hold', 'yield', 'others_fps', 'opacity', 'rotate', 'sx', 'sy', 'px', 'py'];
+    'guide_hold', 'yield', 'others_fps', 'hosted', 'opacity', 'rotate', 'sx', 'sy', 'px', 'py'];
 const MESH_KEYS = ['projection', 'fov', 'ortho_h', 'near', 'far', 'cx', 'cy', 'cz', 'crx', 'cry', 'crz'];
 /* An effect layer's or mesh part's render state (PROTOCOL.md "Render
  * state"); a part's also takes PART_LOOK_KEYS. */
@@ -291,11 +292,15 @@ class ClusterRender extends EventEmitter {
             /* a host refused is not sent again after a reconnect */
             const l = ev.op === 'host' && !ev.into ? this.layers.get(ev.ref) : null;
             if (l && l.hosts) l.hosts.delete(ev.target);
-            const lh = ev.op === 'host' && ev.into ? this.layerHosts.get(ev.target) : null;
+            /* one from layers: the service ended this app's host of the target; forgotten here
+             * when it is the one refused (one sent since, into another target, still holds) */
+            const lh = ev.op === 'host' && 'into' in ev ? this.layerHosts.get(ev.target) : null;
             if (lh && lh.into === ev.into) this.layerHosts.delete(ev.target);
             this.emit('refused', ev.op, ev.ref, ev.reason, ev.line);
         } else if (ev.ev === 'status') {
             this.emit('status', ev.text);
+        } else if (ev.ev === 'hosting') {
+            this.emit('hosting', ev.target, ev);   /* this app's host from layers: ev.state live or waiting, ev.reason */
         } else if (ev.ev === 'host') {
             this.emit('host', ev.target, ev);   /* ev.into empty: not hosted any more */
         }
@@ -434,7 +439,8 @@ class ClusterRender extends EventEmitter {
     }
 
     /* opts: target, klass, z, x, y, w, h, visible, exclusive, prewarm,
-     * preload, contend, guide_hold, yield, others_fps, opacity, rotate, sx, sy, px, py, then per kind (see
+     * preload, contend, guide_hold, yield, others_fps, hosted (a producer's
+     * layer placed by a host of that target), opacity, rotate, sx, sy, px, py, then per kind (see
      * PROTOCOL.md); an image's iw and ih default to its w and h; an
      * effect's time: true takes u_time from the renderer's clock, and its
      * render state blend, blend_src, blend_dst, blend_src_alpha,
@@ -478,8 +484,10 @@ class ClusterRender extends EventEmitter {
      * "Hosting from layers"); the hosted video is drawn under them while
      * one of them is visible. Kept by opts.target, sent to a service whose
      * hello has host_layers 1 (this.hostLayers), now or once one is
-     * connected, until unhost() or the service refuses it; false, nothing
-     * kept, without opts.target or for that target itself. */
+     * connected, until unhost() or the service refuses it (the service ends
+     * it; here it is forgotten unless one into another target was sent
+     * since); false, nothing kept, without opts.target or
+     * for that target itself. A 'hosting' event says whether it is live. */
     host(ref, opts) {
         if (typeof ref === 'string') return this._hostFromLayers(ref, opts);
         const l = this.layers.get(ref);
@@ -501,11 +509,13 @@ class ClusterRender extends EventEmitter {
     }
 
     /* This app's layers host target no more. */
+    /* Sent also with nothing kept here (a refusal of an older host may have
+     * crossed a newer one): the service ends whatever this app hosts of
+     * target, whatever its into. */
     unhost(target) {
         const h = this.layerHosts.get(target);
-        if (!h) return;
         this.layerHosts.delete(target);
-        if (this.ready && this.hostLayers) this._send({ op: 'unhost', into: h.into, target: target });
+        if (this.ready && this.hostLayers) this._send({ op: 'unhost', into: h ? h.into : '', target: target });
     }
 
     _hostMsg(m, opts) {

@@ -160,8 +160,8 @@
  * draws none) they wait as without layers. A content may host other targets
  * (Host): the service only keeps that and tells every client (server.h);
  * the hosted target's producers act on it. A client may also host from its
- * layers on a target, with no scene (host_layers): the producer's video
- * there is then stacked just under that client's lowest layer. */
+ * layers on a target, with no scene (host_layers): the producer's marked
+ * video there is then stacked by that client's lowest drawn layer. */
 #ifndef CRS_COMPOSITOR_H
 #define CRS_COMPOSITOR_H
 
@@ -299,23 +299,38 @@ public:
      * host(): the same rule). */
     void unhost(uint64_t owner, uint32_t id, int hosted);
     /* A client's host without a scene (PROTOCOL.md "Hosting from layers"):
-     * owner's layers on target into host target hosted (not into, hosted by
-     * no scene and no other client), rect inside into and src inside
-     * hosted's; replaces what owner hosted of hosted. False with *err, which
-     * also ends owner's host of hosted from into. It ends with unhost_layers()
-     * or owner (remove_owner). It is live (hosts(), the stack, the edge)
-     * only while owner has a visible layer on into and into's layers are
-     * drawn there: its scene published, no scene file without layers on it. */
+     * owner's layers on target into host target hosted (not into), rect
+     * inside into and src inside hosted's; replaces what owner hosted of
+     * hosted, also from another into. False with *err, which also ends
+     * owner's host of hosted, whatever its into. It ends with
+     * unhost_layers() or owner (remove_owner).
+     *
+     * Each arrange() decides, from the layers' states then, which host from
+     * layers is live (hosts(), the stack, the edge). One is eligible while
+     * into is on screen, its layers are not waiting for a scene file there,
+     * and owner has a layer drawn there at or above its own topmost
+     * exclusive layer (its anchor: the lowest such). Of a target's eligible
+     * hosts the one sent first is live, and none while a scene hosts the
+     * target (scene hosts are as without hosts from layers). The live host's
+     * producer's videos (other clients' on into marked with hosted's name,
+     * LayerParams::hosted) are stacked just under the anchor, or just over
+     * it when it is exclusive, so no exclusive layer of owner's hides them. */
     bool host_layers(uint64_t owner, int into, int hosted, const Host &h, std::string *err);
-    void unhost_layers(uint64_t owner, int into, int hosted);
+    void unhost_layers(uint64_t owner, int hosted);
     struct LayerHost {
         uint64_t owner = 0;
         int into = 0;
         Host host;
-        bool live = false;   /* as of the last arrange() */
+        uint64_t seq = 0;   /* when it was first sent: the earlier wins */
+        /* As of the last arrange(): */
+        bool eligible = false, live = false;
+        uint32_t anchor = 0;   /* eligible: owner's layer it is stacked by */
+        bool over = false;     /* the anchor is exclusive: just over it */
+        std::string why;       /* not live: why (by: another client's host holds it) */
+        uint64_t by = 0;
     };
-    /* By hosted target. */
-    const std::map<int, LayerHost> &layer_hosts() const { return layer_hosts_; }
+    /* By (hosted target, owner). */
+    const std::map<std::pair<int, uint64_t>, LayerHost> &layer_hosts() const { return layer_hosts_; }
     struct Hosted {
         int target = 0, into = 0;   /* the hosted target, and the content's */
         Host host;
@@ -728,11 +743,19 @@ private:
     std::vector<int> render_order_, render_later_;   /* kept to save allocating them each tick */
     std::map<uint32_t, AssetEntry> assets_;
     std::map<uint32_t, SceneEntry> scenes_;
-    std::map<int, LayerHost> layer_hosts_;   /* by hosted target */
-    /* Each host from layers live or not now; host_serial_ follows. */
-    void update_layer_hosts();
-    /* The live, shown host from layers into target ti whose rect holds e's
-     * video, e being another client's; null: none. */
+    std::map<std::pair<int, uint64_t>, LayerHost> layer_hosts_;   /* by (hosted target, owner) */
+    uint64_t layer_host_seq_ = 0;
+    /* The scene content id's layers are drawable: its file published with
+     * the layers' graph (what it hosts can be drawn). */
+    bool drawable(uint32_t id, const SceneEntry &s) const;
+    /* Each target's stack items as arrange() made them (kept to save
+     * allocating them each tick). */
+    std::vector<std::vector<StackItem>> items_;
+    /* arrange(): which host from layers is live, and its producer's videos
+     * restacked by its anchor; host_serial_ follows. */
+    void arrange_layer_hosts();
+    /* The live, shown host from layers into target ti that e's video is the
+     * hosted producer's (marked, another client's); null: none. */
     const LayerHost *layer_host_of(int ti, const Entry &e) const;
     std::vector<Target> targets_;
     uint32_t next_id_ = 1;

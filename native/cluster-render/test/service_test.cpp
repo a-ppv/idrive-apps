@@ -1858,16 +1858,23 @@ static std::string stack_of(FakeGraph *g, const std::vector<std::pair<std::strin
 
 /* A host from layers (PROTOCOL.md "Hosting from layers"): a theme drawing
  * the panel with layers only hosts the map at a rect; the producer, told,
- * moves its video there (as waze-on-cluster does) and it is drawn just
- * under the theme's lowest layer, over another client's layers below that
- * and under its layers above; the edge; live only while a theme layer is
- * visible: hidden, the producer is told the map is not hosted, shown,
- * hosted again; unhost; refusals (its own target, outside, another
- * client's host, a scene's host while it hosts, and its host while a scene
- * does); a scene file with layers 1 on the panel keeps it live, one
- * without makes it not live; kept by the client across a service restart;
- * the theme's client gone or crashed (its socket closed with nothing
- * said): the map not hosted any more. */
+ * moves its video there marked as the hosted map (as waze-on-cluster does)
+ * and it is drawn just under the theme's lowest drawn layer, over another
+ * client's layers below that and under its layers above; another client's
+ * unmarked video inside the rect keeps its place; a hidden theme layer is
+ * no anchor; an exclusive lowest theme layer: the map just over it, still
+ * shown; the edge; refusals (its own target, ref with into, an unknown
+ * into), each ending the client's host of the target, also a refused move,
+ * which the client forgets too (not sent again after a restart); a host
+ * with no layer drawn waits and blocks nobody; of two live themes the one
+ * sent first is live, the other waits, told why, and takes over while the
+ * first is hidden; live only while a theme layer is drawn and the panel is
+ * on screen (hidden, or the stock HMI taking the panel: the producer is
+ * told the map is not hosted, the theme why); a scene file with layers 1 on
+ * the panel keeps it live and the scene's own host wins over it, one
+ * without layers makes it wait; unhost; kept by the client across a service
+ * restart; the theme's client gone or crashed (its socket closed with
+ * nothing said): the map not hosted any more. */
 static void hosting_from_layers()
 {
     char tmpl[] = "/tmp/crs-service-layerhost-XXXXXX";
@@ -1885,6 +1892,9 @@ static void hosting_from_layers()
     eo.wire(o);
     std::vector<cr::Host> told;
     b.on_host = [&told](const cr::Host &h) { told.push_back(h); };
+    std::map<std::string, std::string> hosting;   /* the theme's hosting events: state[: reason] */
+    a.on_hosting = [&hosting](const std::string &t, const std::string &, const std::string &state,
+                              const std::string &why) { hosting[t] = state + (why.empty() ? "" : ": " + why); };
     r.clients = {&a, &b, &o};
     r.pump(50);
     ok("layer hosts: the hello says the service takes them", a.takes_host_layers());
@@ -1903,7 +1913,8 @@ static void hosting_from_layers()
      * only; another client's layers below and above them. */
     const cr::EffectOptions fx{"#version 100\nvoid main(){gl_FragColor=vec4(0.0);}", "", 0};
     const Rect R_BG{0, 0, 1920, 720}, R_FRAME{690, 150, 580, 420}, R_MAP{700, 160, 560, 400}, R_LOW{10, 10, 100, 100},
-               R_HIGH{20, 20, 50, 50}, R_MID{30, 600, 80, 80};
+               R_HIGH{20, 20, 50, 50}, R_MID{30, 600, 80, 80}, R_OVID{760, 200, 128, 96}, R_AMB{40, 40, 60, 60},
+               R_T2{1500, 600, 50, 50};
     auto lo_at = [](const Rect &q, const char *klass, int z) {
         cr::LayerOptions l;
         l.target = "panel";
@@ -1930,18 +1941,19 @@ static void hosting_from_layers()
     h.src_x = 264; h.src_y = 40; h.src_w = 560; h.src_h = 400;
     ok("layer hosts: the client keeps and sends it", a.host(h));
     r.pump(50);
-    ok("layer hosts: the producer told the map is hosted in the panel at the rect",
+    ok("layer hosts: the producer told the map is hosted in the panel at the rect, the theme that it is live",
        b.hosts.count("map") && b.hosts["map"].into == "panel" && b.hosts["map"].x == 700 &&
-           b.hosts["map"].src_x == 264 && b.hosts["map"].shown && !told.empty());
+           b.hosts["map"].src_x == 264 && b.hosts["map"].shown && !told.empty() && hosting["map"] == "live");
     ok("layer hosts: the status names it, live",
-       has(r.svc->server().status_text(r.now), "theme hosts map from its layers on panel at 560x400+700+160") &&
-           !has(r.svc->server().status_text(r.now), "not live"));
+       has(r.svc->server().status_text(r.now), "theme hosts map from its layers on panel at 560x400+700+160 from "
+                                               "560x400+264+40; live"));
 
     /* The producer moves its video into the rect, as waze-on-cluster does:
-     * a layer made after the theme's, content z 0, which alone would be on
-     * top of the frame. */
+     * marked as the hosted map, made after the theme's layers, content z 0,
+     * which alone would be on top of the frame. */
     b.drop(video);
     cr::LayerOptions hl = lo_at(R_MAP, "content", 0);
+    hl.hosted = "map";
     cr::VideoOptions crop;
     crop.w = 560;
     crop.h = 400;
@@ -1950,11 +1962,49 @@ static void hosting_from_layers()
     std::vector<uint8_t> f2(560 * 600, 90);
     b.frame(video, f2.data(), f2.size(), 2);
     r.pump(2000);
-    const std::vector<std::pair<std::string, Rect>> names = {{"low", R_LOW}, {"mid", R_MID},   {"bg", R_BG},
-                                                             {"frame", R_FRAME}, {"map", R_MAP}, {"high", R_HIGH}};
+    const std::vector<std::pair<std::string, Rect>> names = {{"low", R_LOW},     {"mid", R_MID}, {"bg", R_BG},
+                                                             {"frame", R_FRAME}, {"map", R_MAP}, {"high", R_HIGH},
+                                                             {"ovid", R_OVID},   {"t2", R_T2}};
     FakeGraph *g = r.gpu.graph("panel");
     ok("layer hosts: the map under the theme's layers, over the other client's below them, under its overlay",
        eb.layer[video] == "shown" && eb.target["map"] == "idle" && stack_of(g, names) == "low mid map bg frame high");
+
+    /* Another client's video inside the rect, not marked: its own place. */
+    cr::VideoOptions small;
+    small.w = 128;
+    small.h = 96;
+    small.stall_ms = 600000;
+    const uint32_t ovid = o.video(lo_at(R_OVID, "overlay", 0), small);
+    std::vector<uint8_t> f3(128 * 144, 60);
+    o.frame(ovid, f3.data(), f3.size(), 1);
+    r.pump(1000);
+    ok("layer hosts: another client's overlay video inside the rect keeps its place, over the theme",
+       eo.layer[ovid] == "shown" && stack_of(r.gpu.graph("panel"), names) == "low mid map bg frame high ovid");
+    o.drop(ovid);
+    r.pump(200);
+
+    /* A hidden theme layer is no anchor: one of a lower class leaves the
+     * map where it was, over the other client's content. */
+    cr::LayerOptions amb_lo = lo_at(R_AMB, "ambient", 0);
+    amb_lo.visible = false;
+    const uint32_t amb = a.effect(amb_lo, fx);
+    r.pump(200);
+    ok("layer hosts: a hidden ambient theme layer: the map still by the lowest drawn one",
+       stack_of(r.gpu.graph("panel"), names) == "low mid map bg frame high");
+    a.drop(amb);
+    r.pump(200);
+
+    /* An exclusive lowest theme layer: the map just over it, so it is not
+     * suspended with what is below. */
+    cr::LayerOptions ex = bg_lo;
+    ex.exclusive = true;
+    a.set(bg, ex);
+    r.pump(500);
+    ok("layer hosts: an exclusive background: the map just over it, shown, still hosted",
+       eb.layer[video] == "shown" && b.hosts.count("map") && stack_of(r.gpu.graph("panel"), names) == "bg map frame high");
+    a.set(bg, bg_lo);
+    r.pump(500);
+    ok("layer hosts: not exclusive again: back under it", stack_of(r.gpu.graph("panel"), names) == "low mid map bg frame high");
 
     /* The edge works as for a scene's host. */
     cr::Host eh = h;
@@ -1971,7 +2021,7 @@ static void hosting_from_layers()
     a.host(h);
     r.pump(100);
 
-    /* Refusals. */
+    /* Refusals; a host with no layer drawn waits and blocks nobody. */
     cr::Host own = h;
     own.target = "panel";
     ok("layer hosts: its own target refused by the client", !a.host(own));
@@ -1981,28 +2031,59 @@ static void hosting_from_layers()
         raw.send("{\"op\":\"host\",\"into\":\"panel\",\"target\":\"map\",\"x\":0,\"y\":0,\"w\":10,\"h\":10}");
         raw.send("{\"op\":\"host\",\"into\":\"panel\",\"target\":\"panel\",\"x\":0,\"y\":0,\"w\":10,\"h\":10}");
         raw.send("{\"op\":\"host\",\"into\":\"panel\",\"ref\":3,\"target\":\"map\",\"x\":0,\"y\":0,\"w\":10,\"h\":10}");
-        raw.send("{\"op\":\"host\",\"into\":\"nowhere\",\"target\":\"map\",\"x\":0,\"y\":0,\"w\":10,\"h\":10}");
-        r.pump(50);
+        raw.send("{\"op\":\"host\",\"into\":\"nowhere\",\"target\":\"hud\",\"x\":0,\"y\":0,\"w\":10,\"h\":10}");
+        raw.send("{\"op\":\"host\",\"into\":\"panel\",\"target\":\"map\",\"x\":0,\"y\":0,\"w\":10,\"h\":10}");
+        r.pump(100);
         const std::string got = raw.events();
-        ok("layer hosts: another client's host of the map refused, naming into; its own target; ref with into; "
-           "an unknown into",
-           got.find("target map is hosted by another client's layers on panel") != std::string::npos &&
-               got.find("\"into\":\"panel\"") != std::string::npos &&
-               got.find("a host shows other targets, not its own") != std::string::npos &&
+        ok("layer hosts: refused: its own target, ref with into, an unknown into, naming into",
+           got.find("a host shows other targets, not its own") != std::string::npos &&
                got.find("ref or into, not both") != std::string::npos &&
-               got.find("unknown target nowhere") != std::string::npos && b.hosts.count("map"));
+               got.find("unknown target nowhere") != std::string::npos &&
+               got.find("\"into\":\"panel\"") != std::string::npos);
+        ok("layer hosts: a host with no layer drawn: taken, waiting and told why, the theme's still live",
+           got.find("\"ev\":\"hosting\",\"target\":\"map\",\"into\":\"panel\",\"state\":\"waiting\","
+                    "\"reason\":\"no layer of the client is drawn on panel\"") != std::string::npos &&
+               b.hosts.count("map") && b.hosts["map"].x == 700 && hosting["map"] == "live");
     }
-    cr::Host outside = h;
-    outside.x = 1800;
-    a.host(outside);
-    r.pump(50);
-    ok("layer hosts: a rect outside the panel refused, the host ended, the producer told",
-       has(ea.errors, "host: x, y, w, h must lie inside panel") && !b.hosts.count("map") && told.back().into.empty());
-    a.host(h);
-    r.pump(100);
-    ok("layer hosts: hosted again", b.hosts.count("map") && b.hosts["map"].into == "panel");
 
-    /* Live only while a theme layer is visible. */
+    /* Two live themes: the one sent first is live, the other waits; the
+     * first hidden, the other takes over; shown again, the first again. */
+    {
+        cr::Client t2("theme2", r.path);
+        std::map<std::string, std::string> hosting2;
+        t2.on_hosting = [&hosting2](const std::string &t, const std::string &, const std::string &state,
+                                    const std::string &why) { hosting2[t] = state + (why.empty() ? "" : ": " + why); };
+        r.clients.push_back(&t2);
+        r.pump(50);
+        t2.effect(lo_at(R_T2, "content", 0), fx);
+        cr::Host h2 = h;
+        h2.x = 600;
+        t2.host(h2);
+        r.pump(500);
+        ok("layer hosts: a second live theme waits, told why; the first stays live",
+           b.hosts["map"].x == 700 && hosting["map"] == "live" &&
+               hosting2["map"] == "waiting: target map is hosted by another client's layers, sent first" &&
+               has(r.svc->server().status_text(r.now), "(theme)"));
+        cr::LayerOptions hidden = bg_lo;
+        hidden.visible = false;
+        a.set(bg, hidden);
+        hidden = frame_lo;
+        hidden.visible = false;
+        a.set(frame, hidden);
+        r.pump(500);
+        ok("layer hosts: the first theme hidden: it blocks nothing, the second is live",
+           b.hosts.count("map") && b.hosts["map"].x == 600 && hosting2["map"] == "live" &&
+               hosting["map"] == "waiting: no layer of the client is drawn on panel");
+        a.set(bg, bg_lo);
+        a.set(frame, frame_lo);
+        r.pump(500);
+        ok("layer hosts: shown again: the first, sent first, is live again",
+           b.hosts["map"].x == 700 && hosting["map"] == "live" && hosting2["map"].find("waiting") == 0);
+        r.clients.pop_back();
+    }
+    r.pump(200);
+
+    /* Live only while a theme layer is drawn. */
     cr::LayerOptions hidden = bg_lo;
     hidden.visible = false;
     a.set(bg, hidden);
@@ -2014,15 +2095,24 @@ static void hosting_from_layers()
     r.pump(100);
     ok("layer hosts: every theme layer hidden: the producer told the map is not hosted, the status says why",
        !b.hosts.count("map") && told.back().into.empty() &&
-           has(r.svc->server().status_text(r.now), "not live: no visible layer of it drawn there"));
+           has(r.svc->server().status_text(r.now), "waiting: no layer of the client is drawn on panel"));
     a.set(bg, bg_lo);
     a.set(frame, frame_lo);
     r.pump(100);
     ok("layer hosts: shown again: hosted again", b.hosts.count("map") && b.hosts["map"].into == "panel");
 
+    /* The stock HMI taking the panel: nobody sees it, so not hosted. */
+    r.port.steal(r.sc.targets[1]);
+    r.pump(200);
+    ok("layer hosts: the stock HMI takes the panel: the map not hosted, the theme told why",
+       !b.hosts.count("map") && hosting["map"].find("waiting: panel is not on screen") == 0);
+    r.port.free_slot(r.sc.targets[1]);
+    r.pump(2000);
+    ok("layer hosts: the panel back: hosted again", b.hosts.count("map") && hosting["map"] == "live");
+
     /* A scene file on the panel: with layers 1 the layers are drawn over
-     * it, so it stays live and the scene's own host of the map is refused;
-     * without layers they wait, and it is not live. */
+     * it, so the theme's host can be live, but the scene's own host of the
+     * map wins (as without hosts from layers); without layers they wait. */
     cr::SceneOptions so;
     so.target = "panel";
     so.file = gauge;
@@ -2030,45 +2120,48 @@ static void hosting_from_layers()
     so.layers = true;
     const uint32_t sc = o.scene(so);
     r.pump(1500);
+    ok("layer hosts: another client's scene with layers 1: still hosted by the theme",
+       eo.layer[sc] == "shown" && b.hosts.count("map") && b.hosts["map"].x == 700);
     cr::Host sh = h;
     sh.into.clear();
+    sh.x = 600;
     o.host(sc, sh);
-    r.pump(100);
-    ok("layer hosts: another client's scene with layers 1: still hosted, the scene's host of the map refused",
-       eo.layer[sc] == "shown" && b.hosts.count("map") && b.hosts["map"].into == "panel" &&
-           has(eo.errors, "host: target map is hosted by layers on panel"));
+    r.pump(200);
+    ok("layer hosts: the scene's host of the map taken and live, the theme's waits, told why",
+       !has(eo.errors, "host:") && b.hosts.count("map") && b.hosts["map"].x == 600 &&
+           hosting["map"] == "waiting: target map is hosted by a scene");
     so.layers = false;
     o.scene(sc, so);
     r.pump(1500);
-    ok("layer hosts: the scene without layers: the theme's layers wait, the map not hosted",
-       ea.layer[bg] == "waiting" && !b.hosts.count("map"));
+    ok("layer hosts: the scene without layers: the theme's layers wait, the map not hosted, the theme told why",
+       ea.layer[bg] == "waiting" && !b.hosts.count("map") &&
+           hosting["map"] == "waiting: panel's layers wait for a scene file there");
     o.drop(sc);
     r.pump(1500);
-    ok("layer hosts: the scene dropped: hosted again", b.hosts.count("map") && ea.layer[bg] == "shown");
+    ok("layer hosts: the scene dropped: hosted by the theme again",
+       b.hosts.count("map") && b.hosts["map"].x == 700 && ea.layer[bg] == "shown");
 
-    /* A scene hosting the map: a host from layers refused. */
-    {
-        cr::Client s("scene", r.path);
-        Events es;
-        es.wire(s);
-        r.clients.push_back(&s);
-        a.unhost("map");
-        r.pump(100);
-        ok("layer hosts: unhost: the producer told the map is not hosted, nothing in the status",
-           !b.hosts.count("map") && told.back().into.empty() && !has(r.svc->server().status_text(r.now), "hosts map"));
-        so.layers = true;
-        const uint32_t sc2 = s.scene(so);
-        r.pump(1500);
-        s.host(sc2, sh);
-        r.pump(100);
-        a.host(h);
-        r.pump(100);
-        ok("layer hosts: while a scene hosts the map, a host from layers refused; the client forgets it",
-           b.hosts.count("map") && has(ea.errors, "host: target map is hosted by a scene"));
-        r.clients.pop_back();
-    }
+    /* unhost. */
+    a.unhost("map");
+    r.pump(100);
+    ok("layer hosts: unhost: the producer told the map is not hosted, nothing in the status",
+       !b.hosts.count("map") && told.back().into.empty() && !has(r.svc->server().status_text(r.now), "hosts map"));
+
+    /* A refused move to another into ends the host, and the client forgets
+     * it: not sent again after a restart. */
+    a.host(h);
+    r.pump(100);
+    cr::Host moved = h;
+    moved.into = "nowhere";
+    a.host(moved);
+    r.pump(100);
+    ok("layer hosts: a move to an unknown into refused: the host ended, the producer told",
+       has(ea.errors, "host: unknown target nowhere") && !b.hosts.count("map") && told.back().into.empty());
+    r.svc.reset();
+    r.pump(100);
+    r.start();
     r.pump(1500);
-    ok("layer hosts: the scene's client gone: the map not hosted", !b.hosts.count("map"));
+    ok("layer hosts: after a restart the client sends no host it was refused", !b.hosts.count("map"));
 
     /* Kept by the client across a restart. */
     a.host(h);

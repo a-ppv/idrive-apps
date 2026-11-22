@@ -61,7 +61,8 @@
  *   hidden by the host, no layer and nothing sent; shown again; the host
  *   gone, back on its own target; no part asked of the decoder (by default);
  * - hosted by a theme's layers, no scene (layers_hosting): in the panel at
- *   the host's rect, under the theme's layers; back on its own target while
+ *   the host's rect, its layer marked as the hosted map and so under the
+ *   theme's layers; back on its own target while
  *   they are hidden and once the theme is gone;
  * - the cluster's map hosted (hosted_wake): a frame with the scaling worker
  *   wakes the service's loop to take it, and its part is drawn;
@@ -587,10 +588,10 @@ static void hosting()
 /* A theme drawing the panel with layers only hosting the map, no scene
  * (cluster-render PROTOCOL.md "Hosting from layers"): the map moves into the
  * panel at the host's rect, with the host's part, its own slot released,
- * and is drawn under the theme's layers though made after them; every
- * theme layer hidden: back on its own target; shown: hosted again; the
- * theme gone: back on its own target. Nothing in the feed knows the host
- * has no scene. */
+ * and, its layer marked as the hosted map, is drawn under the theme's
+ * layers though made after them; every theme layer hidden: back on its own
+ * target; shown: hosted again; the theme gone: back on its own target.
+ * Nothing in the feed knows the host has no scene. */
 static void layers_hosting()
 {
     const std::vector<uint8_t> f = atlas(5);

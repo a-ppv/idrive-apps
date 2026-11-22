@@ -61,6 +61,10 @@ struct LayerOptions {
      * bandwidth they leave; 0: no request (PROTOCOL.md "Bandwidth for a layer"). Sent
      * when set, and with set() also when it goes back to 0. */
     unsigned others_fps = 0;
+    /* A producer's layer placed by a host of its target (on_host): that
+     * target's name, so a host from layers stacks it under its own layers
+     * (PROTOCOL.md "Hosting from layers"); empty: none. */
+    std::string hosted;
     float opacity = 1.0f;
     /* Video, image and effect layers: turned (degrees clockwise) and scaled about
      * the pivot, in pixels from the layer's top-left (its centre unless
@@ -269,10 +273,14 @@ public:
      * (PROTOCOL.md "Hosting from layers"): the hosted video is drawn under
      * them, while one of them is visible. Kept by target (one into a
      * target), sent to a service whose hello has host_layers 1, now or once
-     * one is connected, until unhost() or the service refuses it; false,
-     * nothing kept, without h.into or h.target, or for h.into itself. */
+     * one is connected, until unhost() or the service refuses it (the
+     * service ends it; here it is forgotten unless one into another target
+     * was sent since); false, nothing kept,
+     * without h.into or h.target, or for h.into itself. on_hosting says
+     * whether it is live. */
     bool host(const Host &h);
-    /* This client's layers host target no more. */
+    /* This client's layers host target no more: sent to such a service also
+     * with nothing kept here, so it ends whatever the service holds. */
     void unhost(const std::string &target);
     /* Everything of lo but its target. */
     void set(uint32_t ref, const LayerOptions &lo);
@@ -348,6 +356,11 @@ public:
      * empty), from the service's host events; hosts holds the targets
      * hosted now, by name (none while not connected). */
     std::function<void(const Host &h)> on_host;
+    /* This client's host from layers of target (host(const Host &)): state
+     * "live", or "waiting" with the reason (PROTOCOL.md "hosting"). */
+    std::function<void(const std::string &target, const std::string &into, const std::string &state,
+                       const std::string &reason)>
+        on_hosting;
     std::map<std::string, Host> hosts;
     /* Another client's layer shown with others_fps holds this client's
      * videos to fps_cap updates a second (0: none; app: that client's
@@ -423,6 +436,7 @@ private:
     void turn_fields(std::vector<std::pair<std::string, std::string>> *kv, const LayerOptions &lo) const;
     void mesh_fields(std::vector<std::pair<std::string, std::string>> *kv, const MeshOptions &mo) const;
     std::string layer_json(uint32_t ref, const Layer &l) const;
+    std::string host_json(const std::pair<std::string, std::string> &by, const Host &h) const;
     /* A scene's kept edit lines as one edit message, oldest first. */
     std::string edits_json(uint32_t ref, const Layer &l) const;
     bool next_image(std::string *msg);

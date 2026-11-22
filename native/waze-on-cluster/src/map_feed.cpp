@@ -206,6 +206,9 @@ void MapFeed::make_layer()
     lo_.contend = !hosted();
     lo_.guide_hold = cfg_.guide_hold;
     lo_.yield = hosted() || cfg_.target != "hud" || !cfg_.hud_keep_shown;
+    /* marked as the hosted map, so a theme hosting it from its layers draws
+     * it under them (an older renderer ignores the field) */
+    lo_.hosted = hosted() ? cfg_.target : std::string();
     lo_.x = (int)q.x;
     lo_.y = (int)q.y;
     lo_.w = q.w;

@@ -58,6 +58,9 @@ struct LayerParams {
     /* While it is shown, every other client's video at most this many
      * updates a second (Compositor::fps_cap); 0: no request. */
     uint32_t others_fps = 0;
+    /* The target whose host placed this layer here (its producer's mark,
+     * PROTOCOL.md "Hosting from layers"); empty: none. */
+    std::string hosted;
     Rect rect;
     float opacity = 1.0f;
     /* A quad turned (degrees clockwise) and scaled about its pivot: px, py
