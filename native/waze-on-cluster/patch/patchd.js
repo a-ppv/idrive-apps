@@ -15,8 +15,10 @@
  * when recmgr loaded its restart entry this boot and systemd loaded the
  * tool's drop-in for it (restartBlocked), else at the next head-unit start.
  * It applies no patch on its own. Explicit
- * capture commands go to a separately supervised DLT helper; reading logs does
- * not change tracing mode. It also reads which Wi-Fi band wireless CarPlay
+ * capture commands go to the DLT capture service on its own socket; reading
+ * logs does not change tracing mode. Started with --dlt-capture (its unit),
+ * the daemon runs that service too (dlt_capture.js host, hostCapture): a
+ * failure of it restarts the service, never the daemon. It also reads which Wi-Fi band wireless CarPlay
  * runs on (wifi_band.js), from wpa_supplicant's D-Bus, which only root may
  * use, and reports it in its status.
  *
@@ -1429,14 +1431,51 @@ function dltRetryNow() {
     dltRetryTimer = null;
     followDlt();
 }
+
+/* The capture service (dlt_capture.js) runs in this daemon when its unit
+ * starts it with --dlt-capture, in place of waze-on-cluster-capture.service,
+ * which earlier versions ran it in. While that unit is installed (a
+ * downgrade, an update cut short) or still runs, it serves the capture
+ * instead and this daemon checks again every CAPTURE_RECHECK_MS, so the
+ * capture's socket has one server. */
+var HOSTS_CAPTURE = process.argv.slice(2).indexOf('--dlt-capture') >= 0;
+var CAPTURE_UNIT = process.env.WOC_CAPTURE_UNIT || '/etc/systemd/system/waze-on-cluster-capture.service';
+var CAPTURE_RECHECK_MS = parseInt(process.env.WOC_CAPTURE_RECHECK_MS, 10) || 30000;
+var SYSTEMCTL = process.env.WOC_SYSTEMCTL || 'systemctl';
+var capture = null;          /* the capture service, while it runs here */
+var captureElsewhere = false;
+function hostCapture() {
+    if (quitting || capture) return;
+    var installed = fs.existsSync(CAPTURE_UNIT);
+    cp.execFile(SYSTEMCTL, ['is-active', path.basename(CAPTURE_UNIT)], { timeout: 15000 }, function (err, out) {
+        if (quitting || capture) return;
+        var unitState = String(out || '').trim();
+        if (installed || /^(active|activating|deactivating|reloading)$/.test(unitState)) {
+            if (!captureElsewhere) log('DLT capture: served by ' + path.basename(CAPTURE_UNIT) + ' (' + (installed ? 'installed' : unitState) + ')');
+            captureElsewhere = true;
+            setTimeout(hostCapture, CAPTURE_RECHECK_MS);
+            return;
+        }
+        if (captureElsewhere) log('DLT capture: served here');
+        capture = require('./dlt_capture.js').host(log);
+    });
+}
+
+/* SIGTERM: the capture service here restores a capture it owns, an active
+ * patch operation finishes, then the daemon exits. */
 function quit() {
     if (quitting) return;
     quitting = true;
     flushMapSettings();
+    if (capture) capture.stop(function (err) {
+        if (err) log('DLT capture: ' + err.message);
+        capture = null;
+        quitWhenIdle();
+    });
     quitWhenIdle();
 }
 function quitWhenIdle() {
-    if (!quitting || busy) return;
+    if (!quitting || busy || capture) return;
     flushMapSettings();
     process.exit(0);
 }
@@ -2550,6 +2589,7 @@ function listenLogs() {
 }
 
 function main() {
+    if (HOSTS_CAPTURE) hostCapture();
     var dir = path.dirname(SOCK);
     ensureDir(dir);
     moveFeatures();

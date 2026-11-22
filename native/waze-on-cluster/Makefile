@@ -104,6 +104,7 @@ test-node:
 	umask 077 && $(NODE) patch/test/patchd_wifi_test.js
 	umask 077 && $(NODE) patch/test/wifi_band_test.js
 	umask 077 && $(NODE) patch/test/dlt_capture_test.js
+	umask 077 && $(NODE) patch/test/capture_host_test.js
 	umask 077 && $(NODE) patch/test/recovery_test.js
 	umask 077 && $(NODE) patch/test/recovery_lock_test.js
 	umask 077 && $(NODE) patch/test/inmem_test.js

@@ -203,10 +203,6 @@
       "runsInSafeMode": true
     },
     {
-      "name": "waze-on-cluster-capture.service",
-      "from": "systemd/waze-on-cluster-capture.service"
-    },
-    {
       "name": "waze-on-cluster-journal.service",
       "from": "systemd/waze-on-cluster-journal.service"
     },
@@ -250,10 +246,6 @@
     },
     {
       "unit": "waze-on-cluster-recovery.service",
-      "target": "multi-user.target"
-    },
-    {
-      "unit": "waze-on-cluster-capture.service",
       "target": "multi-user.target"
     },
     {
@@ -302,7 +294,6 @@
     "waze-on-cluster.service",
     "waze-on-cluster-patchd.service",
     "waze-on-cluster-recovery.service",
-    "waze-on-cluster-capture.service",
     "waze-on-cluster-journal.service"
   ]
 }

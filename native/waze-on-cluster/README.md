@@ -284,6 +284,27 @@ sources are left out.
   The Logs page serves them to a phone on the car's Wi-Fi hotspot, at the
   address it shows, while the page is open and for 15 minutes after a save.
 
+### Processes
+
+Each Node process costs the head unit about 10 MB of RAM, so the tool runs
+as few as it safely can:
+
+| Service | Runs | As |
+|---|---|---|
+| `waze-on-cluster` | the render (C++) | `hmi_5000` |
+| `waze-on-cluster-patchd` | the patches and settings (`patchd.js`) and the DLT capture (`dlt_capture.js`) | root |
+| `waze-on-cluster-recovery` | boot recovery's watcher (`recovery.js`) | root |
+| `waze-on-cluster-journal` | the journal keeper (`journal_keep.js`), from 10 s after boot | dynamic user |
+| `waze-on-cluster-logs`, `-logs-fw` | Save logs, only while the Logs page needs them | dynamic user, root |
+
+The DLT capture runs inside patchd: both run as root, and a failure of the
+capture restarts the capture, not patchd. Boot recovery stays a process of
+its own, so a hang, crash or out-of-memory in any other part can never
+delay or stop it from recording a crash and turning a patch off. The journal
+keeper stays unprivileged, so it never runs as root. Versions up to 0.14.3
+ran the capture in `waze-on-cluster-capture.service`. While a downgrade
+has that unit installed, it serves the capture and patchd doesn't.
+
 ### The patches
 
 `patch/carplay_patch.js` and `patch/aapd_patch.js` (Node 8, no

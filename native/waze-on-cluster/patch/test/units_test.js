@@ -117,3 +117,29 @@ c.units.forEach(function (x) {
     });
 });
 console.log('ok   waze-on-cluster.service: after ufipc_daemon and avbstreamhandler, ordering only, none of ours before them');
+
+/* The DLT capture runs in patchd, root as its own unit ran it: that unit is
+ * gone, its recmgr name stays, so an earlier version's capture unit (one a
+ * downgrade lays again, or one an update cut short left) never restarts the
+ * head unit when it stops. patchd starts after dlt.service, so it stops
+ * before it and its restore reaches the DLT daemon; ExecStopPost restores a
+ * capture left open, except while the earlier unit is installed. Boot
+ * recovery and the journal keeper stay services of their own: recovery's
+ * crash watch apart from every other part, the journal keeper unprivileged. */
+var pd = unit('waze-on-cluster-patchd.service');
+assert(!c.units.some(function (x) { return x.name === 'waze-on-cluster-capture.service'; }), 'no capture unit');
+assert(!c.enable.some(function (e) { return e.unit === 'waze-on-cluster-capture.service'; }) && c.restart.indexOf('waze-on-cluster-capture.service') < 0);
+assert(!fs.existsSync(path.join(root, 'systemd', 'waze-on-cluster-capture.service')));
+assert(c.recmgr.indexOf('waze-on-cluster-capture') >= 0, 'the capture unit\'s recmgr name kept');
+assert(c.files.some(function (f) { return f.path === 'dlt_capture.js'; }), 'dlt_capture.js installed');
+assert.deepStrictEqual(pd.ExecStart, ['/usr/bin/node /var/opt/waze-on-cluster/current/patchd.js --dlt-capture']);
+assert(!pd.User && !pd.DynamicUser && !pd.Group, 'patchd runs as root, as the capture unit did');
+assert(list(pd, 'After').indexOf('dlt.service') >= 0 && !pd.Wants && !pd.Requires && !pd.Before);
+assert.deepStrictEqual(pd.Restart, ['always']);
+assert.deepStrictEqual(pd.ExecStopPost, ["-/bin/sh -c '[ -e /etc/systemd/system/waze-on-cluster-capture.service ] || " +
+    "exec /usr/bin/node /var/opt/waze-on-cluster/current/dlt_capture.js restore'"]);
+var rec = unit('waze-on-cluster-recovery.service');
+assert.deepStrictEqual(rec.ExecStart, ['/usr/bin/node /var/opt/waze-on-cluster/current/recovery.js']);
+assert(c.enable.some(function (e) { return e.unit === 'waze-on-cluster-recovery.service'; }) && c.restart.indexOf('waze-on-cluster-recovery.service') >= 0);
+assert.deepStrictEqual(unit('waze-on-cluster-journal.service').ExecStart, ['/usr/bin/node /var/opt/waze-on-cluster/current/journal_keep.js']);
+console.log('ok   the DLT capture in patchd (root, after dlt.service, restored at its stop), its recmgr name kept; recovery and the journal keeper on their own');

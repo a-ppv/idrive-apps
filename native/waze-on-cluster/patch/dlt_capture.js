@@ -261,14 +261,50 @@ async function restore() {
     return state;
 }
 
-async function serve() {
-    secureDir();
-    var state = await restore(), busy = false, timer = null, stopping = false;
-    var server = net.createServer(function (socket) {
+/* The capture service: its control socket (start, stop, status), the
+ * capture window of at most DURATION and the restore retried every RETRY.
+ * fault(err) is called once with what would end the standalone process (a
+ * failed start, a restore that throws, a socket error); the service is down
+ * then: socket closed, timers cleared. Returns { stop(cb) }: takes the
+ * service down, waits for a step in progress (an opening capture, a
+ * restore) to end, restores a capture it owns, then cb(err). */
+function serve(fault) {
+    var state = null, busy = false, timer = null, stopping = false, server = null, retry = null;
+    var down = false, running = 0, idle = [], stopped = null;
+    function end(err) {
+        if (down) return;
+        down = true;
+        clearTimeout(timer);
+        timer = null;
+        clearInterval(retry);
+        if (server) try { server.close(); } catch (e) {}
+        if (err) fault(err);
+    }
+    /* Each asynchronous step; one that fails takes the service down. */
+    function step(fn) {
+        running++;
+        fn().then(settled, function (err) { settled(); end(err); });
+    }
+    function settled() { if (--running === 0) idle.splice(0).forEach(function (f) { f(); }); }
+    function whenIdle(f) { if (running) idle.push(f); else f(); }
+    function closeLater() { if (!down) step(close); }
+    (async function () {
+        secureDir();
+        state = await restore();
+        if (down) return;
+        server = net.createServer(accept);
+        server.on('error', end);
+        var sock = path.join(DIR, 'control.sock');
+        try { fs.unlinkSync(sock); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+        server.listen(sock, function () { try { fs.chmodSync(sock, 0o600); } catch (err) { end(err); } });
+        retry = setInterval(function () { if (state.owned && state.state === 'restore_failed' && !busy) closeLater(); }, RETRY);
+    })().catch(end);
+    function accept(socket) {
         var buf = '';
         socket.setTimeout(3000, function () { socket.destroy(); });
         socket.on('error', function () {});
         socket.on('data', function (data) {
+            if (down) return socket.destroy();
             buf += data;
             if (buf.length > 256) return socket.destroy();
             var i = buf.indexOf('\n');
@@ -279,22 +315,23 @@ async function serve() {
             if (command === 'start' && !busy && !stopping && !state.owned) {
                 busy = true;
                 state = { state: 'opening', owned: false, closes_at: null, error: null };
-                begin().then(function () { busy = false; if (stopping) close(); });
-            } else if (command === 'stop') close();
+                step(function () { return begin().then(function () { busy = false; if (stopping) closeLater(); }); });
+            } else if (command === 'stop') closeLater();
             socket.end(JSON.stringify(state) + '\n');
         });
-    });
+    }
     async function begin() {
         try {
             if (await listening()) throw new Error('Existing DLT listener active; capture refused');
             if (!registeredClient()) throw new Error('No registered DLT client; capture refused');
             var mode = baseline();
             var level = await getLevel();
+            if (down) throw new Error('Capture service stopping; capture refused');
             state = { state: 'opening', owned: true, restore_mode: mode,
                 restore_level: level < LEVEL ? level : null, closes_at: Date.now() + DURATION, error: null };
             // Record ownership before a change can reach the daemon.
             writeState(state);
-            timer = setTimeout(close, DURATION);
+            timer = setTimeout(closeLater, DURATION);
             if (state.restore_level !== null) await setLevel(LEVEL);
             await setMode(1);
             if (!(await listening())) throw new Error('DLT acknowledged ON but listener did not open');
@@ -321,24 +358,81 @@ async function serve() {
         busy = false;
         stopping = false;
     }
-    var sock = path.join(DIR, 'control.sock');
-    try { fs.unlinkSync(sock); } catch (err) { if (err.code !== 'ENOENT') throw err; }
-    server.listen(sock, function () { fs.chmodSync(sock, 0o600); });
-    setInterval(function () { if (state.owned && state.state === 'restore_failed' && !busy) close(); }, RETRY);
-    // systemd runs restore in ExecStopPost, including after SIGKILL or a failed start.
-    process.on('unhandledRejection', function (err) {
-        process.stderr.write('dlt-capture: ' + err.message + '\n');
-        process.exit(1);
-    });
-    process.on('SIGTERM', function () { process.exit(0); });
-    process.on('SIGINT', function () { process.exit(0); });
+    return {
+        stop: function (cb) {
+            if (stopped) { stopped.push(cb); return; }
+            stopped = [cb];
+            end(null);
+            whenIdle(function () {
+                function done(err) { stopped.forEach(function (f) { f(err || null); }); }
+                restore().then(function (s) { done(s.owned ? new Error('restore failed: ' + s.error) : null); }, done);
+            });
+        }
+    };
+}
+
+/* The capture service inside another daemon (patchd.js --dlt-capture), as
+ * waze-on-cluster-capture.service ran it on its own: what would end that
+ * process ends this service only, which then restores a capture it owns (as
+ * that unit's ExecStopPost did) and starts again RESTART_MS later, at most
+ * RESTART_BURST times in RESTART_WINDOW_MS (the unit's start limit), then
+ * stays down until the daemon starts again. It never exits the process or
+ * throws. log(line). Returns { stop(cb) }: takes it down and restores a
+ * capture it owns, then cb(err), within STOP_MS whatever hangs. */
+var RESTART_MS = Number(process.env.WOC_CAPTURE_RESTART_MS) || 5000;
+var RESTART_BURST = 20;
+var RESTART_WINDOW_MS = 600000;
+var STOP_MS = 15000;
+function host(log) {
+    var part = null, starts = [], timer = null, quit = false, settling = null;
+    function start() {
+        timer = null;
+        var now = Date.now();
+        starts = starts.filter(function (t) { return now - t < RESTART_WINDOW_MS; });
+        if (starts.length >= RESTART_BURST) {
+            log('dlt-capture: ' + starts.length + ' starts in ' + RESTART_WINDOW_MS / 60000 + ' min; the capture stays off until patchd starts again');
+            return;
+        }
+        starts.push(now);
+        var me = part = serve(function (err) {
+            log('dlt-capture: ' + err.message + '; it starts again in ' + RESTART_MS / 1000 + ' s');
+            settling = me;
+            me.stop(function (e) {
+                if (e) log('dlt-capture: ' + e.message);
+                settling = null;
+                if (part === me) part = null;
+                if (!quit) timer = setTimeout(start, RESTART_MS);
+            });
+        });
+    }
+    start();
+    return {
+        stop: function (cb) {
+            var done = false, bound = setTimeout(function () { finish(new Error('capture stop out of time')); }, STOP_MS);
+            function finish(err) { if (done) return; done = true; clearTimeout(bound); cb(err || null); }
+            quit = true;
+            clearTimeout(timer);
+            var p = part || settling;
+            if (p) p.stop(finish); else finish(null);
+        }
+    };
 }
 
 if (require.main === module) {
     var action = process.argv[2];
-    var run = action === 'restore' ? function () { secureDir(); return restore().then(function (s) {
-        if (s.owned) throw new Error(s.error);
-    }); } : serve;
-    run().catch(function (err) { process.stderr.write('dlt-capture: ' + err.message + '\n'); process.exit(1); });
+    var fail = function (err) { process.stderr.write('dlt-capture: ' + err.message + '\n'); process.exit(1); };
+    if (action === 'restore') {
+        Promise.resolve().then(function () { secureDir(); return restore(); }).then(function (s) {
+            if (s.owned) throw new Error(s.error);
+        }).catch(fail);
+    } else {
+        // waze-on-cluster-capture.service (earlier versions' unit, which a
+        // downgrade lays again); systemd runs restore in its ExecStopPost,
+        // including after SIGKILL or a failed start.
+        serve(fail);
+        process.on('unhandledRejection', fail);
+        process.on('SIGTERM', function () { process.exit(0); });
+        process.on('SIGINT', function () { process.exit(0); });
+    }
 }
-module.exports = { listening: listening, getLevel: getLevel };
+module.exports = { listening: listening, getLevel: getLevel, host: host, RESTART_MS: RESTART_MS };

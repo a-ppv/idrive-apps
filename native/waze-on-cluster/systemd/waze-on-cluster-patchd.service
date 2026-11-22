@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Robert Nisipeanu
 [Unit]
-Description=waze-on-cluster patchd: applies/reverts the reversible carplay and Android Auto patches on the iDrive app's request
+Description=waze-on-cluster patchd: applies/reverts the reversible carplay and Android Auto patches on the iDrive app's request, and the bounded Waze diagnostic capture
 RequiresMountsFor=/var/opt
-After=local-fs.target
+# dlt.service: the capture's restore at a stop reaches the DLT daemon,
+# which stops after this.
+After=local-fs.target dlt.service
 
 [Service]
 # Root, like mgu-updater: the app (unprivileged, in tm_oap_app) asks over the
@@ -11,7 +13,14 @@ After=local-fs.target
 # aapd_patch.js with / briefly remounted read-write, then activates the
 # change per PATCH.md "Activation" (SIGKILL+start only where recmgr allows
 # it, otherwise at the next head-unit start). It applies no patch on its own.
-ExecStart=/usr/bin/node /var/opt/waze-on-cluster/current/patchd.js
+# --dlt-capture: it also runs the DLT capture service (dlt_capture.js), as
+# waze-on-cluster-capture.service did before, root there too; a failure of
+# that service restarts it, not the daemon.
+ExecStart=/usr/bin/node /var/opt/waze-on-cluster/current/patchd.js --dlt-capture
+# However the daemon ended, a capture it left open is closed and DLT put
+# back as it was; while an earlier version's capture unit is installed
+# (after a downgrade), that unit's own ExecStopPost does it instead.
+ExecStopPost=-/bin/sh -c '[ -e /etc/systemd/system/waze-on-cluster-capture.service ] || exec /usr/bin/node /var/opt/waze-on-cluster/current/dlt_capture.js restore'
 Restart=always
 RestartSec=5
 StandardOutput=journal
