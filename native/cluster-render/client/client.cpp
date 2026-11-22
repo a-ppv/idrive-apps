@@ -710,11 +710,14 @@ void Client::set(uint32_t ref, const LayerOptions &lo)
         return;
     const std::string target = it->second.lo.target;
     const unsigned others_fps = it->second.lo.others_fps;
+    const bool hosted = !it->second.lo.hosted.empty();
     it->second.lo = lo;
     it->second.lo.target = target;
     std::vector<std::pair<std::string, std::string>> kv = fields("set", ref, it->second.lo);
     if (others_fps && !lo.others_fps)
         kv.push_back({"others_fps", "0"});   /* the request ends */
+    if (hosted && lo.hosted.empty())
+        kv.push_back({"hosted", json_quote("")});   /* not the hosted picture any more */
     if (it->second.kind != "mesh")
         turn_fields(&kv, it->second.lo);
     queue(json_object(kv));

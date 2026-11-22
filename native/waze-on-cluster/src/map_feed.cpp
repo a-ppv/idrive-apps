@@ -83,10 +83,15 @@ MapFeed::MapFeed(const FeedConfig &cfg)
         max_kb_ = max;
         budget_reason_ = reason;
     };
-    client_.on_error = [this](const std::string &op, uint32_t, const std::string &reason) {
+    client_.on_error = [this](const std::string &op, uint32_t ref, const std::string &reason) {
         log_error("render: %s refused: %s", op.c_str(), reason.c_str());
         if (op == "layer") {
             refused_ = reason;
+            /* the hosted layer refused: on the feed's own target (poll) */
+            if (hosted() && ref == layer_) {
+                host_unusable_ = true;
+                remake_ = true;
+            }
         }
     };
     client_.on_status = [this](const std::string &text) {
@@ -136,14 +141,12 @@ void MapFeed::make_layer()
         if (!host_crop(MapRect{q.x, q.y, q.w, q.h}, cfg_.video.w, cfg_.video.h,
                        MapRect{(uint32_t)host_.src_x, (uint32_t)host_.src_y, host_.src_w, host_.src_h},
                        MapRect{(uint32_t)host_.x, (uint32_t)host_.y, host_.w, host_.h}, &crop, &place)) {
-            refused_ = "the host's part of " + cfg_.target + " misses the map";
-            log_error("render: %s", refused_.c_str());
+            fall_back("the host's part of " + cfg_.target + " misses the map");
             return;
         }
         const uint32_t dw = (crop.w < place.w ? crop.w : place.w) & ~3u, dh = (crop.h < place.h ? crop.h : place.h) & ~1u;
         if (dw < 64 || dh < 32) {
-            refused_ = "the map's part in the host's rect is smaller than 64x32";
-            log_error("render: %s", refused_.c_str());
+            fall_back("the map's part in the host's rect is smaller than 64x32");
             return;
         }
         q = crk::QuadRect{place.x, place.y, place.w, place.h};
@@ -224,11 +227,19 @@ void MapFeed::make_layer()
              vo.always_packed ? ", every update packed (always_packed)" : "");
 }
 
+void MapFeed::fall_back(const std::string &why)
+{
+    log_warn("render: %s: the map on %s instead, until the host changes", why.c_str(), cfg_.target.c_str());
+    host_unusable_ = true;
+    make_layer();
+}
+
 void MapFeed::set_host(const cr::Host &h)
 {
     if (h == host_)
         return;
     host_ = h;
+    host_unusable_ = remake_ = false;
     part_ = OutputPart();   /* the next layer's, if any */
     if (!hosted())
         log_info("render: %s is not hosted any more: the map on its own target", cfg_.target.c_str());
@@ -332,6 +343,17 @@ void MapFeed::set_guide_hold(bool hold)
 void MapFeed::poll(int64_t now_ms)
 {
     client_.poll(now_ms);
+    if (remake_) {
+        remake_ = false;
+        log_warn("render: the hosted layer refused: the map on %s instead, until the host changes", cfg_.target.c_str());
+        if (layer_) {
+            keep_newest();
+            client_.drop(layer_);
+            layer_ = 0;
+        }
+        if (client_.connected())
+            make_layer();
+    }
     send_pending(now_ms);
     if (connected_ && !client_.connected()) {
         connected_ = false;

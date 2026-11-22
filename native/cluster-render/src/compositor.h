@@ -307,24 +307,32 @@ public:
      *
      * Each arrange() decides, from the layers' states then, which host from
      * layers is live (hosts(), the stack, the edge). One is eligible while
-     * into is on screen, its layers are not waiting for a scene file there,
-     * and owner has a layer drawn there at or above its own topmost
-     * exclusive layer (its anchor: the lowest such). Of a target's eligible
-     * hosts the one sent first is live, and none while a scene hosts the
-     * target (scene hosts are as without hosts from layers). The live host's
+     * it is shown, into is on screen, its layers are not waiting for a
+     * scene file there, and owner has a layer drawn and seen over the rect
+     * at or above its own topmost exclusive layer (the lowest such is its
+     * anchor). Of a target's eligible hosts on one into the one whose
+     * client draws highest over its rect is live (on several intos: of
+     * those, the one sent last), and none while a scene hosts the target
+     * (scene hosts are as without hosts from layers). The live host's
      * producer's videos (other clients' on into marked with hosted's name,
      * LayerParams::hosted) are stacked just under the anchor, or just over
-     * it when it is exclusive, so no exclusive layer of owner's hides them. */
+     * it when it is exclusive, and over any other hosting client's layer
+     * drawn over the rect, so neither hides them. */
     bool host_layers(uint64_t owner, int into, int hosted, const Host &h, std::string *err);
     void unhost_layers(uint64_t owner, int hosted);
+    /* A host from layers' rect and part are at least this big: smaller,
+     * the producer draws nothing (waze-on-cluster's map_feed.cpp). */
+    static const uint32_t kHostMinW = 64, kHostMinH = 32;
     struct LayerHost {
         uint64_t owner = 0;
         int into = 0;
         Host host;
-        uint64_t seq = 0;   /* when it was first sent: the earlier wins */
+        uint64_t seq = 0;   /* when it was first sent: of winners on several intos, the later wins */
         /* As of the last arrange(): */
         bool eligible = false, live = false;
+        std::string wait;      /* not eligible: why */
         uint32_t anchor = 0;   /* eligible: owner's layer it is stacked by */
+        size_t anchor_pos = 0, top_pos = 0;   /* in into's stack: the anchor, owner's topmost layer over the rect */
         bool over = false;     /* the anchor is exclusive: just over it */
         std::string why;       /* not live: why (by: another client's host holds it) */
         uint64_t by = 0;
@@ -752,8 +760,12 @@ private:
      * allocating them each tick). */
     std::vector<std::vector<StackItem>> items_;
     /* arrange(): which host from layers is live, and its producer's videos
-     * restacked by its anchor; host_serial_ follows. */
+     * restacked by its anchor; host_serial_ follows. In steps: */
     void arrange_layer_hosts();
+    void host_eligibility(LayerHost &lh) const;   /* eligible, its anchor and top, or why not */
+    std::map<int, const LayerHost *> host_winners(const std::vector<bool> &by_scene) const;   /* by target */
+    void host_decided(int target, LayerHost &lh, const LayerHost *winner, bool by_scene);   /* live, or why not */
+    void host_restack(int target, const LayerHost &lh);   /* the live host's producer's videos */
     /* The live, shown host from layers into target ti that e's video is the
      * hosted producer's (marked, another client's); null: none. */
     const LayerHost *layer_host_of(int ti, const Entry &e) const;

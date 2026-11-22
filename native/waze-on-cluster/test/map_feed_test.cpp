@@ -60,6 +60,8 @@
  *   host's rect with the host's part of the picture, its own slot released;
  *   hidden by the host, no layer and nothing sent; shown again; the host
  *   gone, back on its own target; no part asked of the decoder (by default);
+ *   a host whose place cannot be drawn (its part misses the map, its rect
+ *   too small): on its own target instead;
  * - hosted by a theme's layers, no scene (layers_hosting): in the panel at
  *   the host's rect, its layer marked as the hosted map and so under the
  *   theme's layers; back on its own target while
@@ -578,6 +580,24 @@ static void hosting()
        r.st().hosted && placed && placed->params.rect.x == 836 && placed->params.rect.y == 220 &&
            placed->params.rect.w == 272 && placed->params.rect.h == 120 &&
            r.drawing("panel", f, &with));
+
+    /* A host whose place cannot be drawn: the map stays on its own target,
+     * never nowhere. */
+    cr::Host missing = whole;
+    missing.src_x = 0; missing.src_y = 0; missing.src_w = 200; missing.src_h = 100;   /* outside the half-size map */
+    design.host(sc2, missing);
+    r.pump(2500, &f);
+    ok("a host's part that misses the map: the map on its own target instead",
+       r.st().state == "showing" && r.st().target == "map" && !r.st().hosted && r.drawing("map", f, &with));
+    cr::Host tiny = whole;
+    tiny.w = 40; tiny.h = 20;
+    design.host(sc2, tiny);
+    r.pump(2500, &f);
+    ok("a host's rect too small for the map: the map on its own target instead",
+       r.st().state == "showing" && r.st().target == "map" && !r.st().hosted && r.drawing("map", f, &with));
+    design.host(sc2, whole);
+    r.pump(2500, &f);
+    ok("a host that can be drawn again: hosted again", r.st().hosted && r.st().target == "panel");
     design.drop(sc2);
     r.pump(500, &f);
     r.other = nullptr;

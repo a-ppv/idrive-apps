@@ -63,7 +63,8 @@ struct LayerOptions {
     unsigned others_fps = 0;
     /* A producer's layer placed by a host of its target (on_host): that
      * target's name, so a host from layers stacks it under its own layers
-     * (PROTOCOL.md "Hosting from layers"); empty: none. */
+     * (PROTOCOL.md "Hosting from layers"); empty: none. Sent when set,
+     * and with set() also when it goes back to empty. */
     std::string hosted;
     float opacity = 1.0f;
     /* Video, image and effect layers: turned (degrees clockwise) and scaled about

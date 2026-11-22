@@ -249,7 +249,9 @@ private:
     /* The host of the feed's target from now on (into empty: none): the
      * layer made again where it goes, or none while hidden. */
     void set_host(const cr::Host &h);
-    bool hosted() const { return !host_.into.empty(); }
+    /* Hosted, and the host's place can be drawn (else on the feed's own
+     * target until the host changes: the map is never nowhere). */
+    bool hosted() const { return !host_.into.empty() && !host_unusable_; }
     /* The target the layer is on: the host's, or the feed's own. */
     const std::string &drawn_target() const { return hosted() ? host_.into : cfg_.target; }
     /* A layer that scales: the scaled frame to the renderer, and the newest
@@ -271,6 +273,11 @@ private:
     FeedConfig cfg_;
     cr::Client client_;
     cr::Host host_;   /* the feed's target's host, from the renderer's events */
+    bool host_unusable_ = false;   /* its place could not be drawn (fall_back) */
+    bool remake_ = false;          /* the renderer refused the hosted layer: make it again, unhosted */
+    /* The host's place cannot be drawn (why): the layer on the feed's own
+     * target instead, until the host changes. */
+    void fall_back(const std::string &why);
     uint32_t layer_ = 0;
     cr::LayerOptions lo_;   /* the layer's options as last sent */
     bool show_due_ = false;   /* visible once the frame waiting has gone */

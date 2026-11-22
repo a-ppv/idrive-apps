@@ -284,7 +284,7 @@ async function main() {
     thm.set(art, { visible: false });
     ok('layer host: its only layer hidden: not hosted, the theme told why',
         await until(() => hosted[hosted.length - 1] === 'map:-', 2000) &&
-        await until(() => hostingThm[hostingThm.length - 1] === 'map:waiting:no layer of the client is drawn on panel', 2000));
+        await until(() => hostingThm[hostingThm.length - 1] === 'map:waiting:no layer of the client is drawn over its rect on panel', 2000));
     thm.set(art, { visible: true });
     ok('layer host: shown again: hosted again',
         await until(() => hosted[hosted.length - 1] === 'map:panel:1:560', 2000));

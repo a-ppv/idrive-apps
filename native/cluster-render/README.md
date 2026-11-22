@@ -281,9 +281,10 @@ Beside the layers:
   is drawn at the rect it names, just under the app's lowest drawn layer
   (over it when that one is exclusive), so its frame and readouts sit over
   it. The picture goes back to its own target while none of the app's
-  layers there is drawn, the panel is not on screen, or a scene hosts it,
-  and when the app ends the host or exits. Of several apps hosting the same
-  target the first to send it whose layers are drawn wins; the `hosting`
+  layers over the rect is drawn, the panel is not on screen, or a scene
+  hosts it, and when the app ends the host or exits. Of several apps
+  hosting the same target the one drawn highest over the picture wins, so
+  a background app's early host loses to the visible theme; the `hosting`
   event tells each whether it is live and why not. Both backends.
 
 Each target's changes are flushed together once a tick, so the cluster never

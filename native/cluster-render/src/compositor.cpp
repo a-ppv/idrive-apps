@@ -604,7 +604,6 @@ void Compositor::set_layers(uint32_t id, const SceneLayers &l)
     host_serial_++;
 }
 
-/* r is a non-empty rect inside target t. */
 static bool inside(const Rect &r, const TargetSpec &t)
 {
     return r.w && r.h && r.x >= 0 && r.y >= 0 && (uint64_t)r.x + r.w <= t.width && (uint64_t)r.y + r.h <= t.height;
@@ -670,8 +669,12 @@ bool Compositor::host_layers(uint64_t owner, int into, int hosted, const Host &h
         return refuse("x, y, w, h must lie inside " + specs[into].name);
     if (!inside(h.src, specs[hosted]))
         return refuse("src_x, src_y, src_w, src_h must lie inside " + specs[hosted].name);
-    /* Sent again (also into another target): the same host, its place in
-     * the order kept; the next arrange() decides on it. */
+    /* smaller, the producer draws nothing: the picture would be nowhere */
+    if (h.rect.w < kHostMinW || h.rect.h < kHostMinH || h.src.w < kHostMinW || h.src.h < kHostMinH)
+        return refuse("a host from layers is at least " + std::to_string(kHostMinW) + "x" + std::to_string(kHostMinH) +
+                      " (w, h and src_w, src_h)");
+    /* Sent again (also into another target): the same host; the next
+     * arrange() decides on it. */
     LayerHost &l = layer_hosts_[std::make_pair(hosted, owner)];
     if (!l.seq)
         l.seq = ++layer_host_seq_;
@@ -694,6 +697,154 @@ bool Compositor::drawable(uint32_t id, const SceneEntry &s) const
     return s.error.empty() && t.file && t.graph && t.file_of == id && t.file_serial == s.serial;
 }
 
+static bool overlaps(const Rect &a, const Rect &b)
+{
+    return (int64_t)a.x < (int64_t)b.x + b.w && (int64_t)b.x < (int64_t)a.x + a.w && (int64_t)a.y < (int64_t)b.y + b.h &&
+           (int64_t)b.y < (int64_t)a.y + a.h;
+}
+
+/* Something of l can be seen: a video or image not at opacity 0 (an effect
+ * or mesh draws what its shader does: taken as seen). */
+static bool seen(const Layer &l)
+{
+    const std::string kind = l.kind();
+    return (kind != "video" && kind != "image") || l.params.opacity > 0;
+}
+
+void Compositor::host_eligibility(LayerHost &lh) const
+{
+    const std::string &into = slots_->targets()[lh.into].name;
+    const Target &t = targets_[lh.into];
+    const TargetState st = slots_->status(lh.into).state;
+    lh.eligible = lh.over = false;
+    lh.wait.clear();
+    if (!lh.host.shown) {
+        lh.wait = "it shows the target nowhere (shown 0)";
+        return;
+    }
+    if (layers_wait(lh.into)) {
+        lh.wait = into + "'s layers wait for a scene file there";
+        return;
+    }
+    if (!t.graph || !(st == TargetState::Shown || st == TargetState::Lingering || slots_->kept(lh.into))) {
+        lh.wait = into + " is not on screen (" + target_state_name(st) + ")";
+        return;
+    }
+    /* The client's layers drawn and seen over the rect, from its topmost
+     * exclusive layer up (nothing of it below that is drawn once it is):
+     * the lowest is the anchor, the topmost decides who wins. */
+    const Arrangement &a = t.arr;
+    auto listed = [](const std::vector<uint32_t> &v, uint32_t id) { return std::find(v.begin(), v.end(), id) != v.end(); };
+    size_t from = 0;
+    for (size_t p = 0; p < a.order.size(); p++) {
+        const Entry &e = layers_.at(a.order[p]);
+        if (e.owner == lh.owner && e.layer->params.exclusive &&
+            (listed(a.drawn, a.order[p]) || listed(a.suspended, a.order[p])))
+            from = p;
+    }
+    for (size_t p = from; p < a.order.size(); p++) {
+        const Entry &e = layers_.at(a.order[p]);
+        if (e.owner != lh.owner || !listed(a.drawn, a.order[p]) || !seen(*e.layer) ||
+            !overlaps(e.layer->params.rect, lh.host.rect))
+            continue;
+        if (!lh.eligible) {
+            lh.eligible = true;
+            lh.anchor = a.order[p];
+            lh.anchor_pos = p;
+            lh.over = e.layer->params.exclusive;
+        }
+        lh.top_pos = p;
+    }
+    if (!lh.eligible)
+        lh.wait = "no layer of the client is drawn over its rect on " + into;
+}
+
+std::map<int, const Compositor::LayerHost *> Compositor::host_winners(const std::vector<bool> &by_scene) const
+{
+    /* On one into, the host whose client draws highest over its rect; of
+     * winners on different intos, the one sent last. */
+    std::map<std::pair<int, int>, const LayerHost *> best;   /* by (target, into) */
+    for (const auto &kv : layer_hosts_) {
+        const LayerHost &lh = kv.second;
+        if (!lh.eligible || by_scene[kv.first.first])
+            continue;
+        const LayerHost *&b = best[std::make_pair(kv.first.first, lh.into)];
+        if (!b || lh.top_pos > b->top_pos)
+            b = &lh;
+    }
+    std::map<int, const LayerHost *> win;
+    for (const auto &kv : best) {
+        const LayerHost *&w = win[kv.first.first];
+        if (!w || kv.second->seq > w->seq)
+            w = kv.second;
+    }
+    return win;
+}
+
+void Compositor::host_decided(int target, LayerHost &lh, const LayerHost *winner, bool by_scene)
+{
+    const std::string &name = slots_->targets()[target].name;
+    const bool live = winner == &lh;
+    uint64_t by = 0;
+    std::string why = lh.wait;
+    if (lh.eligible && by_scene) {
+        why = "target " + name + " is hosted by a scene";
+    } else if (lh.eligible && !live) {
+        by = winner->owner;
+        why = winner->into == lh.into ? "target " + name + " is hosted by another client's layers, drawn higher over it"
+                                      : "target " + name + " is hosted by another client's layers on " +
+                                            slots_->targets()[winner->into].name + ", sent later";
+    }
+    if (live != lh.live || why != lh.why || by != lh.by) {
+        host_serial_++;
+        log_info("compositor: host of %s from client %llu's layers on %s: %s", name.c_str(),
+                 (unsigned long long)lh.owner, slots_->targets()[lh.into].name.c_str(), live ? "live" : why.c_str());
+    }
+    lh.live = live;
+    lh.why = why;
+    lh.by = by;
+}
+
+void Compositor::host_restack(int target, const LayerHost &lh)
+{
+    std::vector<StackItem> &items = items_[lh.into];
+    const Arrangement &a = targets_[lh.into].arr;
+    /* By the anchor, but never under another hosting client's layer drawn
+     * over the rect: no host's layers hide the picture of another's. */
+    size_t at = lh.anchor_pos;
+    bool over = lh.over;
+    for (const auto &kv : layer_hosts_) {
+        if (kv.first.first != target || kv.second.owner == lh.owner || kv.second.into != lh.into)
+            continue;
+        for (size_t p = at + 1; p < a.order.size(); p++) {
+            const Entry &e = layers_.at(a.order[p]);
+            if (e.owner == kv.second.owner && overlaps(e.layer->params.rect, lh.host.rect) &&
+                std::find(a.drawn.begin(), a.drawn.end(), a.order[p]) != a.drawn.end()) {
+                at = p;
+                over = true;
+            }
+        }
+    }
+    auto anchor = std::find_if(items.begin(), items.end(), [&](const StackItem &it) { return it.id == a.order[at]; });
+    if (anchor == items.end())
+        return;
+    const StackItem key = *anchor;
+    bool moved = false;
+    for (StackItem &it : items) {
+        const Entry &e = layers_.at(it.id);
+        if (e.owner == lh.owner || std::strcmp(e.layer->kind(), "video") ||
+            e.layer->params.hosted != slots_->targets()[target].name)
+            continue;
+        it.klass = key.klass;
+        it.z = key.z;
+        it.seq = key.seq;
+        it.under = over ? -1 : 1;
+        moved = true;
+    }
+    if (moved)
+        targets_[lh.into].arr = crs::arrange(items);
+}
+
 void Compositor::arrange_layer_hosts()
 {
     const std::vector<TargetSpec> &specs = slots_->targets();
@@ -703,103 +854,15 @@ void Compositor::arrange_layer_hosts()
         if (drawable(kv.first, kv.second))
             for (const auto &h : kv.second.hosts)
                 by_scene[h.first] = true;
-    auto listed = [](const std::vector<uint32_t> &v, uint32_t id) {
-        return std::find(v.begin(), v.end(), id) != v.end();
-    };
-    /* Eligible, and the anchor: from each into's stack as made. */
-    std::vector<std::string> why;
+    for (auto &kv : layer_hosts_)
+        host_eligibility(kv.second);
+    const std::map<int, const LayerHost *> win = host_winners(by_scene);
     for (auto &kv : layer_hosts_) {
-        LayerHost &lh = kv.second;
-        const Target &t = targets_[lh.into];
-        const std::string &into = specs[lh.into].name;
-        const TargetState st = slots_->status(lh.into).state;
-        lh.eligible = lh.over = false;
-        lh.anchor = 0;
-        why.emplace_back();
-        if (layers_wait(lh.into)) {
-            why.back() = into + "'s layers wait for a scene file there";
-            continue;
-        }
-        if (!t.graph || !(st == TargetState::Shown || st == TargetState::Lingering || slots_->kept(lh.into))) {
-            why.back() = into + " is not on screen (" + target_state_name(st) + ")";
-            continue;
-        }
-        /* From the client's topmost exclusive layer up: nothing of it below
-         * that is drawn once it is. */
-        const Arrangement &a = t.arr;
-        size_t from = 0;
-        for (size_t p = 0; p < a.order.size(); p++) {
-            const Entry &e = layers_.at(a.order[p]);
-            if (e.owner == lh.owner && e.layer->params.exclusive &&
-                (listed(a.drawn, a.order[p]) || listed(a.suspended, a.order[p])))
-                from = p;
-        }
-        for (size_t p = from; p < a.order.size() && !lh.eligible; p++)
-            if (layers_.at(a.order[p]).owner == lh.owner && listed(a.drawn, a.order[p])) {
-                lh.eligible = true;
-                lh.anchor = a.order[p];
-                lh.over = layers_.at(a.order[p]).layer->params.exclusive;
-            }
-        if (!lh.eligible)
-            why.back() = "no layer of the client is drawn on " + into;
-    }
-    /* Of a target's eligible hosts the one sent first, unless a scene hosts it. */
-    std::map<int, const LayerHost *> win;
-    for (const auto &kv : layer_hosts_) {
-        const LayerHost &lh = kv.second;
         auto w = win.find(kv.first.first);
-        if (lh.eligible && !by_scene[kv.first.first] && (w == win.end() || lh.seq < w->second->seq))
-            win[kv.first.first] = &lh;
+        host_decided(kv.first.first, kv.second, w == win.end() ? nullptr : w->second, by_scene[kv.first.first]);
     }
-    size_t i = 0;
-    for (auto &kv : layer_hosts_) {
-        LayerHost &lh = kv.second;
-        const std::string &name = specs[kv.first.first].name;
-        auto w = win.find(kv.first.first);
-        const bool live = w != win.end() && w->second == &lh;
-        uint64_t by = 0;
-        std::string reason = why[i++];
-        if (lh.eligible && by_scene[kv.first.first]) {
-            reason = "target " + name + " is hosted by a scene";
-        } else if (lh.eligible && !live) {
-            by = w->second->owner;
-            reason = "target " + name + " is hosted by another client's layers, sent first";
-        }
-        if (live != lh.live || reason != lh.why || by != lh.by) {
-            host_serial_++;
-            log_info("compositor: host of %s from client %llu's layers on %s: %s", name.c_str(),
-                     (unsigned long long)lh.owner, specs[lh.into].name.c_str(), live ? "live" : reason.c_str());
-        }
-        lh.live = live;
-        lh.why = reason;
-        lh.by = by;
-    }
-    /* The live hosts' producers' videos by their anchors; those targets'
-     * stacks made again. */
-    for (const auto &kv : layer_hosts_) {
-        const LayerHost &lh = kv.second;
-        if (!lh.live || !lh.host.shown)
-            continue;
-        std::vector<StackItem> &items = items_[lh.into];
-        auto a = std::find_if(items.begin(), items.end(), [&lh](const StackItem &it) { return it.id == lh.anchor; });
-        if (a == items.end())
-            continue;
-        const StackItem anchor = *a;
-        bool moved = false;
-        for (StackItem &it : items) {
-            const Entry &e = layers_.at(it.id);
-            if (e.owner == lh.owner || std::strcmp(e.layer->kind(), "video") ||
-                e.layer->params.hosted != specs[kv.first.first].name)
-                continue;
-            it.klass = anchor.klass;
-            it.z = anchor.z;
-            it.seq = anchor.seq;
-            it.under = lh.over ? -1 : 1;
-            moved = true;
-        }
-        if (moved)
-            targets_[lh.into].arr = crs::arrange(items);
-    }
+    for (const auto &kv : win)
+        host_restack(kv.first, *kv.second);
 }
 
 const Compositor::LayerHost *Compositor::layer_host_of(int ti, const Entry &e) const
@@ -809,7 +872,7 @@ const Compositor::LayerHost *Compositor::layer_host_of(int ti, const Entry &e) c
     const int hosted = slots_->index(e.layer->params.hosted);
     for (const auto &kv : layer_hosts_) {
         const LayerHost &lh = kv.second;
-        if (kv.first.first == hosted && lh.live && lh.host.shown && lh.into == ti && lh.owner != e.owner)
+        if (kv.first.first == hosted && lh.live && lh.into == ti && lh.owner != e.owner)
             return &lh;
     }
     return nullptr;

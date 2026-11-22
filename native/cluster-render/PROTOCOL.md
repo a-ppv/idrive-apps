@@ -105,7 +105,7 @@ Layer fields (all optional):
 | `guide_hold` | 1 | on a target guide holds follow (`map`, iDrive 7): 0 keeps them released while this layer wants the target, so the stock HMI's turn box shows (README.md "Arbitration") |
 | `yield` | 1 | on a target with yield slots (`hud`): 0 keeps the target shown over the stock HMI's pop-ups while this layer wants it (README.md "Arbitration") |
 | `others_fps` | 0 | 15-60: bandwidth for this client ([below](#bandwidth-for-a-layer)); 1-14 count as 15; 0: no request. Send it only to a service whose hello has `others_fps` 1 (an older one ignores it) |
-| `hosted` | empty | a producer's layer placed by a host of its target: that target's name (at most 32 characters), so a host from layers stacks it by its own layers ([below](#hosting-from-layers)). Send it only to a service whose hello has `host_layers` 1 (an older one ignores it) |
+| `hosted` | empty | a producer's layer placed by a host of its target: that target's name (at most 32 characters), so a host from layers stacks it by its own layers ([below](#hosting-from-layers)); `""` clears it. A service whose hello has no `host_layers` 1 ignores it |
 | `opacity` | 1 | 0-1, for video and image layers; drawn times the target's fade in and out |
 | `rotate` | 0 | video, image and effect layers: degrees clockwise about the pivot |
 | `sx`, `sy` | 1 | video, image and effect layers: scale about the pivot |
@@ -518,44 +518,61 @@ ignores them, and draws no edge).
 A client that draws a target with layers only (a cluster theme on `panel`)
 hosts another target there with no scene file: `host` with `into`, the
 target its layers are on, in place of `ref` (not both: refused). Every other
-field, the `host` event, `shown`, the part, the edge and `others_fps` are as
-[above](#hosting-another-target). A producer that follows the event puts its
-layer in `into` at the rect, as for a scene, and marks it with the layer
-field `hosted`, the hosted target's name, so the service knows it.
+field, the `host` event, the part, the edge and `others_fps` are as
+[above](#hosting-another-target); `w`, `h`, `src_w` and `src_h` are at least
+64 and 32 (smaller is refused: the producer draws nothing smaller). A
+producer that follows the event puts its layer in `into` at the rect, as
+for a scene, and marks it with the layer field `hosted`, the hosted
+target's name, so the service knows it.
 
-- **Live.** A client's host is *eligible* while `into` is on screen
-  (`shown` or `lingering`), `into`'s layers are not waiting for a scene file
-  (one with `layers` 1 keeps them drawn), and the client has a layer drawn
-  there (visible, ready, not suspended) at or above its own topmost
-  `exclusive` layer; the lowest such layer is its *anchor*. Of a target's
-  eligible hosts from layers the one sent first is *live*, and none while a
-  scene hosts the target: a scene's host is as without hosts from layers,
-  and wins. Only the live host is in the `host` event; with none, the event
-  says `target` is not hosted, so a producer goes back to its own target.
-  This is decided again at every loop of the service, from the layers'
-  states: all of the client's layers there hidden or suspended, the stock
-  HMI taking `into`, or a scene file without `layers` coming takes the
-  picture back to its own target; when that ends, it is hosted again.
+- **Live.** A client's host is *eligible* while it is shown (`shown` 1:
+  with `shown` 0 it would show the picture nowhere, so it is not live and
+  the picture stays on its own target), `into` is on screen (`shown` or
+  `lingering`), `into`'s layers are not waiting for a scene file (one with
+  `layers` 1 keeps them drawn), and the client has a layer drawn and seen
+  over the host's rect: visible, ready, not suspended, overlapping the rect,
+  at or above the client's own topmost `exclusive` layer, and, for a video
+  or image, not at opacity 0 (an effect or mesh draws what its shader does
+  and counts as seen). The lowest such layer is its *anchor*, the topmost
+  its *top*. Of a target's eligible hosts on one `into`, the one whose top
+  is highest in the stack is *live*: the client the driver sees over the
+  picture. A host sent early with a small or low layer of a background app
+  loses to the theme drawn over it; to win, a client must draw over the
+  other hosts there, and the picture is then drawn over them too (below).
+  Of live candidates on different `into`s the one sent last wins. None is
+  live while a scene hosts the target: a scene's host is as without hosts
+  from layers, and wins. Only the live host is in the `host` event; with
+  none, the event says `target` is not hosted, so a producer goes back to
+  its own target. This is decided again at every loop of the service, from
+  the layers' states: all of the client's layers over the rect hidden or
+  suspended, the stock HMI taking `into`, or a scene file without `layers`
+  coming takes the picture back to its own target; when that ends, it is
+  hosted again.
 - **Stacking.** The live host's producer's videos (another client's on
   `into` with `hosted` the hosted target) are drawn just under the anchor,
   or just over it when the anchor is `exclusive`, so no exclusive layer of
-  the host hides them: under its frame and readouts, over what is below
+  the host hides them, and never under a layer another hosting client draws
+  over the rect: under the host's frame and readouts, over what is below
   (another client's lower layers, a scene file with `layers` 1). Their own
   `class` and `z` do not count while they are hosted. Every other layer,
   another client's video inside the rect included, keeps its place. A layer
   meant to be seen through the rect is cut out or transparent there. A
-  producer that does not mark its layer is drawn in the rect at its own
-  place in the stack.
+  producer that does not mark its layer (waze-on-cluster before this) is
+  drawn in the rect at its own place in the stack, and the host's edge is
+  not drawn on it either.
 - **`hosting` event.** The client is told whether its host is live, and
-  while it is not, why: `no layer of the client is drawn on P`, `P is not
-  on screen (STATE)`, `P's layers wait for a scene file there`, `target T
-  is hosted by a scene`, or `target T is hosted by another client's
-  layers, sent first` (with `by`, that client's name). It comes when the
-  state or the reason changes, after the service has first decided.
+  while it is not, why: `it shows the target nowhere (shown 0)`, `no layer
+  of the client is drawn over its rect on P`, `P is not on screen
+  (STATE)`, `P's layers wait for a scene file there`, `target T is hosted
+  by a scene`, `target T is hosted by another client's layers, drawn higher
+  over it`, or `target T is hosted by another client's layers on P2, sent
+  later` (with `by`, that client's name). It comes when the state or the
+  reason changes, after the service has first decided, and again from the
+  start for a new host.
 - **Several hosts.** A client has one host from layers a target; sending
-  it again replaces it, also into another target, and keeps its place in
-  the order. Another client's host of the same target is never refused for
-  it: it waits. Other clients may have layers on `into` all the same.
+  it again replaces it, also into another target. Another client's host of
+  the same target is never refused for it: it waits. Other clients may have
+  layers on `into` all the same.
 - **End.** `unhost` with `into` and `target`, or the client gone (any way
   the connection ends: exit, crash, a closed socket): the host ends and
   every client is told. A `host` with `into` refused (the `error` event has
@@ -564,9 +581,14 @@ field `hosted`, the hosted target's name, so the service knows it.
   client libraries forget it too, unless they have sent a `host` of that
   target into another target since, which the service takes after the
   refusal. Their `unhost` is sent even when they keep nothing, so it ends
-  whatever the service holds. A service restarted holds
-  nothing until the client sends it again (the client libraries do, after
-  the hello). Nothing is written to disk.
+  whatever the service holds. A service restarted holds nothing until the
+  client sends it again (the client libraries do, after the hello). Nothing
+  is written to disk.
+- **The producer.** A producer that cannot draw the host's place (its part
+  misses the picture, or lands smaller than it draws, or the service
+  refuses its layer there) keeps drawing on its own target until the host
+  changes, so a host never leaves the picture nowhere; waze-on-cluster
+  does.
 - **Cost.** The producer's picture goes into `into` in place of its own
   target, as with a scene's host: one decode and one upload, of the part
   shown, at most its own target's size (a hosted map is at most its
@@ -574,11 +596,11 @@ field `hosted`, the hosted target's name, so the service knows it.
 - **iDrive 8.** The same: the service draws layers on every target of
   both backends, so nothing here depends on scene files or RAMSES 19.
 
-Send `host` with `into`, `unhost` and a layer's `hosted` only to a service
-whose hello has `host_layers` 1. An older one refuses such a `host` (`no
-such scene`), does not know `unhost`, and ignores `hosted`; the client
-libraries keep the host and send it once a service that takes it is
-connected.
+Send `host` with `into` and `unhost` only to a service whose hello has
+`host_layers` 1. An older one refuses such a `host` (`no such scene`) and
+does not know `unhost`; the client libraries keep the host and send it once
+a service that takes it is connected. A layer's `hosted` may go to any
+service: an older one ignores it.
 
 A theme on `panel` showing the map at 600,120, 720 by 480, with the map's
 centre part:
