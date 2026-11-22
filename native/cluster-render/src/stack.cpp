@@ -34,7 +34,9 @@ Arrangement arrange(std::vector<StackItem> items)
             return a.klass < b.klass;
         if (a.z != b.z)
             return a.z < b.z;
-        return a.seq < b.seq;
+        if (a.seq != b.seq)
+            return a.seq < b.seq;
+        return a.under > b.under;
     });
     Arrangement r;
     /* The topmost drawable exclusive layer whose pixels are on the display;

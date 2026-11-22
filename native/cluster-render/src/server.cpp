@@ -728,7 +728,8 @@ void Server::on_json(Client &c, const std::string &body, int64_t now_ms)
                                  {"preload", "1"},
                                  {"others_fps", "1"},
                                  {"render_state", "1"},
-                                 {"samplers", "1"}}));
+                                 {"samplers", "1"},
+                                 {"host_layers", "1"}}));
         c.target_sent.clear();
         c.fps_cap_sent = 0;
         c.host_sent.clear();
@@ -763,6 +764,10 @@ void Server::on_json(Client &c, const std::string &body, int64_t now_ms)
     }
     if (op == "host") {
         op_host(c, ref, j);
+        return;
+    }
+    if (op == "unhost") {
+        op_unhost(c, ref, j);
         return;
     }
     if (op == "drop" && it != c.refs.end() && comp_->edits(c.id, it->second)) {
@@ -919,38 +924,65 @@ void Server::op_scene(Client &c, const cr::Json &j)
 
 void Server::op_host(Client &c, uint32_t ref, const cr::Json &j)
 {
-    /* A refusal names the target, so a client forgets that host only. */
+    /* With into: the client's layers there host, no scene (PROTOCOL.md
+     * "Hosting from layers"). */
+    const bool from_layers = j.count("into") != 0;
+    /* A refusal names the target (and into), so a client forgets that host only. */
     auto refuse = [&](const std::string &why) {
-        send(c, cr::json_object({{"ev", cr::json_quote("error")},
-                                 {"op", cr::json_quote("host")},
-                                 {"ref", std::to_string(ref)},
-                                 {"target", cr::json_quote(str(j, "target"))},
-                                 {"reason", cr::json_quote(why)}}));
+        std::vector<std::pair<std::string, std::string>> kv = {{"ev", cr::json_quote("error")},
+                                                               {"op", cr::json_quote("host")},
+                                                               {"ref", std::to_string(ref)},
+                                                               {"target", cr::json_quote(str(j, "target"))}};
+        if (from_layers)
+            kv.push_back({"into", cr::json_quote(str(j, "into"))});
+        kv.push_back({"reason", cr::json_quote(why)});
+        send(c, cr::json_object(kv));
     };
-    auto it = c.refs.find(ref);
-    const uint32_t scene = it != c.refs.end() && comp_->edits(c.id, it->second) ? it->second : 0;
-    if (!scene) {
-        refuse("no such scene");
-        return;
+    uint32_t scene = 0;
+    int into = -1;
+    if (from_layers) {
+        into = slots_->index(str(j, "into"));
+        if (j.count("ref")) {
+            refuse("ref or into, not both");
+            return;
+        }
+        if (into < 0 || !slots_->targets()[into].follows.empty()) {
+            refuse("unknown target " + str(j, "into"));
+            return;
+        }
+    } else {
+        auto it = c.refs.find(ref);
+        scene = it != c.refs.end() && comp_->edits(c.id, it->second) ? it->second : 0;
+        if (!scene) {
+            refuse("no such scene");
+            return;
+        }
     }
     const int hosted = slots_->index(str(j, "target"));
     if (hosted < 0 || !slots_->targets()[hosted].follows.empty()) {
         refuse("unknown target " + str(j, "target"));
         return;
     }
+    /* a refusal ends what this scene, or these layers, hosted of the target */
+    auto end = [&] {
+        if (from_layers)
+            comp_->unhost_layers(c.id, into, hosted);
+        else
+            comp_->unhost(c.id, scene, hosted);
+    };
     const TargetSpec &from = slots_->targets()[hosted];
     static const char *const keys[] = {"x", "y", "w", "h", "src_x", "src_y", "src_w", "src_h", "shown"};
     double v[] = {0, 0, 0, 0, 0, 0, (double)from.width, (double)from.height, 1};
     std::string err;
     for (size_t i = 0; i < 9; i++)
         if (!num(j, keys[i], 0, i == 8 ? 1 : 65535, &v[i], &err)) {
-            comp_->unhost(c.id, scene, hosted);
+            end();
             refuse(err);
             return;
         }
     const size_t src = j.count("src_x") + j.count("src_y") + j.count("src_w") + j.count("src_h");
     if (src && src != 4) {
-        comp_->unhost(c.id, scene, hosted);
+        end();
         refuse("src_x, src_y, src_w, src_h go together (none: all of " + from.name + ")");
         return;
     }
@@ -960,7 +992,7 @@ void Server::op_host(Client &c, uint32_t ref, const cr::Json &j)
     double ev[5] = {0, 0, 0, 0, 0};
     for (size_t i = 0; i < 5; i++)
         if (!num(j, edge_keys[i], 0, edge_max[i], &ev[i], &err)) {
-            comp_->unhost(c.id, scene, hosted);
+            end();
             refuse(err);
             return;
         }
@@ -973,12 +1005,59 @@ void Server::op_host(Client &c, uint32_t ref, const cr::Json &j)
     h.edge.fade = (uint32_t)ev[2];
     h.edge.dim = (uint32_t)ev[3];
     h.edge.blur = (uint32_t)ev[4];
+    if (from_layers) {
+        if (!comp_->host_layers(c.id, into, hosted, h, &err)) {
+            refuse(err);
+            return;
+        }
+        log_info("client %llu (%s): %s", (unsigned long long)c.id, c.app.c_str(), layer_host_text(hosted).c_str());
+        return;
+    }
     if (!comp_->host(c.id, scene, hosted, h, &err)) {
         refuse(err);
         return;
     }
     log_info("client %llu (%s): scene %u %s", (unsigned long long)c.id, c.app.c_str(), scene,
              comp_->scene_text(scene).c_str());
+}
+
+void Server::op_unhost(Client &c, uint32_t ref, const cr::Json &j)
+{
+    const int hosted = slots_->index(str(j, "target"));
+    if (hosted < 0)
+        return;   /* nothing hosted there: nothing to end */
+    if (j.count("into")) {
+        const int into = slots_->index(str(j, "into"));
+        if (into >= 0)
+            comp_->unhost_layers(c.id, into, hosted);
+    } else {
+        auto it = c.refs.find(ref);
+        if (it != c.refs.end())
+            comp_->unhost(c.id, it->second, hosted);
+    }
+    log_info("client %llu (%s): ends its host of %s", (unsigned long long)c.id, c.app.c_str(),
+             str(j, "target").c_str());
+}
+
+std::string Server::layer_host_text(int hosted) const
+{
+    auto it = comp_->layer_hosts().find(hosted);
+    if (it == comp_->layer_hosts().end())
+        return std::string();
+    const Compositor::LayerHost &lh = it->second;
+    const Host &h = lh.host;
+    char b[320];
+    std::snprintf(b, sizeof b, "hosts %s from its layers on %s at %ux%u+%d+%d from %ux%u+%d+%d%s%s",
+                  slots_->targets()[hosted].name.c_str(), slots_->targets()[lh.into].name.c_str(), h.rect.w,
+                  h.rect.h, h.rect.x, h.rect.y, h.src.w, h.src.h, h.src.x, h.src.y, h.shown ? "" : ", not shown",
+                  lh.live ? "" : "; not live: no visible layer of it drawn there");
+    std::string text = b;
+    if (h.edge.on()) {
+        std::snprintf(b, sizeof b, ", its edge %u up and %u down (fade %u, dim %u, blur %u)", h.edge.top,
+                      h.edge.bottom, h.edge.fade, h.edge.dim, h.edge.blur);
+        text += b;
+    }
+    return text;
 }
 
 void Server::op_edit(Client &c, uint32_t ref, const cr::Json &j)
@@ -1407,6 +1486,8 @@ std::string Server::status_text(int64_t now_ms) const
             s += line + cv->stats() + "\n";
         }
     }
+    for (const auto &kv : comp_->layer_hosts())
+        s += app_of(kv.second.owner) + " " + layer_host_text(kv.first) + "\n";
     for (const std::string &d : drop_ins_)
         s += "drop-in " + d + "\n";
     s += slots_->renderer_text(now_ms);

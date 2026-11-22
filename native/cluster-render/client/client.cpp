@@ -116,7 +116,7 @@ void Client::disconnect(int64_t now_ms)
         keep_last(f.first, &f.second.px);
     for (auto &kv : layers_)
         kv.second.sent = false;
-    repeats_ = always_packed_ = preload_ = others_fps_ = render_state_ = samplers_ = false;
+    repeats_ = always_packed_ = preload_ = others_fps_ = render_state_ = samplers_ = host_layers_ = false;
     if (fps_cap) {
         fps_cap = 0;
         fps_cap_app.clear();
@@ -200,8 +200,13 @@ void Client::read_events()
             others_fps_ = j["others_fps"] == "1";
             render_state_ = j["render_state"] == "1";
             samplers_ = j["samplers"] == "1";
+            host_layers_ = j["host_layers"] == "1";
             ready_ = true;
             backoff_ = 0;
+            /* after the layers, which went at connect */
+            if (host_layers_)
+                for (const auto &kv : layer_hosts_)
+                    queue(kv.second.second);
             if (on_ready)
                 on_ready();
         } else if (ev == "layer" && on_layer) {
@@ -221,6 +226,11 @@ void Client::read_events()
             /* a host refused is not sent again after a reconnect */
             if (l != layers_.end() && j["op"] == "host")
                 l->second.hosts.erase(j["target"]);
+            if (j["op"] == "host" && !j["into"].empty()) {
+                auto lh = layer_hosts_.find(j["target"]);
+                if (lh != layer_hosts_.end() && lh->second.first == j["into"])
+                    layer_hosts_.erase(lh);
+            }
             if (on_error)
                 on_error(j["op"], ref, j["reason"]);
         } else if (ev == "budget" && on_budget) {
@@ -626,6 +636,44 @@ bool Client::host(uint32_t ref, const Host &h)
     queue(json);
     send_now();
     return true;
+}
+
+bool Client::host(const Host &h)
+{
+    if (h.into.empty() || h.target.empty() || h.into == h.target)
+        return false;
+    std::vector<std::pair<std::string, std::string>> kv = {
+        {"op", json_quote("host")}, {"into", json_quote(h.into)}, {"target", json_quote(h.target)},
+        {"x", num(h.x)},            {"y", num(h.y)},              {"w", num(h.w)},
+        {"h", num(h.h)},            {"shown", flag(h.shown)}};
+    if (h.src_w && h.src_h)
+        kv.insert(kv.end(), {{"src_x", num(h.src_x)}, {"src_y", num(h.src_y)}, {"src_w", num(h.src_w)},
+                             {"src_h", num(h.src_h)}});
+    if (h.edge_top || h.edge_bottom)
+        kv.insert(kv.end(), {{"edge_top", num(h.edge_top)}, {"edge_bottom", num(h.edge_bottom)},
+                             {"edge_fade", num(h.edge_fade)}, {"edge_dim", num(h.edge_dim)},
+                             {"edge_blur", num(h.edge_blur)}});
+    const std::string json = json_object(kv);
+    layer_hosts_[h.target] = {h.into, json};   /* into another target: the service moves it */
+    /* to an older service nothing: it would refuse it (no such scene) */
+    if (ready_ && host_layers_) {
+        queue(json);
+        send_now();
+    }
+    return true;
+}
+
+void Client::unhost(const std::string &target)
+{
+    auto it = layer_hosts_.find(target);
+    if (it == layer_hosts_.end())
+        return;
+    if (ready_ && host_layers_) {
+        queue(json_object({{"op", json_quote("unhost")}, {"into", json_quote(it->second.first)},
+                           {"target", json_quote(target)}}));
+        send_now();
+    }
+    layer_hosts_.erase(it);
 }
 
 void Client::edit(uint32_t ref, const std::string &lines)

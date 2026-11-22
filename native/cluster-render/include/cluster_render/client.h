@@ -188,10 +188,11 @@ struct SceneOptions {
     int layers_order = 0;
 };
 
-/* A scene showing another target's content (PROTOCOL.md "host"): in the
- * scene's target at x, y, w, h, the part src_* of target's pixels; shown
- * false: nowhere. As an event, also into: the hosting scene's target, empty
- * once target is not hosted any more. */
+/* A scene, or a client's layers, showing another target's content
+ * (PROTOCOL.md "host"): in the host's target at x, y, w, h, the part src_*
+ * of target's pixels; shown false: nowhere. into: the target whose layers
+ * host it (host(const Host &)); as an event, the hosting target, empty once
+ * target is not hosted any more. */
 struct Host {
     std::string target, into;
     int x = 0, y = 0;
@@ -264,6 +265,15 @@ public:
      * until the service refuses it or the scene is replaced; false, nothing
      * sent, for a scene without layers or a host of its own target. */
     bool host(uint32_t ref, const Host &h);
+    /* This client's layers on h.into host h.target there, with no scene
+     * (PROTOCOL.md "Hosting from layers"): the hosted video is drawn under
+     * them, while one of them is visible. Kept by target (one into a
+     * target), sent to a service whose hello has host_layers 1, now or once
+     * one is connected, until unhost() or the service refuses it; false,
+     * nothing kept, without h.into or h.target, or for h.into itself. */
+    bool host(const Host &h);
+    /* This client's layers host target no more. */
+    void unhost(const std::string &target);
     /* Everything of lo but its target. */
     void set(uint32_t ref, const LayerOptions &lo);
     /* An effect layer's render state, in place of its EffectOptions'. */
@@ -361,6 +371,8 @@ public:
     /* The service's hello takes an asset's sampling by name, wrap_u, wrap_v
      * and anisotropy (SamplerOptions). */
     bool takes_samplers() const { return samplers_; }
+    /* The service's hello takes a host from layers (host(const Host &)). */
+    bool takes_host_layers() const { return host_layers_; }
 
 private:
     struct Part {
@@ -456,6 +468,9 @@ private:
     bool others_fps_ = false;       /* and others_fps */
     bool render_state_ = false;     /* and render state */
     bool samplers_ = false;         /* and samplers */
+    bool host_layers_ = false;      /* and hosts from layers */
+    /* Hosts from this client's layers: by hosted target, (into, message). */
+    std::map<std::string, std::pair<std::string, std::string>> layer_hosts_;
 };
 
 }  // namespace cr

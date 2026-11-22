@@ -632,6 +632,9 @@ bool Compositor::host(uint64_t owner, uint32_t id, int hosted, const Host &h, st
     for (const auto &kv : scenes_)
         if (kv.first != id && kv.second.error.empty() && kv.second.hosts.count(hosted))
             return refuse("target " + specs[hosted].name + " is hosted by another scene");
+    auto lh = layer_hosts_.find(hosted);
+    if (lh != layer_hosts_.end())
+        return refuse("target " + specs[hosted].name + " is hosted by layers on " + specs[lh->second.into].name);
     auto inside = [](const Rect &r, const TargetSpec &t) {
         return r.w && r.h && r.x >= 0 && r.y >= 0 && (uint64_t)r.x + r.w <= t.width && (uint64_t)r.y + r.h <= t.height;
     };
@@ -651,6 +654,91 @@ void Compositor::unhost(uint64_t owner, uint32_t id, int hosted)
         host_serial_++;
 }
 
+bool Compositor::host_layers(uint64_t owner, int into, int hosted, const Host &h, std::string *err)
+{
+    const std::vector<TargetSpec> &specs = slots_->targets();
+    auto refuse = [&](const std::string &why) {
+        *err = why;
+        unhost_layers(owner, into, hosted);
+        return false;
+    };
+    if (hosted == into)
+        return refuse("a host shows other targets, not its own");
+    for (const auto &kv : scenes_)
+        if (kv.second.error.empty() && kv.second.hosts.count(hosted))
+            return refuse("target " + specs[hosted].name + " is hosted by a scene");
+    auto it = layer_hosts_.find(hosted);
+    if (it != layer_hosts_.end() && it->second.owner != owner)
+        return refuse("target " + specs[hosted].name + " is hosted by another client's layers on " +
+                      specs[it->second.into].name);
+    auto inside = [](const Rect &r, const TargetSpec &t) {
+        return r.w && r.h && r.x >= 0 && r.y >= 0 && (uint64_t)r.x + r.w <= t.width && (uint64_t)r.y + r.h <= t.height;
+    };
+    if (!inside(h.rect, specs[into]))
+        return refuse("x, y, w, h must lie inside " + specs[into].name);
+    if (!inside(h.src, specs[hosted]))
+        return refuse("src_x, src_y, src_w, src_h must lie inside " + specs[hosted].name);
+    LayerHost &l = layer_hosts_[hosted];
+    /* Moved to another target: not live there until arrange() says so. */
+    if (l.owner != owner || l.into != into)
+        l.live = false;
+    l.owner = owner;
+    l.into = into;
+    l.host = h;
+    host_serial_++;
+    update_layer_hosts();
+    return true;
+}
+
+void Compositor::unhost_layers(uint64_t owner, int into, int hosted)
+{
+    auto it = layer_hosts_.find(hosted);
+    if (it != layer_hosts_.end() && it->second.owner == owner && it->second.into == into) {
+        layer_hosts_.erase(it);
+        host_serial_++;
+    }
+}
+
+void Compositor::update_layer_hosts()
+{
+    for (auto &kv : layer_hosts_) {
+        LayerHost &lh = kv.second;
+        const Target &t = targets_[lh.into];
+        bool live = false;
+        /* Drawn: its scene published, no file on it that its layers wait for. */
+        if (t.graph && !layers_wait(lh.into))
+            for (const auto &e : layers_) {
+                const Layer &l = *e.second.layer;
+                if (e.second.owner == lh.owner && l.target() == lh.into && l.params.visible &&
+                    e.second.error.empty() && l.refusal().empty()) {
+                    live = true;
+                    break;
+                }
+            }
+        if (live != lh.live) {
+            lh.live = live;
+            host_serial_++;
+            log_info("compositor: host of %s from layers on %s %s", slots_->targets()[kv.first].name.c_str(),
+                     slots_->targets()[lh.into].name.c_str(),
+                     live ? "live: the client has a visible layer there" : "not live: no visible layer of the "
+                                                                            "client drawn there");
+        }
+    }
+}
+
+const Compositor::LayerHost *Compositor::layer_host_of(int ti, const Entry &e) const
+{
+    const Rect &r = e.layer->params.rect;
+    for (const auto &kv : layer_hosts_) {
+        const LayerHost &lh = kv.second;
+        const Rect &hr = lh.host.rect;
+        if (lh.live && lh.host.shown && lh.into == ti && lh.owner != e.owner && r.x >= hr.x && r.y >= hr.y &&
+            (int64_t)r.x + r.w <= (int64_t)hr.x + hr.w && (int64_t)r.y + r.h <= (int64_t)hr.y + hr.h)
+            return &lh;
+    }
+    return nullptr;
+}
+
 std::vector<Compositor::Hosted> Compositor::hosts() const
 {
     std::vector<Hosted> out;
@@ -668,6 +756,15 @@ std::vector<Compositor::Hosted> Compositor::hosts() const
             x.host = h.second;
             out.push_back(x);
         }
+    }
+    for (const auto &kv : layer_hosts_) {
+        if (!kv.second.live)
+            continue;
+        Hosted x;
+        x.target = kv.first;
+        x.into = kv.second.into;
+        x.host = kv.second.host;
+        out.push_back(x);
     }
     return out;
 }
@@ -824,6 +921,14 @@ void Compositor::remove_owner(uint64_t owner)
         it = scenes_.erase(it);
         host_serial_++;
     }
+    for (auto it = layer_hosts_.begin(); it != layer_hosts_.end();) {
+        if (it->second.owner != owner) {
+            ++it;
+            continue;
+        }
+        it = layer_hosts_.erase(it);
+        host_serial_++;
+    }
 }
 
 void Compositor::arrange(int64_t now_ms)
@@ -834,9 +939,14 @@ void Compositor::arrange(int64_t now_ms)
             reconcile();
             break;
         }
+    update_layer_hosts();
     for (size_t ti = 0; ti < targets_.size(); ti++) {
         Target &t = targets_[ti];
         std::vector<StackItem> items;
+        /* A live host from layers here: the hosted videos (other clients'
+         * inside its rect) just under its client's lowest layer. */
+        std::vector<std::pair<size_t, const LayerHost *>> hosted;
+        std::map<uint64_t, size_t> lowest;   /* a hosting client's lowest item */
         for (const auto &kv : layers_) {
             const Entry &e = kv.second;
             const Layer &l = *e.layer;
@@ -847,6 +957,20 @@ void Compositor::arrange(int64_t now_ms)
             it.klass = l.params.klass;
             it.z = l.params.z;
             it.seq = l.seq();
+            if (!layer_hosts_.empty()) {
+                if (!std::strcmp(l.kind(), "video"))
+                    if (const LayerHost *lh = layer_host_of((int)ti, e))
+                        hosted.push_back({items.size(), lh});
+                for (const auto &hk : layer_hosts_)
+                    if (hk.second.live && hk.second.into == (int)ti && hk.second.owner == e.owner) {
+                        auto low = lowest.find(e.owner);
+                        const StackItem *o = low == lowest.end() ? nullptr : &items[low->second];
+                        if (!o || it.klass < o->klass || (it.klass == o->klass && it.z < o->z) ||
+                            (it.klass == o->klass && it.z == o->z && it.seq < o->seq))
+                            lowest[e.owner] = items.size();
+                        break;
+                    }
+            }
             it.visible = l.params.visible && e.error.empty() && l.refusal().empty() && !asset_refused(e);
             it.ready = l.ready(now_ms) && assets_have(e);
             it.exclusive = l.params.exclusive;
@@ -857,6 +981,17 @@ void Compositor::arrange(int64_t now_ms)
             it.yield = l.params.yield;
             it.shown = l.on_display();
             items.push_back(it);
+        }
+        for (const auto &hv : hosted) {
+            auto low = lowest.find(hv.second->owner);
+            if (low == lowest.end())
+                continue;
+            StackItem &v = items[hv.first];
+            const StackItem &anchor = items[low->second];
+            v.klass = anchor.klass;
+            v.z = anchor.z;
+            v.seq = anchor.seq;
+            v.under = 1;
         }
         t.arr = crs::arrange(items);
         if (const uint32_t sc = content((int)ti)) {
@@ -998,6 +1133,14 @@ VideoEdge Compositor::edge_for(int ti, const Entry &e) const
             return v;
         }
     }
+    if (const LayerHost *lh = layer_hosts_.empty() ? nullptr : layer_host_of(ti, e))
+        if (lh->host.edge.on()) {
+            VideoEdge v = lh->host.edge;
+            v.top = (uint32_t)std::min<int64_t>(v.top, y0);
+            v.bottom = (uint32_t)std::min<int64_t>(v.bottom, std::max<int64_t>(0, th - y1));
+            v.fade = std::min(v.fade, r.h / 2);
+            return v;
+        }
     return VideoEdge();
 }
 

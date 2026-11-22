@@ -274,6 +274,13 @@ Beside the layers:
   optional edge: the hosted picture's top and bottom rows drawn on past its
   rect, blurred and darkened, for a picture shorter than the shape it shows
   in.
+- **Hosting from layers** (PROTOCOL.md "Hosting from layers"): an app that
+  draws a target with layers only, a cluster theme on `panel` for example,
+  hosts another target there with no scene file (`host` with `into`): the
+  hosted picture (Waze's map, for example) is drawn at the rect it names,
+  just under the app's layers, so its frame and readouts sit over it. The
+  picture goes back to its own target while none of the app's layers there
+  is visible, and when the app ends the host or exits. Both backends.
 
 Each target's changes are flushed together once a tick, so the cluster never
 shows a half-written frame: a video or exclusive image left half written

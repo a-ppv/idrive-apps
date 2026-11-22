@@ -91,8 +91,13 @@ private:
     /* A scene file on a target (PROTOCOL.md "Scene files"), and its edits. */
     void op_scene(Client &c, const cr::Json &j);
     void op_edit(Client &c, uint32_t ref, const cr::Json &j);
-    /* The scene ref hosts a target (PROTOCOL.md "host"). */
+    /* The scene ref, or with into the client's layers there, hosts a target
+     * (PROTOCOL.md "host", "Hosting from layers"). */
     void op_host(Client &c, uint32_t ref, const cr::Json &j);
+    /* That host ends (PROTOCOL.md "unhost"). */
+    void op_unhost(Client &c, uint32_t ref, const cr::Json &j);
+    /* For the status and the log: a host from layers of target hosted. */
+    std::string layer_host_text(int hosted) const;
     /* set, uniform, bind, part, transform, animate and stop. */
     void op_on_layer(Client &c, const std::string &op, uint32_t ref, Layer *l, const cr::Json &j);
     void op_uniform(Client &c, uint32_t ref, Layer *l, const cr::Json &j);
