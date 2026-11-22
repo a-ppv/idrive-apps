@@ -162,7 +162,7 @@ void MapFeed::make_layer()
         shape_.level_bits = cfg_.video.level_bits;
         if (cfg_.vpp_scale)
             part_ = OutputPart{crop.x, crop.y, crop.w, crop.h, dw, dh};
-        log_info("render: hosted by a scene on %s: the map's %ux%u at %u,%u, as %ux%u%s", host_.into.c_str(), crop.w,
+        log_info("render: hosted on %s: the map's %ux%u at %u,%u, as %ux%u%s", host_.into.c_str(), crop.w,
                  crop.h, crop.x, crop.y, dw, dh, part_.set() ? ", made by VPP (hosted_vpp_scale)" : "");
     } else if (cfg_.target == "hud" && cfg_.scale_down && (sw < cfg_.video.w || sh < cfg_.video.h) && sw >= 64 &&
                sh >= 32 && sw <= cfg_.video.w && sh <= cfg_.video.h) {
@@ -230,7 +230,7 @@ void MapFeed::set_host(const cr::Host &h)
     if (!hosted())
         log_info("render: %s is not hosted any more: the map on its own target", cfg_.target.c_str());
     else
-        log_info("render: %s hosted by a scene on %s at %ux%u+%d+%d%s", cfg_.target.c_str(), h.into.c_str(), h.w, h.h,
+        log_info("render: %s hosted on %s at %ux%u+%d+%d%s", cfg_.target.c_str(), h.into.c_str(), h.w, h.h,
                  h.x, h.y, h.shown ? "" : ", hidden there: nothing sent");
     if (layer_) {
         keep_newest();

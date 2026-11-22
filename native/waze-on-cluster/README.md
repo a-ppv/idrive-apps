@@ -133,10 +133,14 @@ settings.
 
 **Inside another app's scene.** An app that shows a scene file on a target
 with `layers` 1 can host the map there (cluster-render PROTOCOL.md
-"Hosting another target"): the map is then drawn only in the rect it
-names, scaled on the head unit to that part of the picture. With
+"Hosting another target"), and so can an app that draws a target with
+layers only, a cluster theme on the panel for example, with no scene file
+(PROTOCOL.md "Hosting from layers", cluster-render releases after 0.8.0): the map
+is then drawn only in the rect it names, scaled on the head unit to that
+part of the picture, under the theme's layers. With
 `hosted_vpp_scale = 1` the GPU does that scaling instead ("Experimental:
-hosted_vpp_scale and always_packed" below).
+hosted_vpp_scale and always_packed" below). The app hiding its layers,
+ending the host or exiting puts the map back on its own slot.
 
 ### Settings
 
@@ -145,7 +149,7 @@ install writes anew. Besides it and the command line (the Android Auto
 crop, PATCH.md), the service reads only the app's saved choices
 (`/var/opt/waze-on-cluster/map.state.conf` and the turn-box setting) and
 the opt-in settings in `/var/opt/waze-on-cluster/features.conf`. On the
-cluster the map goes on its map slot, or into a hosting app's scene.
+cluster the map goes on its map slot, or into a hosting app's scene or theme.
 
 `/var/opt/waze-on-cluster/waze-on-cluster.local.conf`, which versions up to
 0.10.9 read, is not read; it stays on the unit for a downgrade, and the log

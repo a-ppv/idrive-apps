@@ -60,6 +60,9 @@
  *   host's rect with the host's part of the picture, its own slot released;
  *   hidden by the host, no layer and nothing sent; shown again; the host
  *   gone, back on its own target; no part asked of the decoder (by default);
+ * - hosted by a theme's layers, no scene (layers_hosting): in the panel at
+ *   the host's rect, under the theme's layers; back on its own target while
+ *   they are hidden and once the theme is gone;
  * - the cluster's map hosted (hosted_wake): a frame with the scaling worker
  *   wakes the service's loop to take it, and its part is drawn;
  * - hosted with hosted_vpp_scale (vpp_hosting): the host's part asked of the
@@ -581,6 +584,68 @@ static void hosting()
     (void)removed;
 }
 
+/* A theme drawing the panel with layers only hosting the map, no scene
+ * (cluster-render PROTOCOL.md "Hosting from layers"): the map moves into the
+ * panel at the host's rect, with the host's part, its own slot released,
+ * and is drawn under the theme's layers though made after them; every
+ * theme layer hidden: back on its own target; shown: hosted again; the
+ * theme gone: back on its own target. Nothing in the feed knows the host
+ * has no scene. */
+static void layers_hosting()
+{
+    const std::vector<uint8_t> f = atlas(5);
+    Rig r;
+    r.pump(2000, &f);
+    ok("layer host: the map shown on its own target", r.st().state == "showing" && r.st().target == "map" &&
+                                                          !r.st().hosted);
+    std::unique_ptr<cr::Client> theme(new cr::Client("theme", r.path));
+    r.other = theme.get();
+    r.pump(100, &f);
+    const cr::EffectOptions fx{"#version 100\nvoid main(){gl_FragColor=vec4(0.0);}", "", 0};
+    cr::LayerOptions bg, frame;
+    bg.target = frame.target = "panel";
+    frame.x = 690; frame.y = 150; frame.w = 580; frame.h = 420;
+    const uint32_t bg_ref = theme->effect(bg, fx), frame_ref = theme->effect(frame, fx);
+    r.pump(1500, &f);
+    cr::Host h;
+    h.into = "panel";
+    h.target = "map";
+    h.x = 700; h.y = 160; h.w = 560; h.h = 400;
+    h.src_x = 264; h.src_y = 40; h.src_w = 560; h.src_h = 400;
+    theme->host(h);
+    r.pump(2500, &f);
+    bool with = false;
+    const int map_i = r.svc->slots().index("map");
+    crs::FakeGraph *g = r.gpu.graph("panel");
+    const std::vector<int> stack = g ? g->visible() : std::vector<int>();
+    const bool under = stack.size() == 3 && g->shown.quads.at(stack[0]).r.x == 700 &&
+                       g->shown.quads.at(stack[0]).r.w == 560 && g->shown.quads.at(stack[1]).r.w == 1920 &&
+                       g->shown.quads.at(stack[2]).r.w == 580;
+    ok("layer host: the map in the panel at the host's rect with its part, under the theme's background and frame, "
+       "the map's slot released",
+       r.st().state == "showing" && r.st().target == "panel" && r.st().hosted &&
+           r.drawing("panel", crop_of(f, 264, 40, 560, 400), &with) && with && under &&
+           r.svc->slots().status(map_i).state == crs::TargetState::Idle);
+
+    bg.visible = frame.visible = false;
+    theme->set(bg_ref, bg);
+    theme->set(frame_ref, frame);
+    r.pump(2500, &f);
+    ok("layer host: every theme layer hidden: the map on its own target again",
+       r.st().state == "showing" && r.st().target == "map" && !r.st().hosted && r.drawing("map", f, &with) && with);
+    bg.visible = frame.visible = true;
+    theme->set(bg_ref, bg);
+    theme->set(frame_ref, frame);
+    r.pump(2500, &f);
+    ok("layer host: shown again: hosted again", r.st().target == "panel" && r.st().hosted);
+
+    r.other = nullptr;
+    theme.reset();
+    r.pump(2500, &f);
+    ok("layer host: the theme gone: the map on its own target again",
+       r.st().state == "showing" && r.st().target == "map" && !r.st().hosted && r.drawing("map", f, &with) && with);
+}
+
 /* The cluster's map hosted (MapFeeds, as the service runs it): its worker
  * scales the host's part, so the service's loop is woken (wake_in_ms) to
  * take the scaled frame and draws it without waiting for another frame. */
@@ -1049,6 +1114,7 @@ int main()
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stdout, nullptr, _IONBF, 0);
     hosting();
+    layers_hosting();
     hosted_wake();
     vpp_hosting();
     always_packed_map();
