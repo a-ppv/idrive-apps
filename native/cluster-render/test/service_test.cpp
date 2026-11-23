@@ -45,7 +45,7 @@
  * and then released. The HUD's layers choose whether it gives way to the
  * stock pop-ups (yield), a client without the field getting it. A scene
  * with layers and a host of the map (layers_and_hosting); a host from a
- * client's layers, with no scene (hosting_from_layers). A layer's
+ * client's layers, with no scene (hosting_from_layers, hosting_from_layers_more). A layer's
  * preload, end to end (preload). A layer's others_fps holding another
  * client's video and releasing it (others_fps). Render state and samplers
  * (render_state_and_samplers). */
@@ -2043,6 +2043,30 @@ static void hosting_from_layers()
         r.clients.pop_back();
     }
     r.pump(300);
+    /* Clients whose hosts are not eligible (shown 0; a rect its layers are
+     * not over) never move the picture, an alert layer of theirs over the
+     * rect included: it stays by the theme's anchor. */
+    {
+        cr::Client off("off", r.path), away("away", r.path);
+        r.clients.push_back(&off);
+        r.clients.push_back(&away);
+        r.pump(50);
+        off.effect(lo_at(Rect{720, 180, 4, 4}, "alert", 0), fx);
+        cr::Host hidden_host = gh;
+        hidden_host.shown = false;
+        off.host(hidden_host);
+        away.effect(lo_at(Rect{730, 190, 4, 4}, "alert", 0), fx);
+        cr::Host elsewhere = gh;
+        elsewhere.x = 100; elsewhere.y = 40; elsewhere.w = 100; elsewhere.h = 50;
+        away.host(elsewhere);
+        r.pump(300);
+        ok("layer hosts: hosts not eligible, with alert layers over the rect: the map still under the theme",
+           b.hosts["map"].x == 700 && hosting["map"] == "live" &&
+               stack_of(r.gpu.graph("panel"), names) == "low mid map bg frame high ? ?");
+        r.clients.pop_back();
+        r.clients.pop_back();
+    }
+    r.pump(300);
     ok("layer hosts: that client gone: the theme live again", b.hosts["map"].x == 700 && hosting["map"] == "live" &&
                                                                   stack_of(r.gpu.graph("panel"), names) == "low mid map bg frame high");
 
@@ -2294,6 +2318,112 @@ static void hosting_from_layers()
        !b.hosts.count("map") && told.back().into.empty());
     const int removed = std::system(("rm -rf " + root).c_str());
     (void)removed;
+}
+
+/* Hosts from layers with a third target, hud: two hosted targets, each with
+ * its producer's marked video, into one target, each video by its own
+ * host's anchor (the second restack finds its anchor after the first moved
+ * layers); hosts on different intos: the into that holds the target keeps
+ * it while it has an eligible host, a host on another into sent later
+ * waits, told why, and does not take it by unhost and host again; it takes
+ * over once the live one is hidden, and keeps it when that one is shown
+ * again. */
+static void hosting_from_layers_more()
+{
+    Rig r;
+    TargetSpec u;
+    u.name = "hud"; u.slot = 0x323; u.scene_id = 0x010004f9; u.width = 800; u.height = 480; u.linger_ms = 3000;
+    r.sc.targets.push_back(u);
+    r.start();
+    cr::Client a("themeA", r.path), bb("themeB", r.path), pm("mapper", r.path), ph("hudder", r.path);
+    std::map<std::string, std::string> hosting_a, hosting_b;
+    a.on_hosting = [&hosting_a](const std::string &t, const std::string &, const std::string &state,
+                                const std::string &why) { hosting_a[t] = state + (why.empty() ? "" : ": " + why); };
+    bb.on_hosting = [&hosting_b](const std::string &t, const std::string &, const std::string &state,
+                                 const std::string &why) { hosting_b[t] = state + (why.empty() ? "" : ": " + why); };
+    r.clients = {&a, &bb, &pm, &ph};
+    r.pump(50);
+    const cr::EffectOptions fx{"#version 100\nvoid main(){gl_FragColor=vec4(0.0);}", "", 0};
+    auto lo_at = [](const char *target, const Rect &q, const char *klass) {
+        cr::LayerOptions l;
+        l.target = target;
+        l.klass = klass;
+        l.x = q.x; l.y = q.y; l.w = q.w; l.h = q.h;
+        return l;
+    };
+    const Rect R_A{0, 0, 1920, 720}, R_B{1000, 100, 600, 400}, R_MV{100, 100, 560, 400}, R_HV{1040, 140, 400, 240};
+    const uint32_t a_layer = a.effect(lo_at("panel", R_A, "content"), fx);
+    bb.effect(lo_at("panel", R_B, "content"), fx);
+    r.pump(1500);
+    cr::Host hm;
+    hm.into = "panel"; hm.target = "map";
+    hm.x = 100; hm.y = 100; hm.w = 560; hm.h = 400;
+    a.host(hm);
+    cr::Host hh;
+    hh.into = "panel"; hh.target = "hud";
+    hh.x = 1040; hh.y = 140; hh.w = 400; hh.h = 240;
+    bb.host(hh);
+    r.pump(300);
+    /* the producers' marked videos, made after the themes' layers */
+    cr::LayerOptions mv = lo_at("panel", R_MV, "content");
+    mv.hosted = "map";
+    cr::VideoOptions vm;
+    vm.w = 560; vm.h = 400; vm.stall_ms = 600000;
+    const uint32_t mvid = pm.video(mv, vm);
+    std::vector<uint8_t> fm(560 * 600, 90);
+    pm.frame(mvid, fm.data(), fm.size(), 1);
+    cr::LayerOptions hv = lo_at("panel", R_HV, "content");
+    hv.hosted = "hud";
+    cr::VideoOptions vh;
+    vh.w = 400; vh.h = 240; vh.stall_ms = 600000;
+    const uint32_t hvid = ph.video(hv, vh);
+    std::vector<uint8_t> fh(400 * 360, 120);
+    ph.frame(hvid, fh.data(), fh.size(), 1);
+    r.pump(1500);
+    const std::vector<std::pair<std::string, Rect>> names = {{"A", R_A}, {"B", R_B}, {"mv", R_MV}, {"hv", R_HV}};
+    ok("layer hosts: two hosted targets into one target: each video by its own host's anchor",
+       hosting_a["map"] == "live" && hosting_b["hud"] == "live" && stack_of(r.gpu.graph("panel"), names) == "mv A hv B");
+    pm.drop(mvid);
+    ph.drop(hvid);
+    bb.unhost("hud");
+    r.pump(300);
+
+    /* Hosts on different intos: themeA holds the map on the panel; themeB,
+     * a layer on the hud over its rect, hosts the map into the hud later. */
+    bb.effect(lo_at("hud", Rect{0, 0, 800, 480}, "content"), fx);
+    cr::Host hb;
+    hb.into = "hud"; hb.target = "map";
+    hb.x = 100; hb.y = 100; hb.w = 400; hb.h = 240;
+    bb.host(hb);
+    r.pump(1500);
+    ok("layer hosts: a host on another into sent later waits, told why; the live one keeps the map",
+       hosting_a["map"] == "live" &&
+           hosting_b["map"] == "waiting: target map is hosted by another client's layers on panel, there first" &&
+           pm.hosts.count("map") && pm.hosts["map"].into == "panel");
+    for (int k = 0; k < 3; k++) {
+        bb.unhost("map");
+        r.pump(100);
+        bb.host(hb);
+        r.pump(300);
+    }
+    ok("layer hosts: unhost and host again does not take it", hosting_a["map"] == "live" &&
+                                                             pm.hosts["map"].into == "panel" &&
+                                                             hosting_b["map"].find("waiting") == 0);
+    cr::LayerOptions a_hidden = lo_at("panel", R_A, "content");
+    a_hidden.visible = false;
+    a.set(a_layer, a_hidden);
+    r.pump(500);
+    ok("layer hosts: the live one hidden: the one waiting takes over",
+       hosting_b["map"] == "live" && pm.hosts["map"].into == "hud" &&
+           hosting_a["map"] == "waiting: no layer of the client is drawn over its rect on panel");
+    a.set(a_layer, lo_at("panel", R_A, "content"));
+    r.pump(1500);
+    ok("layer hosts: shown again, it does not take the map back: the one live keeps it",
+       hosting_b["map"] == "live" && pm.hosts["map"].into == "hud" &&
+           hosting_a["map"] == "waiting: target map is hosted by another client's layers on hud, there first");
+    bb.unhost("map");
+    r.pump(500);
+    ok("layer hosts: that one gone: the first live again", hosting_a["map"] == "live" && pm.hosts["map"].into == "panel");
 }
 
 int main()
@@ -2805,6 +2935,7 @@ int main()
     scene_files();
     layers_and_hosting();
     hosting_from_layers();
+    hosting_from_layers_more();
     preload();
     others_fps();
     render_state_and_samplers();

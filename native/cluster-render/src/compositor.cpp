@@ -750,7 +750,6 @@ void Compositor::host_eligibility(LayerHost &lh) const
         if (!lh.eligible) {
             lh.eligible = true;
             lh.anchor = a.order[p];
-            lh.anchor_pos = p;
             lh.over = e.layer->params.exclusive;
         }
         lh.top_pos = p;
@@ -761,11 +760,16 @@ void Compositor::host_eligibility(LayerHost &lh) const
 
 std::map<int, const Compositor::LayerHost *> Compositor::host_winners(const std::vector<bool> &by_scene) const
 {
-    /* On one into, the host whose client draws highest over its rect; of
-     * winners on different intos, the one sent last. */
+    /* On one into, the host whose client draws highest over its rect. Of
+     * several intos, the one the live host is on keeps the target while it
+     * has an eligible host; else the one whose host was sent first (sent
+     * again after unhost, a host is sent later). */
     std::map<std::pair<int, int>, const LayerHost *> best;   /* by (target, into) */
+    std::map<int, int> held;                                 /* by target: the live host's into */
     for (const auto &kv : layer_hosts_) {
         const LayerHost &lh = kv.second;
+        if (lh.live)
+            held[kv.first.first] = lh.into;
         if (!lh.eligible || by_scene[kv.first.first])
             continue;
         const LayerHost *&b = best[std::make_pair(kv.first.first, lh.into)];
@@ -774,8 +778,15 @@ std::map<int, const Compositor::LayerHost *> Compositor::host_winners(const std:
     }
     std::map<int, const LayerHost *> win;
     for (const auto &kv : best) {
-        const LayerHost *&w = win[kv.first.first];
-        if (!w || kv.second->seq > w->seq)
+        const int target = kv.first.first;
+        auto h = held.find(target);
+        auto keep = h == held.end() ? best.end() : best.find(std::make_pair(target, h->second));
+        if (keep != best.end()) {
+            win[target] = keep->second;
+            continue;
+        }
+        const LayerHost *&w = win[target];
+        if (!w || kv.second->seq < w->seq)
             w = kv.second;
     }
     return win;
@@ -793,7 +804,7 @@ void Compositor::host_decided(int target, LayerHost &lh, const LayerHost *winner
         by = winner->owner;
         why = winner->into == lh.into ? "target " + name + " is hosted by another client's layers, drawn higher over it"
                                       : "target " + name + " is hosted by another client's layers on " +
-                                            slots_->targets()[winner->into].name + ", sent later";
+                                            slots_->targets()[winner->into].name + ", there first";
     }
     if (live != lh.live || why != lh.why || by != lh.by) {
         host_serial_++;
@@ -808,17 +819,23 @@ void Compositor::host_decided(int target, LayerHost &lh, const LayerHost *winner
 void Compositor::host_restack(int target, const LayerHost &lh)
 {
     std::vector<StackItem> &items = items_[lh.into];
+    /* as made by now: an earlier restack into the same target moved layers */
     const Arrangement &a = targets_[lh.into].arr;
-    /* By the anchor, but never under another hosting client's layer drawn
-     * over the rect: no host's layers hide the picture of another's. */
-    size_t at = lh.anchor_pos;
+    size_t at = std::find(a.order.begin(), a.order.end(), lh.anchor) - a.order.begin();
+    if (at == a.order.size())
+        return;
+    /* By the anchor, but never under a layer the hosts it won over drew
+     * over the rect (seen, over their own rect too): no competing host's
+     * layers hide the picture. Any other client keeps its place. */
     bool over = lh.over;
     for (const auto &kv : layer_hosts_) {
-        if (kv.first.first != target || kv.second.owner == lh.owner || kv.second.into != lh.into)
+        const LayerHost &o = kv.second;
+        if (kv.first.first != target || o.owner == lh.owner || o.into != lh.into || !o.eligible)
             continue;
         for (size_t p = at + 1; p < a.order.size(); p++) {
             const Entry &e = layers_.at(a.order[p]);
-            if (e.owner == kv.second.owner && overlaps(e.layer->params.rect, lh.host.rect) &&
+            if (e.owner == o.owner && seen(*e.layer) && overlaps(e.layer->params.rect, o.host.rect) &&
+                overlaps(e.layer->params.rect, lh.host.rect) &&
                 std::find(a.drawn.begin(), a.drawn.end(), a.order[p]) != a.drawn.end()) {
                 at = p;
                 over = true;

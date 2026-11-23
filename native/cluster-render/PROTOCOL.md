@@ -539,8 +539,12 @@ target's name, so the service knows it.
   picture. A host sent early with a small or low layer of a background app
   loses to the theme drawn over it; to win, a client must draw over the
   other hosts there, and the picture is then drawn over them too (below).
-  Of live candidates on different `into`s the one sent last wins. None is
-  live while a scene hosts the target: a scene's host is as without hosts
+  Of hosts on different `into`s, the `into` the live host is on keeps the
+  target while it has an eligible host there: a host on another `into`
+  waits, and takes over only once none on the holding one is eligible
+  (hidden, ended, `shown` 0, gone, its `into` off screen); with none
+  holding, the `into` whose host was sent first wins (a host ended and sent
+  again counts as sent then). None is live while a scene hosts the target: a scene's host is as without hosts
   from layers, and wins. Only the live host is in the `host` event; with
   none, the event says `target` is not hosted, so a producer goes back to
   its own target. This is decided again at every loop of the service, from
@@ -551,22 +555,24 @@ target's name, so the service knows it.
 - **Stacking.** The live host's producer's videos (another client's on
   `into` with `hosted` the hosted target) are drawn just under the anchor,
   or just over it when the anchor is `exclusive`, so no exclusive layer of
-  the host hides them, and never under a layer another hosting client draws
-  over the rect: under the host's frame and readouts, over what is below
+  the host hides them, and never under a seen layer that an eligible host
+  it won over draws over both its own rect and this one: under the host's
+  frame and readouts, over what is below
   (another client's lower layers, a scene file with `layers` 1). Their own
   `class` and `z` do not count while they are hosted. Every other layer,
   another client's video inside the rect included, keeps its place. A layer
   meant to be seen through the rect is cut out or transparent there. A
-  producer that does not mark its layer (waze-on-cluster before this) is
-  drawn in the rect at its own place in the stack, and the host's edge is
-  not drawn on it either.
+  producer that does not mark its layer (a waze-on-cluster that doesn't
+  send `hosted`) is drawn in the rect at its own place in the stack, and
+  the host's edge is not drawn on it either. A client that hosts nothing,
+  or whose host is not eligible, never moves the picture.
 - **`hosting` event.** The client is told whether its host is live, and
   while it is not, why: `it shows the target nowhere (shown 0)`, `no layer
   of the client is drawn over its rect on P`, `P is not on screen
   (STATE)`, `P's layers wait for a scene file there`, `target T is hosted
   by a scene`, `target T is hosted by another client's layers, drawn higher
-  over it`, or `target T is hosted by another client's layers on P2, sent
-  later` (with `by`, that client's name). It comes when the state or the
+  over it`, or `target T is hosted by another client's layers on P2, there
+  first` (with `by`, that client's name). It comes when the state or the
   reason changes, after the service has first decided, and again from the
   start for a new host.
 - **Several hosts.** A client has one host from layers a target; sending
@@ -588,7 +594,14 @@ target's name, so the service knows it.
   misses the picture, or lands smaller than it draws, or the service
   refuses its layer there) keeps drawing on its own target until the host
   changes, so a host never leaves the picture nowhere; waze-on-cluster
-  does.
+  does. This holds for a scene's host too: one whose part misses the
+  picture, or lands smaller than 64x32, shows the picture on its own target
+  instead of nothing.
+- **Known limits.** The service sees layers, not pixels. A client that
+  draws a transparent effect or mesh over the theme, in a higher class, is
+  taken as seen and can win on that `into`; the picture then shows at that
+  client's rect (at least 64x32). Any client could already cover a theme
+  with an exclusive alert layer, so this is no new way to hide content.
 - **Cost.** The producer's picture goes into `into` in place of its own
   target, as with a scene's host: one decode and one upload, of the part
   shown, at most its own target's size (a hosted map is at most its

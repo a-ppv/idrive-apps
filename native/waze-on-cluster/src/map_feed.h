@@ -273,11 +273,14 @@ private:
     FeedConfig cfg_;
     cr::Client client_;
     cr::Host host_;   /* the feed's target's host, from the renderer's events */
-    bool host_unusable_ = false;   /* its place could not be drawn (fall_back) */
+    bool host_unusable_ = false;
     bool remake_ = false;          /* the renderer refused the hosted layer: make it again, unhosted */
     /* The host's place cannot be drawn (why): the layer on the feed's own
      * target instead, until the host changes. */
     void fall_back(const std::string &why);
+    /* The layer made again, its newest picture kept for the new one: now
+     * while connected, else at the next connection (on_ready). */
+    void remake_layer();
     uint32_t layer_ = 0;
     cr::LayerOptions lo_;   /* the layer's options as last sent */
     bool show_due_ = false;   /* visible once the frame waiting has gone */

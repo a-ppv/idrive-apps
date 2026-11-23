@@ -283,9 +283,11 @@ Beside the layers:
   it. The picture goes back to its own target while none of the app's
   layers over the rect is drawn, the panel is not on screen, or a scene
   hosts it, and when the app ends the host or exits. Of several apps
-  hosting the same target the one drawn highest over the picture wins, so
-  a background app's early host loses to the visible theme; the `hosting`
-  event tells each whether it is live and why not. Both backends.
+  hosting the same target into one target the one drawn highest over the
+  picture wins, so a background app's early host loses to the visible
+  theme; one showing it on another target keeps it while it can, so hosts
+  on different targets don't take it from each other; the `hosting` event
+  tells each whether it is live and why not. Both backends.
 
 Each target's changes are flushed together once a tick, so the cluster never
 shows a half-written frame: a video or exclusive image left half written

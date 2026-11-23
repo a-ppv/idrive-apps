@@ -53,10 +53,7 @@ MapFeed::MapFeed(const FeedConfig &cfg)
                    (unpacked_why_ == nullptr) != client_.takes_always_packed()) {
             /* a cluster-render that takes always_packed now, or no longer:
              * the layer made again for it, its next write whole */
-            keep_newest();
-            client_.drop(layer_);
-            layer_ = 0;
-            make_layer();
+            remake_layer();
         }
     };
     client_.on_layer = [this](uint32_t ref, const std::string &state, const std::string &reason) {
@@ -246,6 +243,11 @@ void MapFeed::set_host(const cr::Host &h)
     else
         log_info("render: %s hosted on %s at %ux%u+%d+%d%s", cfg_.target.c_str(), h.into.c_str(), h.w, h.h,
                  h.x, h.y, h.shown ? "" : ", hidden there: nothing sent");
+    remake_layer();
+}
+
+void MapFeed::remake_layer()
+{
     if (layer_) {
         keep_newest();
         client_.drop(layer_);
@@ -325,10 +327,7 @@ void MapFeed::set_hud_width(unsigned pct)
         return;
     /* the texture's size changes with it: a new layer at the new size */
     log_info("render: HUD map %u%% wide", pct);
-    keep_newest();
-    client_.drop(layer_);
-    layer_ = 0;
-    make_layer();
+    remake_layer();
 }
 
 void MapFeed::set_guide_hold(bool hold)
@@ -346,13 +345,7 @@ void MapFeed::poll(int64_t now_ms)
     if (remake_) {
         remake_ = false;
         log_warn("render: the hosted layer refused: the map on %s instead, until the host changes", cfg_.target.c_str());
-        if (layer_) {
-            keep_newest();
-            client_.drop(layer_);
-            layer_ = 0;
-        }
-        if (client_.connected())
-            make_layer();
+        remake_layer();
     }
     send_pending(now_ms);
     if (connected_ && !client_.connected()) {

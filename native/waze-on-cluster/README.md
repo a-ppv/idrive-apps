@@ -135,13 +135,15 @@ settings.
 with `layers` 1 can host the map there (cluster-render PROTOCOL.md
 "Hosting another target"), and so can an app that draws a target with
 layers only, a cluster theme on the panel for example, with no scene file
-(PROTOCOL.md "Hosting from layers", cluster-render releases after 0.8.0): the map
+(PROTOCOL.md "Hosting from layers", cluster-render releases after 0.8.1): the map
 is then drawn only in the rect it names, scaled on the head unit to that
 part of the picture, under the theme's layers (the map's layer is marked
 as the hosted map, so cluster-render knows it). With
 `hosted_vpp_scale = 1` the GPU does that scaling instead ("Experimental:
 hosted_vpp_scale and always_packed" below). The app hiding its layers,
-ending the host or exiting puts the map back on its own slot.
+ending the host or exiting puts the map back on its own slot, and so does
+any host whose place the map cannot be drawn in (its part misses the map,
+or lands smaller than 64x32), a scene's host included.
 
 ### Settings
 

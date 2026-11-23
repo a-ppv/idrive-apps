@@ -305,11 +305,11 @@ async function main() {
     /* a refused move and, before its refusal comes, a host into the panel
      * again: the service ends the first and takes the second; the client
      * keeps the second */
-    const refusedBefore = et.refused.length;
+    const refusedMove = et.refused.length;
     thm.host('nowhere', { target: 'map', x: 700, y: 160, w: 560, h: 400 });
     thm.host('panel', { target: 'map', x: 704, y: 160, w: 560, h: 400 });
     ok('layer host: a host sent after a refused move is kept by the client and taken by the service', await until(() =>
-        et.refused.length > refusedBefore && hosted[hosted.length - 1] === 'map:panel:1:560', 2000) &&
+        et.refused.length > refusedMove && hosted[hosted.length - 1] === 'map:panel:1:560', 2000) &&
         thm.layerHosts.has('map') && thm.layerHosts.get('map').into === 'panel' &&
         thm.layerHosts.get('map').msg.x === 704);
     const marked = thm.video({ target: 'panel', hosted: 'map', vw: 64, vh: 32 });
