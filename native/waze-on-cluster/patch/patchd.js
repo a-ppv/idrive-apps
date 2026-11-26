@@ -2028,9 +2028,16 @@ function inmemHook(which, cb) {
         if (off && !reset) { out(0, 'the patch was turned off; its Patch button applies it'); return; }
         /* The coding and another program started as carplay keep the
          * install from planning; an earlier patch of ours still goes back
-         * to stock (Remove patch semantics: nothing else is written). */
-        var conflict = codingConflict(st.coding === null ? null : [null, String(st.coding)]) || foreignStart(CP);
-        if (conflict) {
+         * to stock (Remove patch semantics: nothing else is written). The
+         * exception is CarPlay's Patch button's patch an earlier release
+         * wrote to the file on a car coded otherwise (its record: patched,
+         * neither proven nor on trial): the owner's choice, planned in
+         * memory as that button plans it (--unproven, below), as the boot
+         * step plans such a patch it puts back. */
+        var codingWhy = codingConflict(st.coding === null ? null : [null, String(st.coding)]), foreign = foreignStart(CP);
+        var conflict = codingWhy || foreign, drec = record.current(TARGET);
+        var buttons = !!codingWhy && !foreign && ours && st.restorable && !st.foreign && !!drec && drec.patched === true && drec.proven !== true && drec.trial !== true;
+        if (conflict && !buttons) {
             if (!ours || st.foreign || !st.restorable) { out(0, 'carplay left as it is: ' + conflict, conflict); return; }
             revert(true, true, function (rErr) {
                 inmem.disarm('carplay');

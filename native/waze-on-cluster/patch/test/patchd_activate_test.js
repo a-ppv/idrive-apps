@@ -19,7 +19,8 @@
  * a conflict. A plan that cannot be made (an I/O error) leaves carplay
  * stock, the error in patchd's status, until the watcher plans it at the
  * next head-unit start. On a car coded otherwise an earlier release's patch
- * is put back as it ships. A stock build outside the proven list is left as
+ * is put back as it ships; CarPlay's Patch button's patch is planned in
+ * memory as that button plans it. A stock build outside the proven list is left as
  * a conflict. Removal (deactivate) disarms the next start, deletes the plan
  * and its record, reverts an earlier release's patch left on disk and drops
  * our backup: a revert is pending only while the running carplay's memory
@@ -1055,6 +1056,24 @@ async function main() {
         ok('coding 9, an earlier release\'s patch on disk (' + c[0] + '): put back as it ships, the backup dropped, nothing armed, the conflict, / read-only',
             r.code === 0 && disk() === sha(SRCBUF) && !fs.existsSync(BAK) && rec() === null && !armed() &&
             r.result.conflict === 'not supported on this car (KI_KOMBI_VARIANT 9)' && /put back as it ships/.test(r.result.status || '') && ro(), JSON.stringify([r.result, drec()]));
+    });
+    /* CarPlay's Patch button's patch an earlier release wrote to the file
+     * on a car coded otherwise (its record: patched, unproven): the install
+     * plans it in memory as that button plans it (--unproven), the file put
+     * back as it ships and our backup dropped; started or not. */
+    [['started', true, false], ['its apply pending', false, true]].forEach(function (c) {
+        earlierOnDisk(c[1], c[2]);
+        record.write(TGT, { patched: true, proven: false });
+        headUnit.coding(9);
+        r = hook('activate');
+        var m = rec();
+        ok('coding 9, CarPlay\'s Patch button\'s patch on disk (' + c[0] + '): planned in memory as that button plans it (unproven), the file as it ships, the backup dropped, / read-only',
+            r.code === 0 && !r.result.conflict && disk() === sha(SRCBUF) && !fs.existsSync(BAK) && drec() === null && armed() &&
+            JSON.stringify(trial()) === JSON.stringify({ enabled: true, proven: false, trial: false }) && m.args.indexOf('--unproven') >= 0 && ro(),
+            JSON.stringify([r.result, trial(), m && m.args]));
+        r = hook('deactivate');
+        ok('coding 9, CarPlay\'s Patch button\'s patch moved into memory (' + c[0] + '): the removal turns it off', r.code === 0 && rec() === null && !armed() && disk() === sha(SRCBUF),
+            JSON.stringify(r.result));
     });
     earlierOnDisk(false, true);
     before = disk();
