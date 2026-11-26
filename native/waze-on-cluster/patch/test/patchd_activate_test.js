@@ -1078,8 +1078,8 @@ async function main() {
             JSON.stringify(r.result));
     });
     /* An earlier install's patch on trial, and the Patch button's patch
-     * beside a carplay.service that starts another program: put back as
-     * before, nothing armed. */
+     * beside a carplay.service that starts another program: put back,
+     * nothing armed. */
     earlierOnDisk(true, false);
     record.write(TGT, { patched: true, proven: false, trial: true });
     headUnit.coding(9);
@@ -1090,10 +1090,9 @@ async function main() {
     record.write(TGT, { patched: true, proven: false });
     headUnit.coding(9);
     fs.mkdirSync(path.join(UNITS, 'carplay.service.d'), { recursive: true });
-    var other = path.join(UNITS, 'carplay.service.d', '60-other.conf');
-    fs.writeFileSync(other, '[Service]\nExecStart=\nExecStart=/bin/sh -c \'exec /var/opt/other/carplay "$$@"\' -- -c /etc/cinemo/cinemo_options.xml\n');
+    fs.writeFileSync(dropin, '[Service]\nExecStart=\nExecStart=/bin/sh -c \'exec /var/opt/other/carplay "$$@"\' -- -c /etc/cinemo/cinemo_options.xml\n');
     r = hook('activate');
-    fs.unlinkSync(other);
+    fs.unlinkSync(dropin);
     ok('coding 9, the Patch button\'s patch, carplay.service starting another program: put back as it ships, nothing armed, the conflict', r.code === 0 &&
         disk() === sha(SRCBUF) && rec() === null && !armed() && r.result.conflict === CODED9 && /put back as it ships/.test(r.result.status || ''), JSON.stringify([r.result, drec()]));
     earlierOnDisk(false, true);

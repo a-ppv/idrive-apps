@@ -2058,7 +2058,6 @@ function inmemHook(which, cb) {
             if (err) { out(1, 'applying the map patch failed: ' + err.message); return; }
             if (why) { out(0, why); return; }
             settle();
-            /* the coding conflict stays in the result, as for a plan the Patch button made */
             out(0, activation === 'deferred' ? 'map patch armed in memory; takes effect at the next carplay start' : 'map patch armed in memory; carplay runs it already',
                 buttons ? codingWhy : null, reset);
         });
