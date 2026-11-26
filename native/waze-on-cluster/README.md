@@ -57,9 +57,12 @@ CarPlay next starts, which then applies the patch in memory, so no restart
 is needed for it. It then does the same for Android Auto on any aapd build
 it can plan: an earlier release's patch of `/usr/bin/aapd` and `/etc/aapd.conf`
 goes back as they ship, and the patch is armed in aapd's memory. Where the
-sites are not found or not recognised, the coding is another, or another
-tool's change is found beside our own edits, it leaves everything as it is,
-and the app's Status says why; bytes away from the sites do not count. A
+sites are not found or not recognised, or another tool's change is found
+beside our own edits, it leaves everything as it is, and the app's Status
+says why; bytes away from the sites do not count. On a car not coded for
+the cluster map it plans nothing and puts an earlier release's patch back
+as it ships, except a patch CarPlay's Patch button applied, which it plans
+in memory as that button does. A
 patch you turned off with Remove patch stays off across updates, car
 software updates and restarts, until you press Patch (PATCH.md
 "Install-time activation", "In memory").
