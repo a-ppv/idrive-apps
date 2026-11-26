@@ -2035,8 +2035,8 @@ function inmemHook(which, cb) {
          * memory as that button plans it (--unproven, below), as the boot
          * step plans such a patch it puts back. */
         var codingWhy = codingConflict(st.coding === null ? null : [null, String(st.coding)]), foreign = foreignStart(CP);
-        var conflict = codingWhy || foreign, drec = record.current(TARGET);
-        var buttons = !!codingWhy && !foreign && st.restorable && !!st.backup && !st.foreign && !!drec && drec.patched === true && drec.proven !== true && drec.trial !== true;
+        var conflict = codingWhy || foreign;
+        var buttons = codingWhy && !foreign && st.restorable && st.backup && !st.foreign && record.buttonPatch(record.current(TARGET));
         if (conflict && !buttons) {
             if (!ours || st.foreign || !st.restorable) { out(0, 'carplay left as it is: ' + conflict, conflict); return; }
             revert(true, true, function (rErr) {
@@ -2058,7 +2058,9 @@ function inmemHook(which, cb) {
             if (err) { out(1, 'applying the map patch failed: ' + err.message); return; }
             if (why) { out(0, why); return; }
             settle();
-            out(0, activation === 'deferred' ? 'map patch armed in memory; takes effect at the next carplay start' : 'map patch armed in memory; carplay runs it already', null, reset);
+            /* the coding conflict stays in the result, as for a plan the Patch button made */
+            out(0, activation === 'deferred' ? 'map patch armed in memory; takes effect at the next carplay start' : 'map patch armed in memory; carplay runs it already',
+                buttons ? codingWhy : null, reset);
         });
     });
 }

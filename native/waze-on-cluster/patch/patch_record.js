@@ -79,4 +79,9 @@ function remove(target) {
     try { fs.unlinkSync(recordPath(target)); } catch (e) { if (e.code !== 'ENOENT') throw e; }
 }
 
-module.exports = { recordPath: recordPath, current: current, write: write, ensure: ensure, remove: remove, fsyncPath: fsyncPath };
+/* Whether rec is the record of a patch CarPlay's Patch button wrote
+ * (--unproven): patched, neither proven nor on trial. Earlier releases'
+ * installs recorded their patches proven or on trial. */
+function buttonPatch(rec) { return !!rec && rec.patched === true && rec.proven !== true && rec.trial !== true; }
+
+module.exports = { recordPath: recordPath, current: current, write: write, ensure: ensure, remove: remove, fsyncPath: fsyncPath, buttonPatch: buttonPatch };

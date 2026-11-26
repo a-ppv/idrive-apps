@@ -133,7 +133,7 @@ function targets(o) {
             foreignIn: function () { return require('./carplay_patch.js').foreignIn(o.carplay); },
             /* the plan's arguments for a patch in the file put back (drec, its record) */
             planArgs: function (drec) {
-                return ['--panel', 'high', '--coding', CODING].concat(drec && drec.patched === true && drec.proven !== true && drec.trial !== true ? ['--unproven'] : []);
+                return ['--panel', 'high', '--coding', CODING].concat(record.buttonPatch(drec) ? ['--unproven'] : []);
             },
             check: function (i, cur) {
                 if (!exists(o.carplay + '.woc-orig')) return null;
