@@ -2036,7 +2036,7 @@ function inmemHook(which, cb) {
          * step plans such a patch it puts back. */
         var codingWhy = codingConflict(st.coding === null ? null : [null, String(st.coding)]), foreign = foreignStart(CP);
         var conflict = codingWhy || foreign, drec = record.current(TARGET);
-        var buttons = !!codingWhy && !foreign && ours && st.restorable && !st.foreign && !!drec && drec.patched === true && drec.proven !== true && drec.trial !== true;
+        var buttons = !!codingWhy && !foreign && st.restorable && !!st.backup && !st.foreign && !!drec && drec.patched === true && drec.proven !== true && drec.trial !== true;
         if (conflict && !buttons) {
             if (!ours || st.foreign || !st.restorable) { out(0, 'carplay left as it is: ' + conflict, conflict); return; }
             revert(true, true, function (rErr) {
