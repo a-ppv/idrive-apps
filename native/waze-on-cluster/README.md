@@ -60,9 +60,10 @@ goes back as they ship, and the patch is armed in aapd's memory. Where the
 sites are not found or not recognised, or another tool's change is found
 beside our own edits, it leaves everything as it is, and the app's Status
 says why; bytes away from the sites do not count. On a car not coded for
-the cluster map it plans nothing and puts an earlier release's patch back
-as it ships, except a patch CarPlay's Patch button applied, which it plans
-in memory as that button does. A
+the cluster map, or whose coding cannot be read, it plans nothing and puts
+an earlier release's patch back as it ships, except a patch CarPlay's Patch
+button applied with our backup beside it, which it plans in memory as that
+button does. A
 patch you turned off with Remove patch stays off across updates, car
 software updates and restarts, until you press Patch (PATCH.md
 "Install-time activation", "In memory").
